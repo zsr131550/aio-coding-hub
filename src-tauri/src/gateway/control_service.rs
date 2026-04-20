@@ -9,17 +9,21 @@ use super::background_tasks::GatewayBackgroundTasks;
 use super::binder::{bind_exact, bind_first_available, resolve_gateway_binding};
 use super::codex_session_id::CodexSessionIdCache;
 use super::events::{GatewayLogEvent, GATEWAY_LOG_EVENT_NAME, GATEWAY_STATUS_EVENT_NAME};
-use super::manager::GatewayStartResult;
 use super::proxy::{GatewayErrorCode, ProviderBaseUrlPingCache, RecentErrorCache};
 use super::routes::build_router;
 use super::runtime::{GatewayAppState, GatewayRuntime};
 use super::util::now_unix_seconds;
 use super::GatewayProviderCircuitStatus;
 
-pub(super) struct GatewayControlService;
+pub(crate) struct GatewayStartResult {
+    pub(crate) status: super::GatewayStatus,
+    pub(crate) effective_preferred_port: u16,
+}
+
+pub(crate) struct GatewayControlService;
 
 impl GatewayControlService {
-    pub(super) fn start(
+    pub(crate) fn start(
         running: &mut Option<GatewayRuntime>,
         app: &tauri::AppHandle,
         db: db::Db,
@@ -129,7 +133,7 @@ impl GatewayControlService {
         })
     }
 
-    pub(super) fn circuit_status(
+    pub(crate) fn circuit_status(
         running: Option<&GatewayRuntime>,
         app: &tauri::AppHandle,
         db: &db::Db,
@@ -189,7 +193,7 @@ impl GatewayControlService {
             .collect())
     }
 
-    pub(super) fn circuit_reset_provider(
+    pub(crate) fn circuit_reset_provider(
         running: Option<&GatewayRuntime>,
         db: &db::Db,
         provider_id: i64,
@@ -208,7 +212,7 @@ impl GatewayControlService {
         Ok(())
     }
 
-    pub(super) fn circuit_reset_cli(
+    pub(crate) fn circuit_reset_cli(
         running: Option<&GatewayRuntime>,
         db: &db::Db,
         cli_key: &str,

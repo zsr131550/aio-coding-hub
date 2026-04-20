@@ -42,7 +42,7 @@ pub(crate) type GatewayRuntimeHandles = (
     tauri::async_runtime::JoinHandle<()>,
 );
 
-pub(super) struct GatewayRuntime {
+pub(crate) struct GatewayRuntime {
     port: u16,
     base_url: String,
     listen_addr: String,
@@ -79,7 +79,7 @@ impl GatewayRuntime {
         }
     }
 
-    pub(super) fn status(&self) -> GatewayStatus {
+    pub(crate) fn status(&self) -> GatewayStatus {
         GatewayStatus {
             running: true,
             port: Some(self.port),
@@ -88,7 +88,7 @@ impl GatewayRuntime {
         }
     }
 
-    pub(super) fn active_sessions(
+    pub(crate) fn active_sessions(
         &self,
         now_unix: i64,
         limit: usize,
@@ -96,11 +96,11 @@ impl GatewayRuntime {
         self.session.list_active(now_unix, limit)
     }
 
-    pub(super) fn clear_cli_session_bindings(&self, cli_key: &str) -> usize {
+    pub(crate) fn clear_cli_session_bindings(&self, cli_key: &str) -> usize {
         self.session.clear_cli_bindings(cli_key)
     }
 
-    pub(super) fn circuit_status(
+    pub(crate) fn circuit_status(
         &self,
         provider_ids: &[i64],
         now_unix: i64,
@@ -123,19 +123,19 @@ impl GatewayRuntime {
             .collect()
     }
 
-    pub(super) fn circuit_reset_provider(&self, provider_id: i64, now_unix: i64) {
+    pub(crate) fn circuit_reset_provider(&self, provider_id: i64, now_unix: i64) {
         self.circuit.reset(provider_id, now_unix);
         self.recent_errors.lock_or_recover().clear();
     }
 
-    pub(super) fn circuit_reset_cli(&self, provider_ids: &[i64], now_unix: i64) {
+    pub(crate) fn circuit_reset_cli(&self, provider_ids: &[i64], now_unix: i64) {
         for provider_id in provider_ids {
             self.circuit.reset(*provider_id, now_unix);
         }
         self.recent_errors.lock_or_recover().clear();
     }
 
-    pub(super) fn update_circuit_config(&self, failure_threshold: u32, open_duration_secs: i64) {
+    pub(crate) fn update_circuit_config(&self, failure_threshold: u32, open_duration_secs: i64) {
         self.circuit
             .update_config(circuit_breaker::CircuitBreakerConfig {
                 failure_threshold,

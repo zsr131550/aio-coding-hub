@@ -4,16 +4,16 @@ mod binder;
 mod claude_metadata_user_id_injection;
 pub(crate) mod cli_auth;
 mod codex_session_id;
-mod control_service;
+pub(crate) mod control_service;
 pub(crate) mod events;
 pub(crate) mod http_client;
 pub(crate) mod listen;
-mod manager;
+pub(crate) mod manager;
 pub(crate) mod oauth;
 mod proxy;
 mod response_fixer;
 mod routes;
-mod runtime;
+pub(crate) mod runtime;
 pub(crate) mod session_manager;
 mod streams;
 mod thinking_budget_rectifier;
@@ -21,14 +21,10 @@ mod thinking_signature_rectifier;
 pub(crate) mod util;
 mod warmup;
 
-pub use manager::GatewayManager;
-pub(crate) use manager::GatewayStartResult;
-pub(crate) use runtime::GatewayRuntimeHandles;
-
 use crate::settings;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, specta::Type, Default, PartialEq, Eq)]
 pub struct GatewayStatus {
     pub running: bool,
     pub port: Option<u16>,

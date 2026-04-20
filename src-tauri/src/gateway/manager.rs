@@ -1,119 +1,11 @@
-use crate::db;
-use crate::settings;
-
-use super::control_service::GatewayControlService;
 use super::runtime::{GatewayRuntime, GatewayRuntimeHandles};
-use super::{GatewayProviderCircuitStatus, GatewayStatus};
-
-pub(crate) struct GatewayStartResult {
-    pub(crate) status: GatewayStatus,
-    pub(crate) effective_preferred_port: u16,
-}
 
 #[derive(Default)]
 pub struct GatewayManager {
-    running: Option<GatewayRuntime>,
+    pub(crate) running: Option<GatewayRuntime>,
 }
 
 impl GatewayManager {
-    pub fn status(&self) -> GatewayStatus {
-        self.running
-            .as_ref()
-            .map(GatewayRuntime::status)
-            .unwrap_or(GatewayStatus {
-                running: false,
-                port: None,
-                base_url: None,
-                listen_addr: None,
-            })
-    }
-
-    pub fn active_sessions(
-        &self,
-        now_unix: i64,
-        limit: usize,
-    ) -> Vec<crate::session_manager::ActiveSessionSnapshot> {
-        self.running
-            .as_ref()
-            .map(|runtime| runtime.active_sessions(now_unix, limit))
-            .unwrap_or_default()
-    }
-
-    pub fn clear_cli_session_bindings(&self, cli_key: &str) -> usize {
-        self.running
-            .as_ref()
-            .map(|runtime| runtime.clear_cli_session_bindings(cli_key))
-            .unwrap_or(0)
-    }
-
-    pub fn start(
-        &mut self,
-        app: &tauri::AppHandle,
-        db: db::Db,
-        preferred_port: Option<u16>,
-    ) -> crate::shared::error::AppResult<GatewayStatus> {
-        let cfg = settings::read(app)?;
-        let requested_port = preferred_port
-            .filter(|port| *port > 0)
-            .unwrap_or(cfg.preferred_port.max(settings::DEFAULT_GATEWAY_PORT));
-        let start_result =
-            GatewayControlService::start(&mut self.running, app, db, &cfg, preferred_port)?;
-
-        if start_result.effective_preferred_port != requested_port
-            && requested_port == cfg.preferred_port
-        {
-            if let Ok(mut current) = settings::read(app) {
-                if current.preferred_port != start_result.effective_preferred_port {
-                    current.preferred_port = start_result.effective_preferred_port;
-                    let _ = settings::write(app, &current);
-                }
-            }
-        }
-
-        Ok(start_result.status)
-    }
-
-    pub fn start_with_config(
-        &mut self,
-        app: &tauri::AppHandle,
-        db: db::Db,
-        cfg: &settings::AppSettings,
-        preferred_port: Option<u16>,
-    ) -> crate::shared::error::AppResult<GatewayStartResult> {
-        GatewayControlService::start(&mut self.running, app, db, cfg, preferred_port)
-    }
-
-    pub fn circuit_status(
-        &self,
-        app: &tauri::AppHandle,
-        db: &db::Db,
-        cli_key: &str,
-    ) -> crate::shared::error::AppResult<Vec<GatewayProviderCircuitStatus>> {
-        GatewayControlService::circuit_status(self.running.as_ref(), app, db, cli_key)
-    }
-
-    pub fn circuit_reset_provider(
-        &self,
-        db: &db::Db,
-        provider_id: i64,
-    ) -> crate::shared::error::AppResult<()> {
-        GatewayControlService::circuit_reset_provider(self.running.as_ref(), db, provider_id)
-    }
-
-    pub fn circuit_reset_cli(
-        &self,
-        db: &db::Db,
-        cli_key: &str,
-    ) -> crate::shared::error::AppResult<usize> {
-        GatewayControlService::circuit_reset_cli(self.running.as_ref(), db, cli_key)
-    }
-
-    pub fn update_circuit_config(&self, failure_threshold: u32, open_duration_secs: i64) {
-        if let Some(runtime) = self.running.as_ref() {
-            runtime.update_circuit_config(failure_threshold, open_duration_secs);
-        }
-    }
-
     pub fn take_running(&mut self) -> Option<GatewayRuntimeHandles> {
         self.running.take().map(GatewayRuntime::into_handles)
     }
@@ -123,7 +15,10 @@ impl GatewayManager {
 mod tests {
     use super::GatewayManager;
     use crate::gateway::binder::listen_rebind_required;
+    use crate::gateway::control_service::GatewayControlService;
     use crate::gateway::runtime::GatewayAppState;
+    use crate::gateway::runtime::GatewayRuntime;
+    use crate::gateway::GatewayStatus;
     use crate::providers;
     use std::io::{Read, Write};
     use std::sync::mpsc;
@@ -233,7 +128,11 @@ mod tests {
             running: Some(build_running_gateway(&rt, session.clone(), recent_errors)),
         };
 
-        let removed = manager.clear_cli_session_bindings("claude");
+        let removed = manager
+            .running
+            .as_ref()
+            .expect("running gateway")
+            .clear_cli_session_bindings("claude");
         assert_eq!(removed, 2);
 
         assert_eq!(
@@ -305,8 +204,7 @@ mod tests {
             running: Some(build_running_gateway(&rt, session, recent_errors.clone())),
         };
 
-        manager
-            .circuit_reset_provider(&db, provider_id)
+        GatewayControlService::circuit_reset_provider(manager.running.as_ref(), &db, provider_id)
             .expect("reset provider");
 
         let cached = recent_errors
@@ -340,7 +238,9 @@ mod tests {
             running: Some(build_running_gateway(&rt, session, recent_errors.clone())),
         };
 
-        let reset_count = manager.circuit_reset_cli(&db, "claude").expect("reset cli");
+        let reset_count =
+            GatewayControlService::circuit_reset_cli(manager.running.as_ref(), &db, "claude")
+                .expect("reset cli");
 
         assert_eq!(reset_count, 2);
         let cached = recent_errors
@@ -381,5 +281,25 @@ mod tests {
             .recv_timeout(Duration::from_secs(3))
             .expect("proxy b should receive request");
         assert!(second_request.starts_with("GET http://example.com/ HTTP/1.1"));
+    }
+
+    #[test]
+    fn status_defaults_to_stopped_when_runtime_absent() {
+        let manager = GatewayManager::default();
+        let status = manager
+            .running
+            .as_ref()
+            .map(GatewayRuntime::status)
+            .unwrap_or_default();
+
+        assert_eq!(
+            status,
+            GatewayStatus {
+                running: false,
+                port: None,
+                base_url: None,
+                listen_addr: None,
+            }
+        );
     }
 }

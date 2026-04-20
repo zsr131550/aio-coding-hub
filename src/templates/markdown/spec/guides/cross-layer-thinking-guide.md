@@ -71,6 +71,9 @@ Use this checklist whenever a Tauri command is added or changed.
 - The Tauri command layer owns IPC shape adaptation.
 - The domain layer owns validation and persistence rules.
 - The frontend service layer owns the final JS wrapper used by pages/hooks.
+- Keep runtime command registration and Specta export coverage derived from one
+  registry module. If those lists diverge, the desktop contract is already
+  drifting even if tests still compile.
 - Generated bindings only protect the commands and types they actually export.
   If Specta covers only a subset, document that boundary explicitly and keep
   service-layer contract tests for the remaining commands.
@@ -81,6 +84,9 @@ Use this checklist whenever a Tauri command is added or changed.
 - If a command intentionally stays outside Specta, keep one explicit owner file
   for the handwritten DTO on the frontend and add a targeted contract test that
   names the Rust command and the JS wrapper together.
+- Keep runtime-only exceptions rare and named. In this project,
+  `desktop_updater_download_and_install` is the known handwritten command path
+  because it depends on a Tauri `Channel` callback.
 
 ---
 
@@ -92,6 +98,9 @@ Use this when touching `src/main.tsx`, `src/App.tsx`, or global event wiring.
 - Move startup side effects into a dedicated hook such as `useAppBootstrap`.
 - Keep route declarations in a dedicated module such as `src/app/AppRoutes.tsx`.
 - Split unrelated synchronization work into separate effects instead of one “startup soup” effect.
+- If root code needs to update runtime-only module singletons, pass one
+  normalized snapshot into a runtime controller instead of calling several
+  setters inline.
 
 ---
 
@@ -188,6 +197,29 @@ Root-boundary checklist:
   final handler from smaller registrars.
 - Review blast radius: adding one feature should not require editing unrelated
   startup branches.
+
+### Mistake 12: Letting Root Bridges Drive Multiple Runtime Singletons Directly
+
+**Bad**: A root bridge reads settings and directly calls
+`setCacheAnomalyMonitorEnabled`, `setTaskCompleteNotifyEnabled`,
+`setNotificationSoundEnabled`, and future runtime setters one by one.
+
+**Good**: Normalize the query snapshot once and hand it to a runtime controller
+that owns singleton fan-out, de-duplication, and future toggle growth.
+
+Runtime-bridge checklist:
+- The root hook should see one query snapshot and one controller call.
+- The controller should own de-duplication and normalization.
+- Runtime singleton setters should not leak into app bootstrap or route code.
+
+### Mistake 13: Letting Tauri Commands Become Application Services
+
+**Bad**: `commands/settings.rs` or `commands/cli_proxy.rs` owns persistence,
+runtime rollback, gateway rebind, CLI sync, and session cleanup directly.
+
+**Good**: Keep `commands/*` as IPC wrappers and move orchestration into
+`app/*_service.rs` so the same service can be reused by startup flows, tests,
+or future non-Tauri entrypoints.
 
 ### Mistake 9: Letting Event Names Bypass the Shared Contract
 

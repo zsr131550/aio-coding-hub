@@ -98,6 +98,9 @@ Use this when touching `src/main.tsx`, `src/App.tsx`, or global event wiring.
 - Move startup side effects into a dedicated hook such as `useAppBootstrap`.
 - Keep route declarations in a dedicated module such as `src/app/AppRoutes.tsx`.
 - Split unrelated synchronization work into separate effects instead of one “startup soup” effect.
+- If root code needs to update runtime-only module singletons, pass one
+  normalized snapshot into a runtime controller instead of calling several
+  setters inline.
 
 ---
 
@@ -194,6 +197,29 @@ Root-boundary checklist:
   final handler from smaller registrars.
 - Review blast radius: adding one feature should not require editing unrelated
   startup branches.
+
+### Mistake 12: Letting Root Bridges Drive Multiple Runtime Singletons Directly
+
+**Bad**: A root bridge reads settings and directly calls
+`setCacheAnomalyMonitorEnabled`, `setTaskCompleteNotifyEnabled`,
+`setNotificationSoundEnabled`, and future runtime setters one by one.
+
+**Good**: Normalize the query snapshot once and hand it to a runtime controller
+that owns singleton fan-out, de-duplication, and future toggle growth.
+
+Runtime-bridge checklist:
+- The root hook should see one query snapshot and one controller call.
+- The controller should own de-duplication and normalization.
+- Runtime singleton setters should not leak into app bootstrap or route code.
+
+### Mistake 13: Letting Tauri Commands Become Application Services
+
+**Bad**: `commands/settings.rs` or `commands/cli_proxy.rs` owns persistence,
+runtime rollback, gateway rebind, CLI sync, and session cleanup directly.
+
+**Good**: Keep `commands/*` as IPC wrappers and move orchestration into
+`app/*_service.rs` so the same service can be reused by startup flows, tests,
+or future non-Tauri entrypoints.
 
 ### Mistake 9: Letting Event Names Bypass the Shared Contract
 

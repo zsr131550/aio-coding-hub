@@ -15,10 +15,6 @@ vi.mock("../services/notification/noticeEvents", () => ({
 }));
 vi.mock("../services/notification/taskCompleteNotifyEvents", () => ({
   listenTaskCompleteNotifyEvents: vi.fn().mockResolvedValue(() => {}),
-  setTaskCompleteNotifyEnabled: vi.fn(),
-}));
-vi.mock("../services/gateway/cacheAnomalyMonitor", () => ({
-  setCacheAnomalyMonitorEnabled: vi.fn(),
 }));
 vi.mock("../services/app/startup", () => ({
   startupSyncDefaultPromptsFromFilesOncePerSession: vi.fn().mockResolvedValue(undefined),
@@ -53,9 +49,12 @@ vi.mock("../services/settings/settings", async () => {
     settingsGet: vi.fn(),
   };
 });
+vi.mock("../app/settingsRuntimeController", () => ({
+  applySettingsRuntimeSnapshot: vi.fn(),
+  resetSettingsRuntimeController: vi.fn(),
+}));
 
 import { listenAppHeartbeat } from "../services/app/appHeartbeat";
-import { setCacheAnomalyMonitorEnabled } from "../services/gateway/cacheAnomalyMonitor";
 import {
   registerBackgroundTask,
   setBackgroundTaskSchedulerForeground,
@@ -68,12 +67,10 @@ import {
   startupSyncDefaultPromptsFromFilesOncePerSession,
   startupSyncModelPricesOnce,
 } from "../services/app/startup";
-import {
-  listenTaskCompleteNotifyEvents,
-  setTaskCompleteNotifyEnabled,
-} from "../services/notification/taskCompleteNotifyEvents";
+import { listenTaskCompleteNotifyEvents } from "../services/notification/taskCompleteNotifyEvents";
 import { updateCheckNow } from "../hooks/useUpdateMeta";
 import { cliProxyStatusAll } from "../services/cli/cliProxy";
+import { applySettingsRuntimeSnapshot, resetSettingsRuntimeController } from "../app/settingsRuntimeController";
 
 async function renderApp() {
   const { default: App } = await import("../App");
@@ -87,12 +84,14 @@ async function renderApp() {
 
 describe("App bootstrap", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.mocked(listenAppHeartbeat).mockResolvedValue(() => {});
     vi.mocked(listenGatewayEvents).mockResolvedValue(() => {});
     vi.mocked(listenNoticeEvents).mockResolvedValue(() => {});
     vi.mocked(listenTaskCompleteNotifyEvents).mockResolvedValue(() => {});
     vi.mocked(startupSyncModelPricesOnce).mockResolvedValue(undefined);
     vi.mocked(startupSyncDefaultPromptsFromFilesOncePerSession).mockResolvedValue(undefined);
+    vi.mocked(resetSettingsRuntimeController).mockImplementation(() => {});
     vi.mocked(settingsGet).mockResolvedValue(
       createTestAppSettings({
         enable_cache_anomaly_monitor: true,
@@ -111,8 +110,12 @@ describe("App bootstrap", () => {
       expect(listenTaskCompleteNotifyEvents).toHaveBeenCalledTimes(1);
       expect(startupSyncModelPricesOnce).toHaveBeenCalledTimes(1);
       expect(startupSyncDefaultPromptsFromFilesOncePerSession).toHaveBeenCalledTimes(1);
-      expect(setCacheAnomalyMonitorEnabled).toHaveBeenCalledWith(true);
-      expect(setTaskCompleteNotifyEnabled).toHaveBeenCalledWith(false);
+      expect(applySettingsRuntimeSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          enable_cache_anomaly_monitor: true,
+          enable_task_complete_notify: false,
+        })
+      );
       expect(registerBackgroundTask).toHaveBeenCalledTimes(2);
       expect(startBackgroundTaskScheduler).toHaveBeenCalledTimes(1);
       expect(setBackgroundTaskSchedulerForeground).toHaveBeenCalledWith(true);

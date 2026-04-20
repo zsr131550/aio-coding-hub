@@ -8,8 +8,12 @@ pub(crate) fn app_gateway_circuit_reset_provider(
     db: &db::Db,
     provider_id: i64,
 ) -> AppResult<()> {
-    super::gateway_state::with_app_gateway_manager(app, |manager| {
-        manager.circuit_reset_provider(db, provider_id)
+    super::gateway_state::with_app_running_gateway(app, |running| {
+        gateway::control_service::GatewayControlService::circuit_reset_provider(
+            running,
+            db,
+            provider_id,
+        )
     })
 }
 
@@ -18,8 +22,8 @@ pub(crate) fn app_gateway_circuit_reset_cli(
     db: &db::Db,
     cli_key: &str,
 ) -> AppResult<usize> {
-    super::gateway_state::with_app_gateway_manager(app, |manager| {
-        manager.circuit_reset_cli(db, cli_key)
+    super::gateway_state::with_app_running_gateway(app, |running| {
+        gateway::control_service::GatewayControlService::circuit_reset_cli(running, db, cli_key)
     })
 }
 
@@ -28,8 +32,31 @@ pub(crate) fn app_start_gateway(
     db: db::Db,
     preferred_port: Option<u16>,
 ) -> AppResult<gateway::GatewayStatus> {
-    super::gateway_state::with_app_gateway_manager_mut(app, |manager| {
-        manager.start(app, db, preferred_port)
+    super::gateway_state::with_app_running_gateway_slot_mut(app, |running| {
+        let cfg = settings::read(app)?;
+        let requested_port = preferred_port
+            .filter(|port| *port > 0)
+            .unwrap_or(cfg.preferred_port.max(settings::DEFAULT_GATEWAY_PORT));
+        let start_result = gateway::control_service::GatewayControlService::start(
+            running,
+            app,
+            db,
+            &cfg,
+            preferred_port,
+        )?;
+
+        if start_result.effective_preferred_port != requested_port
+            && requested_port == cfg.preferred_port
+        {
+            if let Ok(mut current) = settings::read(app) {
+                if current.preferred_port != start_result.effective_preferred_port {
+                    current.preferred_port = start_result.effective_preferred_port;
+                    let _ = settings::write(app, &current);
+                }
+            }
+        }
+
+        Ok(start_result.status)
     })
 }
 
@@ -38,9 +65,15 @@ pub(crate) fn app_start_gateway_with_config(
     db: db::Db,
     cfg: &settings::AppSettings,
     preferred_port: Option<u16>,
-) -> AppResult<gateway::GatewayStartResult> {
-    super::gateway_state::with_app_gateway_manager_mut(app, |manager| {
-        manager.start_with_config(app, db, cfg, preferred_port)
+) -> AppResult<gateway::control_service::GatewayStartResult> {
+    super::gateway_state::with_app_running_gateway_slot_mut(app, |running| {
+        gateway::control_service::GatewayControlService::start(
+            running,
+            app,
+            db,
+            cfg,
+            preferred_port,
+        )
     })
 }
 
@@ -61,8 +94,10 @@ pub(crate) fn app_gateway_clear_cli_session_bindings<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     cli_key: &str,
 ) -> usize {
-    super::gateway_state::with_app_gateway_manager(app, |manager| {
-        manager.clear_cli_session_bindings(cli_key)
+    super::gateway_state::with_app_running_gateway(app, |running| {
+        running
+            .map(|runtime| runtime.clear_cli_session_bindings(cli_key))
+            .unwrap_or(0)
     })
 }
 
@@ -71,14 +106,16 @@ pub(crate) fn try_app_gateway_update_circuit_config<R: tauri::Runtime>(
     failure_threshold: u32,
     open_duration_secs: i64,
 ) -> bool {
-    super::gateway_state::try_with_app_gateway_manager(app, |manager| {
-        manager.update_circuit_config(failure_threshold, open_duration_secs);
+    super::gateway_state::try_with_app_running_gateway(app, |running| {
+        if let Some(runtime) = running {
+            runtime.update_circuit_config(failure_threshold, open_duration_secs);
+        }
     })
     .is_some()
 }
 
 pub(crate) fn app_take_running_gateway<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-) -> Option<crate::gateway::GatewayRuntimeHandles> {
-    super::gateway_state::with_app_gateway_manager_mut(app, |manager| manager.take_running())
+) -> Option<crate::gateway::runtime::GatewayRuntimeHandles> {
+    super::gateway_state::take_app_running_gateway(app)
 }
