@@ -7,7 +7,7 @@ use super::SpecialSettings;
 use crate::gateway::proxy::errors::error_response;
 use crate::gateway::proxy::request_end::{
     emit_request_event_and_enqueue_request_log, emit_request_event_and_spawn_request_log,
-    RequestEndArgs, RequestEndDeps,
+    RequestCompletion, RequestEndArgs, RequestEndDeps,
 };
 use crate::gateway::proxy::{ErrorCategory, GatewayErrorCode};
 use crate::gateway::runtime::GatewayAppState;
@@ -186,9 +186,9 @@ fn early_error_request_end_args<'a>(
         observe: ctx.observe,
         query: ctx.query,
         excluded_from_stats: contract.excluded_from_stats,
-        status: Some(contract.status.as_u16()),
-        error_category: contract.error_category,
-        error_code: Some(contract.error_code),
+        status: None,
+        error_category: None,
+        error_code: None,
         duration_ms: ctx.duration_ms,
         event_ttfb_ms: None,
         log_ttfb_ms: None,
@@ -202,6 +202,11 @@ fn early_error_request_end_args<'a>(
         log_usage_metrics: None,
         usage: None,
     }
+    .with_completion(RequestCompletion::failure(
+        contract.status.as_u16(),
+        contract.error_category,
+        contract.error_code,
+    ))
 }
 
 pub(super) async fn respond_early_error_with_enqueue(

@@ -81,8 +81,7 @@ pub(super) async fn handle_thinking_rectifiers_400(
     let LoopState {
         attempts,
         failed_provider_ids,
-        last_error_category,
-        last_error_code,
+        last_outcome,
         circuit_snapshot,
         abort_guard,
     } = loop_state;
@@ -107,31 +106,38 @@ pub(super) async fn handle_thinking_rectifiers_400(
                     format!("failed to read upstream error body: {err}"),
                     client_attempts,
                 );
-                emit_request_event_and_enqueue_request_log(RequestEndArgs {
-                    deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
-                    trace_id: trace_id.as_str(),
-                    cli_key: cli_key.as_str(),
-                    method: method_hint.as_str(),
-                    path: forwarded_path.as_str(),
-                    observe: ctx.observe,
-                    query: query.as_deref(),
-                    excluded_from_stats: false,
-                    status: Some(StatusCode::BAD_GATEWAY.as_u16()),
-                    error_category: Some(ErrorCategory::SystemError.as_str()),
-                    error_code: Some(GatewayErrorCode::UpstreamBodyReadError.as_str()),
-                    duration_ms,
-                    event_ttfb_ms: None,
-                    log_ttfb_ms: None,
-                    attempts: attempts.as_slice(),
-                    special_settings_json: None,
-                    session_id,
-                    requested_model,
-                    created_at_ms,
-                    created_at,
-                    usage_metrics: None,
-                    log_usage_metrics: None,
-                    usage: None,
-                })
+                emit_request_event_and_enqueue_request_log(
+                    RequestEndArgs {
+                        deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
+                        trace_id: trace_id.as_str(),
+                        cli_key: cli_key.as_str(),
+                        method: method_hint.as_str(),
+                        path: forwarded_path.as_str(),
+                        observe: ctx.observe,
+                        query: query.as_deref(),
+                        excluded_from_stats: false,
+                        status: None,
+                        error_category: None,
+                        error_code: None,
+                        duration_ms,
+                        event_ttfb_ms: None,
+                        log_ttfb_ms: None,
+                        attempts: attempts.as_slice(),
+                        special_settings_json: None,
+                        session_id,
+                        requested_model,
+                        created_at_ms,
+                        created_at,
+                        usage_metrics: None,
+                        log_usage_metrics: None,
+                        usage: None,
+                    }
+                    .with_completion(RequestCompletion::failure(
+                        StatusCode::BAD_GATEWAY.as_u16(),
+                        Some(ErrorCategory::SystemError.as_str()),
+                        GatewayErrorCode::UpstreamBodyReadError.as_str(),
+                    )),
+                )
                 .await;
                 abort_guard.disarm();
                 return LoopControl::Return(resp);
@@ -407,8 +413,7 @@ pub(super) async fn handle_thinking_rectifiers_400(
         )
         .await;
 
-        *last_error_category = Some(category.as_str());
-        *last_error_code = Some(error_code);
+        *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
 
         match decision {
             FailoverDecision::RetrySameProvider => {
@@ -454,31 +459,39 @@ pub(super) async fn handle_thinking_rectifiers_400(
                     response_fixer::special_settings_json(&special_settings);
                 let duration_ms = started.elapsed().as_millis();
 
-                emit_request_event_and_enqueue_request_log(RequestEndArgs {
-                    deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
-                    trace_id: trace_id.as_str(),
-                    cli_key: cli_key.as_str(),
-                    method: method_hint.as_str(),
-                    path: forwarded_path.as_str(),
-                    observe: ctx.observe,
-                    query: query.as_deref(),
-                    excluded_from_stats: false,
-                    status: Some(status.as_u16()),
-                    error_category: Some(category.as_str()),
-                    error_code: Some(error_code),
-                    duration_ms,
-                    event_ttfb_ms: Some(duration_ms),
-                    log_ttfb_ms: Some(duration_ms),
-                    attempts: attempts.as_slice(),
-                    special_settings_json,
-                    session_id,
-                    requested_model,
-                    created_at_ms,
-                    created_at,
-                    usage_metrics: None,
-                    log_usage_metrics: None,
-                    usage: None,
-                })
+                emit_request_event_and_enqueue_request_log(
+                    RequestEndArgs {
+                        deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
+                        trace_id: trace_id.as_str(),
+                        cli_key: cli_key.as_str(),
+                        method: method_hint.as_str(),
+                        path: forwarded_path.as_str(),
+                        observe: ctx.observe,
+                        query: query.as_deref(),
+                        excluded_from_stats: false,
+                        status: None,
+                        error_category: None,
+                        error_code: None,
+                        duration_ms,
+                        event_ttfb_ms: None,
+                        log_ttfb_ms: None,
+                        attempts: attempts.as_slice(),
+                        special_settings_json,
+                        session_id,
+                        requested_model,
+                        created_at_ms,
+                        created_at,
+                        usage_metrics: None,
+                        log_usage_metrics: None,
+                        usage: None,
+                    }
+                    .with_completion(RequestCompletion::failure_with_ttfb(
+                        status.as_u16(),
+                        Some(category.as_str()),
+                        error_code,
+                        duration_ms,
+                    )),
+                )
                 .await;
 
                 abort_guard.disarm();

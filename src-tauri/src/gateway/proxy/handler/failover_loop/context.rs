@@ -263,26 +263,54 @@ pub(super) struct AttemptCtx<'a> {
 pub(super) struct LoopState<'a> {
     pub(super) attempts: &'a mut Vec<FailoverAttempt>,
     pub(super) failed_provider_ids: &'a mut HashSet<i64>,
-    pub(super) last_error_category: &'a mut Option<&'static str>,
-    pub(super) last_error_code: &'a mut Option<&'static str>,
+    pub(super) last_outcome: &'a mut Option<AttemptOutcome>,
     pub(super) circuit_snapshot: &'a mut circuit_breaker::CircuitSnapshot,
     pub(super) abort_guard: &'a mut RequestAbortGuard,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct AttemptOutcome {
+    pub(super) error_category: &'static str,
+    pub(super) error_code: &'static str,
+}
+
+impl AttemptOutcome {
+    pub(super) fn new(error_category: &'static str, error_code: &'static str) -> Self {
+        Self {
+            error_category,
+            error_code,
+        }
+    }
+}
+
+pub(super) struct FailoverRunState {
+    pub(super) attempts: Vec<FailoverAttempt>,
+    pub(super) failed_provider_ids: HashSet<i64>,
+    pub(super) last_outcome: Option<AttemptOutcome>,
+}
+
+impl FailoverRunState {
+    pub(super) fn new() -> Self {
+        Self {
+            attempts: Vec::new(),
+            failed_provider_ids: HashSet::new(),
+            last_outcome: None,
+        }
+    }
 }
 
 impl<'a> LoopState<'a> {
     pub(super) fn new(
         attempts: &'a mut Vec<FailoverAttempt>,
         failed_provider_ids: &'a mut HashSet<i64>,
-        last_error_category: &'a mut Option<&'static str>,
-        last_error_code: &'a mut Option<&'static str>,
+        last_outcome: &'a mut Option<AttemptOutcome>,
         circuit_snapshot: &'a mut circuit_breaker::CircuitSnapshot,
         abort_guard: &'a mut RequestAbortGuard,
     ) -> Self {
         Self {
             attempts,
             failed_provider_ids,
-            last_error_category,
-            last_error_code,
+            last_outcome,
             circuit_snapshot,
             abort_guard,
         }
@@ -296,8 +324,7 @@ impl<'a> LoopState<'a> {
         LoopState {
             attempts: self.attempts,
             failed_provider_ids: self.failed_provider_ids,
-            last_error_category: self.last_error_category,
-            last_error_code: self.last_error_code,
+            last_outcome: self.last_outcome,
             circuit_snapshot: self.circuit_snapshot,
             abort_guard: self.abort_guard,
         }

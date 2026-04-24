@@ -296,8 +296,7 @@ pub(super) async fn handle_success_non_stream(
     let LoopState {
         attempts,
         failed_provider_ids,
-        last_error_category,
-        last_error_code,
+        last_outcome,
         circuit_snapshot,
         abort_guard,
     } = loop_state;
@@ -552,8 +551,7 @@ pub(super) async fn handle_success_non_stream(
                 loop_state: LoopState {
                     attempts,
                     failed_provider_ids,
-                    last_error_category,
-                    last_error_code,
+                    last_outcome,
                     circuit_snapshot,
                     abort_guard,
                 },
@@ -635,8 +633,7 @@ pub(super) async fn handle_success_non_stream(
                     loop_state: LoopState {
                         attempts,
                         failed_provider_ids,
-                        last_error_category,
-                        last_error_code,
+                        last_outcome,
                         circuit_snapshot,
                         abort_guard,
                     },
@@ -791,8 +788,7 @@ pub(super) async fn handle_success_non_stream(
                 loop_state: LoopState {
                     attempts,
                     failed_provider_ids,
-                    last_error_category,
-                    last_error_code,
+                    last_outcome,
                     circuit_snapshot,
                     abort_guard,
                 },
@@ -897,31 +893,40 @@ pub(super) async fn handle_success_non_stream(
     }
 
     let duration_ms = started.elapsed().as_millis();
-    emit_request_event_and_enqueue_request_log(RequestEndArgs {
-        deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
-        trace_id: common.trace_id.as_str(),
-        cli_key: common.cli_key.as_str(),
-        method: common.method_hint.as_str(),
-        path: common.forwarded_path.as_str(),
-        observe: common.observe,
-        query: common.query.as_deref(),
-        excluded_from_stats: false,
-        status: Some(status.as_u16()),
-        error_category: None,
-        error_code: None,
-        duration_ms,
-        event_ttfb_ms: Some(duration_ms),
-        log_ttfb_ms: Some(duration_ms),
-        attempts: attempts.as_slice(),
-        special_settings_json: response_fixer::special_settings_json(&common.special_settings),
-        session_id: common.session_id.clone(),
-        requested_model: requested_model_for_log,
-        created_at_ms,
-        created_at,
-        usage_metrics,
-        log_usage_metrics: None,
-        usage,
-    })
+    emit_request_event_and_enqueue_request_log(
+        RequestEndArgs {
+            deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
+            trace_id: common.trace_id.as_str(),
+            cli_key: common.cli_key.as_str(),
+            method: common.method_hint.as_str(),
+            path: common.forwarded_path.as_str(),
+            observe: common.observe,
+            query: common.query.as_deref(),
+            excluded_from_stats: false,
+            status: None,
+            error_category: None,
+            error_code: None,
+            duration_ms,
+            event_ttfb_ms: None,
+            log_ttfb_ms: None,
+            attempts: attempts.as_slice(),
+            special_settings_json: response_fixer::special_settings_json(&common.special_settings),
+            session_id: common.session_id.clone(),
+            requested_model: requested_model_for_log,
+            created_at_ms,
+            created_at,
+            usage_metrics: None,
+            log_usage_metrics: None,
+            usage: None,
+        }
+        .with_completion(RequestCompletion::success(
+            status.as_u16(),
+            Some(duration_ms),
+            usage_metrics,
+            None,
+            usage,
+        )),
+    )
     .await;
     abort_guard.disarm();
     LoopControl::Return(out)

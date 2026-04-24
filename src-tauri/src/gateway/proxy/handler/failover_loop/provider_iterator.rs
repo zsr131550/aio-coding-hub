@@ -5,6 +5,7 @@
 use super::provider_checks;
 use super::*;
 use crate::gateway::proxy::gemini_oauth::GeminiOAuthResponseMode;
+use std::collections::HashSet;
 
 /// All mutable state accumulated by the provider preparation phase that the
 /// retry loop (and later finalization) needs.

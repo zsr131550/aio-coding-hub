@@ -1,3 +1,4 @@
+use super::context::{AttemptOutcome, FailoverRunState};
 use super::loop_helpers::should_finalize_as_all_providers_unavailable;
 use crate::gateway::events::{decision_chain as dc, FailoverAttempt};
 use crate::gateway::proxy::GatewayErrorCode;
@@ -82,4 +83,36 @@ fn non_gate_skip_attempts_do_not_finalize_as_unavailable() {
     let attempts = vec![skipped_attempt(None)];
 
     assert!(!should_finalize_as_all_providers_unavailable(&attempts));
+}
+
+#[test]
+fn failover_run_state_owns_attempts_failed_ids_and_last_outcome() {
+    let mut state = FailoverRunState::new();
+    state.attempts.push(real_attempt());
+    state.failed_provider_ids.insert(42);
+    state.last_outcome = Some(AttemptOutcome::new(
+        "provider_error",
+        GatewayErrorCode::Upstream5xx.as_str(),
+    ));
+
+    let outcome = state.last_outcome.expect("last outcome");
+
+    assert_eq!(state.attempts.len(), 1);
+    assert!(state.failed_provider_ids.contains(&42));
+    assert_eq!(outcome.error_category, "provider_error");
+    assert_eq!(outcome.error_code, GatewayErrorCode::Upstream5xx.as_str());
+}
+
+#[test]
+fn attempt_outcome_preserves_terminal_error_pair() {
+    let outcome = AttemptOutcome::new(
+        "system_error",
+        GatewayErrorCode::UpstreamConnectFailed.as_str(),
+    );
+
+    assert_eq!(outcome.error_category, "system_error");
+    assert_eq!(
+        outcome.error_code,
+        GatewayErrorCode::UpstreamConnectFailed.as_str()
+    );
 }

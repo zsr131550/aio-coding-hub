@@ -53,7 +53,7 @@ use oauth::{
     resolve_oauth_adapter_for_provider,
 };
 use request_end_helpers::{
-    emit_request_event_and_enqueue_request_log, RequestEndArgs, RequestEndDeps,
+    emit_request_event_and_enqueue_request_log, RequestCompletion, RequestEndArgs, RequestEndDeps,
 };
 
 use crate::gateway::proxy::{
@@ -73,7 +73,6 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -94,8 +93,9 @@ use crate::gateway::util::{
 use crate::shared::mutex_ext::MutexExt;
 
 use context::{
-    build_stream_finalize_ctx, AttemptCtx, CommonCtx, CommonCtxArgs, CommonCtxOwned, LoopControl,
-    LoopState, ProviderCtx, ProviderCtxOwned, MAX_NON_SSE_BODY_BYTES,
+    build_stream_finalize_ctx, AttemptCtx, AttemptOutcome, CommonCtx, CommonCtxArgs,
+    CommonCtxOwned, FailoverRunState, LoopControl, LoopState, ProviderCtx, ProviderCtxOwned,
+    MAX_NON_SSE_BODY_BYTES,
 };
 
 /// Main failover loop: iterate providers, retry attempts, handle responses.
@@ -142,10 +142,7 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
         introspection_body: introspection_body.as_ref(),
     });
 
-    let mut attempts: Vec<FailoverAttempt> = Vec::new();
-    let mut failed_provider_ids: HashSet<i64> = HashSet::new();
-    let mut last_error_category: Option<&'static str> = None;
-    let mut last_error_code: Option<&'static str> = None;
+    let mut run_state = FailoverRunState::new();
 
     let max_providers_to_try = (input.max_providers_to_try as usize).max(1);
     let mut counters = provider_iterator::IterationCounters::new();
@@ -164,8 +161,8 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
             &input,
             provider,
             &mut counters,
-            &mut attempts,
-            &failed_provider_ids,
+            &mut run_state.attempts,
+            &run_state.failed_provider_ids,
             anthropic_stream_requested,
         )
         .await;
@@ -182,10 +179,9 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
             &input,
             &mut prepared,
             LoopState::new(
-                &mut attempts,
-                &mut failed_provider_ids,
-                &mut last_error_category,
-                &mut last_error_code,
+                &mut run_state.attempts,
+                &mut run_state.failed_provider_ids,
+                &mut run_state.last_outcome,
                 &mut circuit_snapshot,
                 &mut abort_guard,
             ),
@@ -197,13 +193,15 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
     }
 
     // --- Finalization ---
-    if should_finalize_as_all_providers_unavailable(&attempts) && !input.providers.is_empty() {
+    if should_finalize_as_all_providers_unavailable(&run_state.attempts)
+        && !input.providers.is_empty()
+    {
         let owned = finalize_owned_from_input(&input);
         return finalize::all_providers_unavailable(finalize::AllUnavailableInput {
             state: &input.state,
             abort_guard: &mut abort_guard,
             observe: input.observe_request,
-            attempts,
+            attempts: std::mem::take(&mut run_state.attempts),
             cli_key: owned.cli_key,
             method_hint: owned.method_hint,
             forwarded_path: owned.forwarded_path,
@@ -233,9 +231,8 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
         state: &input.state,
         abort_guard: &mut abort_guard,
         observe: input.observe_request,
-        attempts,
-        last_error_category,
-        last_error_code,
+        attempts: std::mem::take(&mut run_state.attempts),
+        last_outcome: run_state.last_outcome,
         cli_key: owned.cli_key,
         method_hint: owned.method_hint,
         forwarded_path: owned.forwarded_path,

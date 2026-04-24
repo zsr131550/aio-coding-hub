@@ -72,8 +72,7 @@ async fn record_system_failure_and_decide_impl(
     let LoopState {
         attempts,
         failed_provider_ids,
-        last_error_category,
-        last_error_code,
+        last_outcome,
         circuit_snapshot,
         abort_guard: _,
     } = loop_state;
@@ -145,8 +144,7 @@ async fn record_system_failure_and_decide_impl(
     )
     .await;
 
-    *last_error_category = Some(category.as_str());
-    *last_error_code = Some(error_code);
+    *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
 
     let should_apply_cooldown = matches!(cooldown_policy, CooldownPolicy::Apply)
         && !is_claude_count_tokens_request(ctx.cli_key.as_str(), ctx.forwarded_path.as_str());

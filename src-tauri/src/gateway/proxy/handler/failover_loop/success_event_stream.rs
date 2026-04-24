@@ -55,8 +55,7 @@ pub(super) async fn handle_success_event_stream(
     let LoopState {
         attempts,
         failed_provider_ids,
-        last_error_category,
-        last_error_code,
+        last_outcome,
         circuit_snapshot,
         abort_guard,
     } = loop_state;
@@ -142,8 +141,7 @@ pub(super) async fn handle_success_event_stream(
                     loop_state: LoopState {
                         attempts,
                         failed_provider_ids,
-                        last_error_category,
-                        last_error_code,
+                        last_outcome,
                         circuit_snapshot,
                         abort_guard,
                     },
@@ -178,8 +176,7 @@ pub(super) async fn handle_success_event_stream(
                     loop_state: LoopState {
                         attempts,
                         failed_provider_ids,
-                        last_error_category,
-                        last_error_code,
+                        last_outcome,
                         circuit_snapshot,
                         abort_guard,
                     },
@@ -221,8 +218,7 @@ pub(super) async fn handle_success_event_stream(
                 loop_state: LoopState {
                     attempts,
                     failed_provider_ids,
-                    last_error_category,
-                    last_error_code,
+                    last_outcome,
                     circuit_snapshot,
                     abort_guard,
                 },

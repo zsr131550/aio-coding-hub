@@ -22,6 +22,81 @@ impl<'a> RequestEndDeps<'a> {
     }
 }
 
+pub(super) struct RequestCompletion {
+    pub(super) status: Option<u16>,
+    pub(super) error_category: Option<&'static str>,
+    pub(super) error_code: Option<&'static str>,
+    pub(super) event_ttfb_ms: Option<u128>,
+    pub(super) log_ttfb_ms: Option<u128>,
+    pub(super) usage_metrics: Option<crate::usage::UsageMetrics>,
+    pub(super) log_usage_metrics: Option<crate::usage::UsageMetrics>,
+    pub(super) usage: Option<crate::usage::UsageExtract>,
+}
+
+impl RequestCompletion {
+    pub(super) fn success(
+        status: u16,
+        ttfb_ms: Option<u128>,
+        usage_metrics: Option<crate::usage::UsageMetrics>,
+        log_usage_metrics: Option<crate::usage::UsageMetrics>,
+        usage: Option<crate::usage::UsageExtract>,
+    ) -> Self {
+        Self {
+            status: Some(status),
+            error_category: None,
+            error_code: None,
+            event_ttfb_ms: ttfb_ms,
+            log_ttfb_ms: ttfb_ms,
+            usage_metrics,
+            log_usage_metrics,
+            usage,
+        }
+    }
+
+    pub(super) fn failure(
+        status: u16,
+        error_category: Option<&'static str>,
+        error_code: &'static str,
+    ) -> Self {
+        Self {
+            status: Some(status),
+            error_category,
+            error_code: Some(error_code),
+            event_ttfb_ms: None,
+            log_ttfb_ms: None,
+            usage_metrics: None,
+            log_usage_metrics: None,
+            usage: None,
+        }
+    }
+
+    pub(super) fn failure_with_ttfb(
+        status: u16,
+        error_category: Option<&'static str>,
+        error_code: &'static str,
+        ttfb_ms: u128,
+    ) -> Self {
+        Self {
+            event_ttfb_ms: Some(ttfb_ms),
+            log_ttfb_ms: Some(ttfb_ms),
+            ..Self::failure(status, error_category, error_code)
+        }
+    }
+
+    pub(super) fn client_abort() -> Self {
+        Self {
+            status: None,
+            error_category: Some(crate::gateway::proxy::ErrorCategory::ClientAbort.as_str()),
+            error_code: Some(crate::gateway::proxy::GatewayErrorCode::RequestAborted.as_str()),
+            event_ttfb_ms: None,
+            log_ttfb_ms: None,
+            usage_metrics: None,
+            log_usage_metrics: None,
+            usage: None,
+        }
+    }
+}
+
 pub(super) struct RequestEndArgs<'a> {
     pub(super) deps: RequestEndDeps<'a>,
     pub(super) trace_id: &'a str,
@@ -46,6 +121,20 @@ pub(super) struct RequestEndArgs<'a> {
     pub(super) usage_metrics: Option<crate::usage::UsageMetrics>,
     pub(super) log_usage_metrics: Option<crate::usage::UsageMetrics>,
     pub(super) usage: Option<crate::usage::UsageExtract>,
+}
+
+impl<'a> RequestEndArgs<'a> {
+    pub(super) fn with_completion(mut self, completion: RequestCompletion) -> Self {
+        self.status = completion.status;
+        self.error_category = completion.error_category;
+        self.error_code = completion.error_code;
+        self.event_ttfb_ms = completion.event_ttfb_ms;
+        self.log_ttfb_ms = completion.log_ttfb_ms;
+        self.usage_metrics = completion.usage_metrics;
+        self.log_usage_metrics = completion.log_usage_metrics;
+        self.usage = completion.usage;
+        self
+    }
 }
 
 struct PreparedRequestEnd<'a> {
@@ -633,6 +722,66 @@ mod tests {
         assert_eq!(log_args.attempts_json, expected_attempts_json);
         assert_eq!(cloned_attempts.len(), 1);
         assert_eq!(cloned_attempts[0].provider_id, 7);
+    }
+
+    #[test]
+    fn request_completion_builds_success_with_usage_and_ttfb() {
+        let usage_metrics = crate::usage::UsageMetrics::default();
+        let completion = RequestCompletion::success(
+            200,
+            Some(42),
+            Some(usage_metrics.clone()),
+            Some(usage_metrics),
+            None,
+        );
+
+        assert_eq!(completion.status, Some(200));
+        assert!(completion.error_category.is_none());
+        assert!(completion.error_code.is_none());
+        assert_eq!(completion.event_ttfb_ms, Some(42));
+        assert_eq!(completion.log_ttfb_ms, Some(42));
+        assert!(completion.usage_metrics.is_some());
+        assert!(completion.log_usage_metrics.is_some());
+    }
+
+    #[test]
+    fn request_completion_builds_client_abort_without_status() {
+        let completion = RequestCompletion::client_abort();
+
+        assert!(completion.status.is_none());
+        assert_eq!(
+            completion.error_category,
+            Some(ErrorCategory::ClientAbort.as_str())
+        );
+        assert_eq!(
+            completion.error_code,
+            Some(GatewayErrorCode::RequestAborted.as_str())
+        );
+        assert!(completion.event_ttfb_ms.is_none());
+        assert!(completion.usage_metrics.is_none());
+    }
+
+    #[test]
+    fn request_completion_builds_terminal_failure_with_ttfb() {
+        let completion = RequestCompletion::failure_with_ttfb(
+            502,
+            Some(ErrorCategory::ProviderError.as_str()),
+            GatewayErrorCode::Upstream5xx.as_str(),
+            77,
+        );
+
+        assert_eq!(completion.status, Some(502));
+        assert_eq!(
+            completion.error_category,
+            Some(ErrorCategory::ProviderError.as_str())
+        );
+        assert_eq!(
+            completion.error_code,
+            Some(GatewayErrorCode::Upstream5xx.as_str())
+        );
+        assert_eq!(completion.event_ttfb_ms, Some(77));
+        assert_eq!(completion.log_ttfb_ms, Some(77));
+        assert!(completion.usage_metrics.is_none());
     }
 
     #[test]

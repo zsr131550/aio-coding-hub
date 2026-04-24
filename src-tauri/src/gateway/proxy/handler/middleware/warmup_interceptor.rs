@@ -3,7 +3,7 @@
 use super::{MiddlewareAction, ProxyContext};
 use crate::gateway::events::{decision_chain as dc, emit_request_start_event, FailoverAttempt};
 use crate::gateway::proxy::request_end::{
-    emit_request_event_and_spawn_request_log, RequestEndArgs, RequestEndDeps,
+    emit_request_event_and_spawn_request_log, RequestCompletion, RequestEndArgs, RequestEndDeps,
 };
 use crate::gateway::warmup;
 use crate::usage;
@@ -95,31 +95,40 @@ fn respond_warmup_intercept(ctx: &ProxyContext, duration_ms: u128) -> axum::resp
         circuit_failure_threshold: None,
     }];
 
-    emit_request_event_and_spawn_request_log(RequestEndArgs {
-        deps: RequestEndDeps::new(&ctx.state.app, &ctx.state.db, &ctx.state.log_tx),
-        trace_id: &ctx.trace_id,
-        cli_key: &ctx.cli_key,
-        method: &ctx.method_hint,
-        path: &ctx.forwarded_path,
-        observe: ctx.observe_request,
-        query: ctx.query.as_deref(),
-        excluded_from_stats: true,
-        status: Some(StatusCode::OK.as_u16()),
-        error_category: None,
-        error_code: None,
-        duration_ms,
-        event_ttfb_ms: Some(duration_ms),
-        log_ttfb_ms: Some(duration_ms),
-        attempts: &warmup_attempts,
-        special_settings_json: Some(special_settings_json),
-        session_id: None,
-        requested_model: ctx.requested_model.clone(),
-        created_at_ms: ctx.created_at_ms,
-        created_at: ctx.created_at,
-        usage_metrics: Some(usage::UsageMetrics::default()),
-        log_usage_metrics: Some(warmup_log_usage_metrics()),
-        usage: None,
-    });
+    emit_request_event_and_spawn_request_log(
+        RequestEndArgs {
+            deps: RequestEndDeps::new(&ctx.state.app, &ctx.state.db, &ctx.state.log_tx),
+            trace_id: &ctx.trace_id,
+            cli_key: &ctx.cli_key,
+            method: &ctx.method_hint,
+            path: &ctx.forwarded_path,
+            observe: ctx.observe_request,
+            query: ctx.query.as_deref(),
+            excluded_from_stats: true,
+            status: None,
+            error_category: None,
+            error_code: None,
+            duration_ms,
+            event_ttfb_ms: None,
+            log_ttfb_ms: None,
+            attempts: &warmup_attempts,
+            special_settings_json: Some(special_settings_json),
+            session_id: None,
+            requested_model: ctx.requested_model.clone(),
+            created_at_ms: ctx.created_at_ms,
+            created_at: ctx.created_at,
+            usage_metrics: None,
+            log_usage_metrics: None,
+            usage: None,
+        }
+        .with_completion(RequestCompletion::success(
+            StatusCode::OK.as_u16(),
+            Some(duration_ms),
+            Some(usage::UsageMetrics::default()),
+            Some(warmup_log_usage_metrics()),
+            None,
+        )),
+    );
 
     let mut resp = (StatusCode::OK, Json(response_body)).into_response();
     resp.headers_mut().insert(

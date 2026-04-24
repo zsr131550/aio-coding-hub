@@ -5,13 +5,14 @@ use super::attempt_record::{
     RecordSystemFailureArgs,
 };
 use super::context::{
-    AttemptCtx, CommonCtx, CommonCtxOwned, LoopControl, LoopState, ProviderCtx,
+    AttemptCtx, AttemptOutcome, CommonCtx, CommonCtxOwned, LoopControl, LoopState, ProviderCtx,
     MAX_NON_SSE_BODY_BYTES,
 };
 use super::thinking_signature_rectifier_400;
 use super::{emit_attempt_event_and_log, AttemptCircuitFields};
 use super::{
-    emit_gateway_log, emit_request_event_and_enqueue_request_log, RequestEndArgs, RequestEndDeps,
+    emit_gateway_log, emit_request_event_and_enqueue_request_log, RequestCompletion,
+    RequestEndArgs, RequestEndDeps,
 };
 use crate::circuit_breaker;
 use crate::gateway::events::decision_chain as dc;
@@ -213,8 +214,7 @@ pub(super) async fn handle_non_success_response(
     let LoopState {
         attempts,
         failed_provider_ids,
-        last_error_category,
-        last_error_code,
+        last_outcome,
         circuit_snapshot,
         abort_guard,
     } = loop_state;
@@ -431,8 +431,7 @@ pub(super) async fn handle_non_success_response(
     )
     .await;
 
-    *last_error_category = Some(category.as_str());
-    *last_error_code = Some(error_code);
+    *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
 
     match decision {
         FailoverDecision::RetrySameProvider => {
@@ -491,31 +490,39 @@ pub(super) async fn handle_non_success_response(
                     response_fixer::special_settings_json(&special_settings);
                 let duration_ms = started.elapsed().as_millis();
 
-                emit_request_event_and_enqueue_request_log(RequestEndArgs {
-                    deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
-                    trace_id: trace_id.as_str(),
-                    cli_key: cli_key.as_str(),
-                    method: method_hint.as_str(),
-                    path: forwarded_path.as_str(),
-                    observe: ctx.observe,
-                    query: query.as_deref(),
-                    excluded_from_stats: false,
-                    status: Some(status.as_u16()),
-                    error_category: Some(category.as_str()),
-                    error_code: Some(error_code),
-                    duration_ms,
-                    event_ttfb_ms: Some(duration_ms),
-                    log_ttfb_ms: Some(duration_ms),
-                    attempts: attempts.as_slice(),
-                    special_settings_json,
-                    session_id,
-                    requested_model,
-                    created_at_ms,
-                    created_at,
-                    usage_metrics: None,
-                    log_usage_metrics: None,
-                    usage: None,
-                })
+                emit_request_event_and_enqueue_request_log(
+                    RequestEndArgs {
+                        deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
+                        trace_id: trace_id.as_str(),
+                        cli_key: cli_key.as_str(),
+                        method: method_hint.as_str(),
+                        path: forwarded_path.as_str(),
+                        observe: ctx.observe,
+                        query: query.as_deref(),
+                        excluded_from_stats: false,
+                        status: None,
+                        error_category: None,
+                        error_code: None,
+                        duration_ms,
+                        event_ttfb_ms: None,
+                        log_ttfb_ms: None,
+                        attempts: attempts.as_slice(),
+                        special_settings_json,
+                        session_id,
+                        requested_model,
+                        created_at_ms,
+                        created_at,
+                        usage_metrics: None,
+                        log_usage_metrics: None,
+                        usage: None,
+                    }
+                    .with_completion(RequestCompletion::failure_with_ttfb(
+                        status.as_u16(),
+                        Some(category.as_str()),
+                        error_code,
+                        duration_ms,
+                    )),
+                )
                 .await;
 
                 abort_guard.disarm();
@@ -531,31 +538,39 @@ pub(super) async fn handle_non_success_response(
             let special_settings_json = response_fixer::special_settings_json(&special_settings);
             let duration_ms = started.elapsed().as_millis();
 
-            emit_request_event_and_enqueue_request_log(RequestEndArgs {
-                deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
-                trace_id: trace_id.as_str(),
-                cli_key: cli_key.as_str(),
-                method: method_hint.as_str(),
-                path: forwarded_path.as_str(),
-                observe: ctx.observe,
-                query: query.as_deref(),
-                excluded_from_stats: false,
-                status: Some(status.as_u16()),
-                error_category: Some(category.as_str()),
-                error_code: Some(error_code),
-                duration_ms,
-                event_ttfb_ms: Some(duration_ms),
-                log_ttfb_ms: Some(duration_ms),
-                attempts: attempts.as_slice(),
-                special_settings_json,
-                session_id,
-                requested_model,
-                created_at_ms,
-                created_at,
-                usage_metrics: None,
-                log_usage_metrics: None,
-                usage: None,
-            })
+            emit_request_event_and_enqueue_request_log(
+                RequestEndArgs {
+                    deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
+                    trace_id: trace_id.as_str(),
+                    cli_key: cli_key.as_str(),
+                    method: method_hint.as_str(),
+                    path: forwarded_path.as_str(),
+                    observe: ctx.observe,
+                    query: query.as_deref(),
+                    excluded_from_stats: false,
+                    status: None,
+                    error_category: None,
+                    error_code: None,
+                    duration_ms,
+                    event_ttfb_ms: None,
+                    log_ttfb_ms: None,
+                    attempts: attempts.as_slice(),
+                    special_settings_json,
+                    session_id,
+                    requested_model,
+                    created_at_ms,
+                    created_at,
+                    usage_metrics: None,
+                    log_usage_metrics: None,
+                    usage: None,
+                }
+                .with_completion(RequestCompletion::failure_with_ttfb(
+                    status.as_u16(),
+                    Some(category.as_str()),
+                    error_code,
+                    duration_ms,
+                )),
+            )
             .await;
 
             abort_guard.disarm();

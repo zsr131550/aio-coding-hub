@@ -1,10 +1,12 @@
 //! Usage: Finalize responses for failover loop terminal states.
 
+use super::context::AttemptOutcome;
 use super::{emit_request_event_and_enqueue_request_log, RequestEndArgs, RequestEndDeps};
 use crate::gateway::events::FailoverAttempt;
 use crate::gateway::proxy::abort_guard::RequestAbortGuard;
 use crate::gateway::proxy::caches::CachedGatewayError;
 use crate::gateway::proxy::errors::{error_response, error_response_with_retry_after};
+use crate::gateway::proxy::request_end::RequestCompletion;
 use crate::gateway::proxy::GatewayErrorCode;
 use crate::gateway::response_fixer;
 use crate::gateway::runtime::GatewayAppState;
@@ -110,31 +112,38 @@ pub(super) async fn all_providers_unavailable(input: AllUnavailableInput<'_>) ->
     );
 
     let duration_ms = started.elapsed().as_millis();
-    emit_request_event_and_enqueue_request_log(RequestEndArgs {
-        deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
-        trace_id: trace_id.as_str(),
-        cli_key: cli_key.as_str(),
-        method: method_hint.as_str(),
-        path: forwarded_path.as_str(),
-        observe,
-        query: query.as_deref(),
-        excluded_from_stats: false,
-        status: Some(StatusCode::SERVICE_UNAVAILABLE.as_u16()),
-        error_category: None,
-        error_code: Some(GatewayErrorCode::AllProvidersUnavailable.as_str()),
-        duration_ms,
-        event_ttfb_ms: None,
-        log_ttfb_ms: None,
-        attempts: attempts.as_slice(),
-        special_settings_json: response_fixer::special_settings_json(&special_settings),
-        session_id,
-        requested_model,
-        created_at_ms,
-        created_at,
-        usage_metrics: None,
-        log_usage_metrics: None,
-        usage: None,
-    })
+    emit_request_event_and_enqueue_request_log(
+        RequestEndArgs {
+            deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
+            trace_id: trace_id.as_str(),
+            cli_key: cli_key.as_str(),
+            method: method_hint.as_str(),
+            path: forwarded_path.as_str(),
+            observe,
+            query: query.as_deref(),
+            excluded_from_stats: false,
+            status: None,
+            error_category: None,
+            error_code: None,
+            duration_ms,
+            event_ttfb_ms: None,
+            log_ttfb_ms: None,
+            attempts: attempts.as_slice(),
+            special_settings_json: response_fixer::special_settings_json(&special_settings),
+            session_id,
+            requested_model,
+            created_at_ms,
+            created_at,
+            usage_metrics: None,
+            log_usage_metrics: None,
+            usage: None,
+        }
+        .with_completion(RequestCompletion::failure(
+            StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            None,
+            GatewayErrorCode::AllProvidersUnavailable.as_str(),
+        )),
+    )
     .await;
 
     if let Some(retry_after_seconds) = retry_after_seconds.filter(|v| *v > 0) {
@@ -176,8 +185,7 @@ pub(super) struct AllFailedInput<'a> {
     pub(super) abort_guard: &'a mut RequestAbortGuard,
     pub(super) observe: bool,
     pub(super) attempts: Vec<FailoverAttempt>,
-    pub(super) last_error_category: Option<&'static str>,
-    pub(super) last_error_code: Option<&'static str>,
+    pub(super) last_outcome: Option<AttemptOutcome>,
     pub(super) cli_key: String,
     pub(super) method_hint: String,
     pub(super) forwarded_path: String,
@@ -198,8 +206,7 @@ pub(super) async fn all_providers_failed(input: AllFailedInput<'_>) -> Response 
         abort_guard,
         observe,
         attempts,
-        last_error_category,
-        last_error_code,
+        last_outcome,
         cli_key,
         method_hint,
         forwarded_path,
@@ -214,7 +221,10 @@ pub(super) async fn all_providers_failed(input: AllFailedInput<'_>) -> Response 
         verbose_provider_error,
     } = input;
 
-    let final_error_code = last_error_code.unwrap_or(GatewayErrorCode::UpstreamAllFailed.as_str());
+    let final_error_code = last_outcome
+        .map(|outcome| outcome.error_code)
+        .unwrap_or(GatewayErrorCode::UpstreamAllFailed.as_str());
+    let final_error_category = last_outcome.map(|outcome| outcome.error_category);
 
     // Disk log: all providers tried and failed.
     tracing::error!(
@@ -239,31 +249,38 @@ pub(super) async fn all_providers_failed(input: AllFailedInput<'_>) -> Response 
     );
 
     let duration_ms = started.elapsed().as_millis();
-    emit_request_event_and_enqueue_request_log(RequestEndArgs {
-        deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
-        trace_id: trace_id.as_str(),
-        cli_key: cli_key.as_str(),
-        method: method_hint.as_str(),
-        path: forwarded_path.as_str(),
-        observe,
-        query: query.as_deref(),
-        excluded_from_stats: false,
-        status: Some(StatusCode::BAD_GATEWAY.as_u16()),
-        error_category: last_error_category,
-        error_code: Some(final_error_code),
-        duration_ms,
-        event_ttfb_ms: None,
-        log_ttfb_ms: None,
-        attempts: attempts.as_slice(),
-        special_settings_json: response_fixer::special_settings_json(&special_settings),
-        session_id,
-        requested_model,
-        created_at_ms,
-        created_at,
-        usage_metrics: None,
-        log_usage_metrics: None,
-        usage: None,
-    })
+    emit_request_event_and_enqueue_request_log(
+        RequestEndArgs {
+            deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx),
+            trace_id: trace_id.as_str(),
+            cli_key: cli_key.as_str(),
+            method: method_hint.as_str(),
+            path: forwarded_path.as_str(),
+            observe,
+            query: query.as_deref(),
+            excluded_from_stats: false,
+            status: None,
+            error_category: None,
+            error_code: None,
+            duration_ms,
+            event_ttfb_ms: None,
+            log_ttfb_ms: None,
+            attempts: attempts.as_slice(),
+            special_settings_json: response_fixer::special_settings_json(&special_settings),
+            session_id,
+            requested_model,
+            created_at_ms,
+            created_at,
+            usage_metrics: None,
+            log_usage_metrics: None,
+            usage: None,
+        }
+        .with_completion(RequestCompletion::failure(
+            StatusCode::BAD_GATEWAY.as_u16(),
+            final_error_category,
+            final_error_code,
+        )),
+    )
     .await;
 
     abort_guard.disarm();
