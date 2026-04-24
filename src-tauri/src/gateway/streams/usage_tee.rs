@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use super::super::proxy::GatewayErrorCode;
 use super::super::util::now_unix_seconds;
-use super::request_end::emit_request_event_and_spawn_request_log;
+use super::request_end::{emit_request_event_and_spawn_request_log, StreamRequestCompletion};
 use super::{RelayBodyStream, StreamFinalizeCtx};
 
 fn is_codex_responses_path(cli_key: &str, path: &str) -> bool {
@@ -144,11 +144,13 @@ where
 
         emit_request_event_and_spawn_request_log(
             &self.ctx,
-            error_code,
-            self.first_byte_ms,
-            requested_model,
-            usage_metrics,
-            usage,
+            StreamRequestCompletion::new(
+                error_code,
+                self.first_byte_ms,
+                requested_model,
+                usage_metrics,
+                usage,
+            ),
         );
     }
 }
@@ -503,11 +505,13 @@ where
 
         emit_request_event_and_spawn_request_log(
             &self.ctx,
-            error_code,
-            self.first_byte_ms,
-            requested_model,
-            usage_metrics,
-            usage,
+            StreamRequestCompletion::new(
+                error_code,
+                self.first_byte_ms,
+                requested_model,
+                usage_metrics,
+                usage,
+            ),
         );
     }
 }
