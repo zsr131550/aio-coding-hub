@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HomeTokenCostPanel } from "../HomeTokenCostPanel";
 import { useUsageLeaderboardV2Query, useUsageSummaryV2Query } from "../../../query/usage";
@@ -100,7 +100,7 @@ describe("components/home/HomeTokenCostPanel", () => {
     render(<HomeTokenCostPanel devPreviewEnabled={true} />);
 
     const cachedTotalCard = screen.getByText("含缓存总 Token");
-    const totalCard = screen.getByText("总 Token");
+    const inputOutputTokenCard = screen.getAllByText("输入+输出 Token")[0];
     const totalCostCard = screen.getAllByText("总花费")[0];
     const costCoverageCard = screen.getByText("成本覆盖率");
     const successCard = screen.getByText("成功请求");
@@ -111,16 +111,24 @@ describe("components/home/HomeTokenCostPanel", () => {
     expect(screen.getByText("OpenAI 主供应商")).toBeInTheDocument();
     expect(screen.getByText("18.0K")).toBeInTheDocument();
     expect(screen.getAllByText("$1.20")).toHaveLength(2);
-    expect(screen.getByText("12K / 2K / 16.7%")).toBeInTheDocument();
+    const providerRow = screen.getByText("OpenAI 主供应商").closest("tr");
+    expect(providerRow).toBeTruthy();
+    expect(within(providerRow as HTMLElement).getByText("10K")).toBeInTheDocument();
+    expect(within(providerRow as HTMLElement).getByLabelText("12K/2K/16.7%")).toBeInTheDocument();
     expect(screen.getByText("81.0%")).toBeInTheDocument();
     expect(screen.getByText("18.2%")).toBeInTheDocument();
-    expect(screen.getByText("含缓存总量 / 缓存量 / 缓存命中率")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: /输入\+输出 Token/ })).toBeInTheDocument();
+    const cacheHeader = screen.getByRole("columnheader", { name: /缓存情况/ });
+    expect(within(cacheHeader).getByText("（含缓存/缓存/命中率）")).toBeInTheDocument();
+    expect(screen.queryByText("Token 明细")).not.toBeInTheDocument();
+    expect(screen.queryByText("含缓存总量 / 缓存量 / 缓存命中率")).not.toBeInTheDocument();
     expect(screen.queryByText("平均耗时")).not.toBeInTheDocument();
     expect(
-      cachedTotalCard.compareDocumentPosition(totalCard) & Node.DOCUMENT_POSITION_FOLLOWING
+      cachedTotalCard.compareDocumentPosition(inputOutputTokenCard) &
+        Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
     expect(
-      totalCard.compareDocumentPosition(totalCostCard) & Node.DOCUMENT_POSITION_FOLLOWING
+      inputOutputTokenCard.compareDocumentPosition(totalCostCard) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
     expect(
       totalCostCard.compareDocumentPosition(costCoverageCard) & Node.DOCUMENT_POSITION_FOLLOWING
@@ -152,7 +160,8 @@ describe("components/home/HomeTokenCostPanel", () => {
         cliKey: null,
         providerId: null,
         limit: null,
-      })
+      }),
+      undefined
     );
   });
 
@@ -178,6 +187,31 @@ describe("components/home/HomeTokenCostPanel", () => {
 
     render(<HomeTokenCostPanel />);
 
+    fireEvent.click(screen.getByRole("button", { name: "昨天" }));
+
+    expect(vi.mocked(useUsageSummaryV2Query)).toHaveBeenLastCalledWith(
+      "custom",
+      expect.objectContaining({
+        startTs: Math.floor(new Date(2026, 3, 15, 0, 0, 0).getTime() / 1000),
+        endTs: Math.floor(new Date(2026, 3, 16, 0, 0, 0).getTime() / 1000),
+        cliKey: null,
+        providerId: null,
+      }),
+      undefined
+    );
+    expect(vi.mocked(useUsageLeaderboardV2Query)).toHaveBeenLastCalledWith(
+      "provider",
+      "custom",
+      expect.objectContaining({
+        startTs: Math.floor(new Date(2026, 3, 15, 0, 0, 0).getTime() / 1000),
+        endTs: Math.floor(new Date(2026, 3, 16, 0, 0, 0).getTime() / 1000),
+        cliKey: null,
+        providerId: null,
+        limit: null,
+      }),
+      undefined
+    );
+
     fireEvent.click(screen.getByRole("button", { name: "最近3天" }));
 
     expect(vi.mocked(useUsageSummaryV2Query)).toHaveBeenLastCalledWith(
@@ -187,7 +221,8 @@ describe("components/home/HomeTokenCostPanel", () => {
         endTs: Math.floor(new Date(2026, 3, 17, 0, 0, 0).getTime() / 1000),
         cliKey: null,
         providerId: null,
-      })
+      }),
+      undefined
     );
     expect(vi.mocked(useUsageLeaderboardV2Query)).toHaveBeenLastCalledWith(
       "provider",
@@ -198,26 +233,35 @@ describe("components/home/HomeTokenCostPanel", () => {
         cliKey: null,
         providerId: null,
         limit: null,
-      })
+      }),
+      undefined
     );
 
     fireEvent.click(screen.getByRole("button", { name: "最近7天" }));
 
-    expect(vi.mocked(useUsageSummaryV2Query)).toHaveBeenLastCalledWith("weekly", {
-      startTs: null,
-      endTs: null,
-      cliKey: null,
-      providerId: null,
-    });
+    expect(vi.mocked(useUsageSummaryV2Query)).toHaveBeenLastCalledWith(
+      "weekly",
+      {
+        startTs: null,
+        endTs: null,
+        cliKey: null,
+        providerId: null,
+      },
+      undefined
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "当月" }));
 
-    expect(vi.mocked(useUsageSummaryV2Query)).toHaveBeenLastCalledWith("monthly", {
-      startTs: null,
-      endTs: null,
-      cliKey: null,
-      providerId: null,
-    });
+    expect(vi.mocked(useUsageSummaryV2Query)).toHaveBeenLastCalledWith(
+      "monthly",
+      {
+        startTs: null,
+        endTs: null,
+        cliKey: null,
+        providerId: null,
+      },
+      undefined
+    );
   });
 
   it("renders preview rows when dev preview is enabled and queries are empty", () => {
@@ -243,7 +287,12 @@ describe("components/home/HomeTokenCostPanel", () => {
     expect(screen.getByText("Gemini Mirror")).toBeInTheDocument();
     expect(screen.getByText("99.0K")).toBeInTheDocument();
     expect(screen.getByText("$3.36")).toBeInTheDocument();
-    expect(screen.getByText("49.2K / 7.2K / 13.1%")).toBeInTheDocument();
+    const previewProviderRow = screen.getByText("OpenAI Primary").closest("tr");
+    expect(previewProviderRow).toBeTruthy();
+    expect(within(previewProviderRow as HTMLElement).getByText("42K")).toBeInTheDocument();
+    expect(
+      within(previewProviderRow as HTMLElement).getByLabelText("49.2K/7.2K/13.1%")
+    ).toBeInTheDocument();
     expect(screen.getByText("100.0%")).toBeInTheDocument();
     expect(screen.getByText("17.0%")).toBeInTheDocument();
 
@@ -314,8 +363,8 @@ describe("components/home/HomeTokenCostPanel", () => {
 
     render(<HomeTokenCostPanel />);
 
-    // Row cell renders trimmed compact form: "16K / 9K / 90%"
-    expect(screen.getByText("16K / 9K / 90%")).toBeInTheDocument();
+    // Row cell renders trimmed compact form: "16K/9K/90%"
+    expect(screen.getByLabelText("16K/9K/90%")).toBeInTheDocument();
     // Old "占比" 56.3% must NOT be rendered for this row
     expect(screen.queryByText(/56\.3%/)).not.toBeInTheDocument();
     // KPI card uses the same hit-rate formula → also 90.0% (untrimmed)
@@ -375,7 +424,7 @@ describe("components/home/HomeTokenCostPanel", () => {
 
     render(<HomeTokenCostPanel />);
 
-    expect(screen.getByText("0 / — / —")).toBeInTheDocument();
+    expect(screen.getByLabelText("0/—/—")).toBeInTheDocument();
   });
 
   it("retries summary and leaderboard queries from the error card", () => {

@@ -2,7 +2,10 @@
 
 import { lazy, Suspense, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { CLIS } from "../constants/clis";
-import { HomeOverviewPanel } from "../components/home/HomeOverviewPanel";
+import {
+  HomeOverviewPanel,
+  type HomeOverviewUsageView,
+} from "../components/home/HomeOverviewPanel";
 import { useDevPreviewData } from "../hooks/useDevPreviewData";
 import { useDocumentVisibility } from "../hooks/useDocumentVisibility";
 import { useGatewaySessionsListQuery } from "../query/gateway";
@@ -25,6 +28,7 @@ import { useHomeCircuitState } from "./home/hooks/useHomeCircuitState";
 import { useHomeSortMode } from "./home/hooks/useHomeSortMode";
 import { useHomeCliProxy } from "./home/hooks/useHomeCliProxy";
 import { useHomeOverviewFeed } from "./home/hooks/useHomeOverviewFeed";
+import { useHomeOAuthQuota } from "./home/hooks/useHomeOAuthQuota";
 import { useHomeWorkspaceConfigs } from "./home/hooks/useHomeWorkspaceConfigs";
 
 type HomeTabKey = "overview" | "cost" | "tokenCost";
@@ -70,6 +74,7 @@ export function HomePage() {
   const showOverviewUsageSection = showHomeHeatmap || showHomeUsage;
   const homeUsagePeriod = settingsQuery.data?.home_usage_period ?? DEFAULT_HOME_USAGE_PERIOD;
   const homeUsageWindowDays = resolveHomeUsageWindowDays(homeUsagePeriod);
+  const cliPriorityOrder = normalizeCliPriorityOrder(settingsQuery.data?.cli_priority_order);
   const isDevMode = import.meta.env.DEV;
   const devPreview = useDevPreviewData();
   const personalizedLayoutEnabled = useSyncExternalStore(
@@ -84,6 +89,15 @@ export function HomePage() {
 
   const [tab, setTab] = useState<HomeTabKey>("overview");
   const [selectedLogId, setSelectedLogId] = useState<number | null>(null);
+  const [personalizedUsageView, setPersonalizedUsageView] =
+    useState<HomeOverviewUsageView>("summary");
+  const personalizedUsageChartVisible =
+    personalizedLayoutEnabled && personalizedUsageView === "usageChart";
+  const overviewUsageSeriesEnabled =
+    tab === "overview" &&
+    (personalizedUsageChartVisible || (!personalizedLayoutEnabled && showOverviewUsageSection));
+  const shouldRefetchOverviewUsageSeries =
+    personalizedUsageChartVisible || (!personalizedLayoutEnabled && showOverviewUsageSection);
 
   // --- Delegated state hooks ---
   const circuit = useHomeCircuitState();
@@ -99,10 +113,6 @@ export function HomePage() {
   const activeSessionsAvailable: boolean | null = sessionsQuery.isLoading
     ? null
     : sessionsQuery.data != null;
-
-  const sortMode = useHomeSortMode(activeSessions);
-  const cliProxyState = useHomeCliProxy();
-  const workspaceConfigs = useHomeWorkspaceConfigs({ enabled: tab === "overview" });
 
   const {
     usageHeatmapRows,
@@ -121,8 +131,18 @@ export function HomePage() {
   } = useHomeOverviewFeed({
     overviewActive: tab === "overview",
     foregroundActive,
-    showOverviewUsageSection,
+    overviewUsageSeriesEnabled,
+    shouldRefetchOverviewUsageSeries,
     homeUsageWindowDays,
+    providerLimitEnabled: !personalizedLayoutEnabled,
+  });
+  const sortMode = useHomeSortMode(activeSessions);
+  const cliProxyState = useHomeCliProxy();
+  const workspaceConfigs = useHomeWorkspaceConfigs({ enabled: tab === "overview" });
+  const oauthQuota = useHomeOAuthQuota({
+    cliPriorityOrder,
+    requestLogs,
+    enabled: tab === "overview" && personalizedLayoutEnabled,
   });
   const { pendingSortModeSwitch } = sortMode;
   const { pendingCliProxyEnablePrompt } = cliProxyState;
@@ -147,6 +167,19 @@ export function HomePage() {
                   {devPreview.enabled ? "Dev关闭预览数据" : "Dev开启预览数据"}
                 </Button>
               ) : null}
+              {personalizedLayoutEnabled && tab === "overview" ? (
+                <Button
+                  variant="secondary"
+                  size="md"
+                  onClick={() =>
+                    setPersonalizedUsageView((current) =>
+                      current === "summary" ? "usageChart" : "summary"
+                    )
+                  }
+                >
+                  {personalizedUsageView === "summary" ? "查看曲线" : "查看总览"}
+                </Button>
+              ) : null}
               <TabList ariaLabel="首页视图切换" items={homeTabs} value={tab} onChange={setTab} />
             </>
           }
@@ -160,7 +193,7 @@ export function HomePage() {
             devPreviewEnabled={devPreview.enabled}
             showHomeHeatmap={showHomeHeatmap}
             showHomeUsage={showHomeUsage}
-            cliPriorityOrder={normalizeCliPriorityOrder(settingsQuery.data?.cli_priority_order)}
+            cliPriorityOrder={cliPriorityOrder}
             usageWindowDays={homeUsageWindowDays}
             usageHeatmapRows={usageHeatmapRows}
             usageHeatmapLoading={usageHeatmapLoading}
@@ -186,6 +219,12 @@ export function HomePage() {
             providerLimitAvailable={providerLimitAvailable}
             providerLimitRefreshing={providerLimitRefreshing}
             onRefreshProviderLimit={refreshProviderLimit}
+            oauthQuotaRows={oauthQuota.oauthQuotaRows}
+            oauthQuotaVisible={oauthQuota.oauthQuotaVisible}
+            oauthQuotaRefreshing={oauthQuota.oauthQuotaRefreshing}
+            oauthQuotaHasRefreshed={oauthQuota.oauthQuotaHasRefreshed}
+            onRefreshOAuthQuota={oauthQuota.refreshOAuthQuota}
+            onRefreshOAuthQuotaRow={oauthQuota.refreshOAuthQuotaRow}
             openCircuits={circuit.openCircuits}
             onResetCircuitProvider={circuit.handleResetProvider}
             resettingCircuitProviderIds={circuit.resettingProviderIds}
@@ -197,6 +236,7 @@ export function HomePage() {
             onRefreshRequestLogs={refreshRequestLogs}
             selectedLogId={selectedLogId}
             onSelectLogId={setSelectedLogId}
+            personalizedUsageView={personalizedUsageView}
           />
         ) : tab === "cost" ? (
           <Suspense
