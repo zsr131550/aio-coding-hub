@@ -66,8 +66,19 @@ export const GatewayErrorShortLabels = {
   [GatewayErrorCodes.RESPONSE_BUILD_ERROR]: "响应构建错误",
   [GatewayErrorCodes.PROVIDER_RATE_LIMITED]: "供应商限额",
   [GatewayErrorCodes.PROVIDER_CIRCUIT_OPEN]: "供应商熔断",
+  [GatewayErrorCodes.CLI_PROXY_DISABLED]: "代理未启用",
+  [GatewayErrorCodes.CLI_PROXY_GUARD_ERROR]: "代理守卫错误",
+  [GatewayErrorCodes.HTTP_CLIENT_INIT]: "客户端初始化失败",
+  [GatewayErrorCodes.ATTEMPT_LOG_CHANNEL_CLOSED]: "尝试日志通道关闭",
+  [GatewayErrorCodes.ATTEMPT_LOG_ENQUEUE_TIMEOUT]: "尝试日志入队超时",
+  [GatewayErrorCodes.ATTEMPT_LOG_DROPPED]: "尝试日志丢弃",
+  [GatewayErrorCodes.REQUEST_LOG_CHANNEL_CLOSED]: "请求日志通道关闭",
+  [GatewayErrorCodes.REQUEST_LOG_ENQUEUE_TIMEOUT]: "请求日志入队超时",
+  [GatewayErrorCodes.REQUEST_LOG_WRITE_THROUGH_ON_BACKPRESSURE]: "请求日志直写",
+  [GatewayErrorCodes.REQUEST_LOG_WRITE_THROUGH_RATE_LIMITED]: "请求日志直写限速",
+  [GatewayErrorCodes.REQUEST_LOG_DROPPED]: "请求日志丢弃",
   [GatewayErrorCodes.FAKE_200]: "假200",
-} satisfies Partial<Record<GatewayErrorCode, string>>;
+} satisfies Record<GatewayErrorCode, string>;
 
 export function getGatewayErrorShortLabel(errorCode: string) {
   return GatewayErrorShortLabels[errorCode as keyof typeof GatewayErrorShortLabels] ?? errorCode;

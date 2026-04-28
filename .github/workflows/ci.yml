@@ -97,6 +97,12 @@ jobs:
       - name: Dependency audit (high+ severity)
         run: pnpm audit:deps
 
+      - name: Lint (ESLint)
+        run: pnpm lint
+
+      - name: Gateway error codes sync check
+        run: pnpm check:gateway-error-codes
+
       - name: Unit tests (Vitest + coverage gate)
         run: pnpm test:unit:coverage
 

@@ -45,8 +45,9 @@
     "tauri:gen-types": "node scripts/tauri-gen-types.mjs",
     "check:precommit:src": "pnpm lint && pnpm typecheck && pnpm check:no-instant-now-sub",
     "check:precommit:tauri": "pnpm tauri:check",
-    "check:precommit:full": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm check:no-instant-now-sub && pnpm check:release-pr-changelog && pnpm check:spec-links && pnpm check:support-matrix && pnpm tauri:fmt && pnpm tauri:check && pnpm check:generated-bindings && pnpm tauri:clippy",
-    "check:generated-bindings": "node scripts/check-generated-bindings.mjs"
+    "check:precommit:full": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm check:no-instant-now-sub && pnpm check:release-pr-changelog && pnpm check:spec-links && pnpm check:support-matrix && pnpm check:gateway-error-codes && pnpm tauri:fmt && pnpm tauri:check && pnpm check:generated-bindings && pnpm tauri:clippy",
+    "check:generated-bindings": "node scripts/check-generated-bindings.mjs",
+    "check:gateway-error-codes": "node scripts/check-gateway-error-codes.mjs"
   },
   "dependencies": {
     "@codemirror/language": "^6.12.1",

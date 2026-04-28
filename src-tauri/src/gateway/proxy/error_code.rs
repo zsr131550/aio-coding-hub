@@ -1,6 +1,6 @@
 //! Usage: Centralized gateway error-code enum for stable classification/mapping.
-//! SYNC: When adding/removing variants, also update `src/constants/gatewayErrorCodes.ts`
-//!       (GatewayErrorCodes + GatewayErrorShortLabels + GatewayErrorDescriptions).
+//! SYNC: Enforced by `scripts/check-gateway-error-codes.mjs` (CI + precommit:full).
+//!       When adding/removing variants, also update `src/constants/gatewayErrorCodes.ts`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(in crate::gateway) enum GatewayErrorCode {
@@ -133,19 +133,47 @@ impl GatewayErrorCode {
 mod tests {
     use super::GatewayErrorCode;
 
-    #[test]
-    fn round_trip_known_error_codes() {
-        let codes = [
-            GatewayErrorCode::UpstreamTimeout,
-            GatewayErrorCode::StreamError,
-            GatewayErrorCode::ProviderRateLimited,
-            GatewayErrorCode::PortInUse,
-            GatewayErrorCode::RequestLogDropped,
-        ];
+    const ALL_CODES: &[GatewayErrorCode] = &[
+        GatewayErrorCode::AllProvidersUnavailable,
+        GatewayErrorCode::UpstreamAllFailed,
+        GatewayErrorCode::NoEnabledProvider,
+        GatewayErrorCode::UpstreamTimeout,
+        GatewayErrorCode::UpstreamConnectFailed,
+        GatewayErrorCode::Upstream5xx,
+        GatewayErrorCode::Upstream4xx,
+        GatewayErrorCode::UpstreamReadError,
+        GatewayErrorCode::UpstreamBodyReadError,
+        GatewayErrorCode::StreamError,
+        GatewayErrorCode::StreamAborted,
+        GatewayErrorCode::StreamIdleTimeout,
+        GatewayErrorCode::RequestAborted,
+        GatewayErrorCode::InternalError,
+        GatewayErrorCode::BodyTooLarge,
+        GatewayErrorCode::LargeBodyMissingModel,
+        GatewayErrorCode::InvalidCliKey,
+        GatewayErrorCode::InvalidBaseUrl,
+        GatewayErrorCode::PortInUse,
+        GatewayErrorCode::ResponseBuildError,
+        GatewayErrorCode::ProviderRateLimited,
+        GatewayErrorCode::ProviderCircuitOpen,
+        GatewayErrorCode::CliProxyDisabled,
+        GatewayErrorCode::CliProxyGuardError,
+        GatewayErrorCode::HttpClientInit,
+        GatewayErrorCode::AttemptLogChannelClosed,
+        GatewayErrorCode::AttemptLogEnqueueTimeout,
+        GatewayErrorCode::AttemptLogDropped,
+        GatewayErrorCode::RequestLogChannelClosed,
+        GatewayErrorCode::RequestLogEnqueueTimeout,
+        GatewayErrorCode::RequestLogWriteThroughOnBackpressure,
+        GatewayErrorCode::RequestLogWriteThroughRateLimited,
+        GatewayErrorCode::RequestLogDropped,
+        GatewayErrorCode::Fake200,
+    ];
 
-        for code in codes {
-            let parsed = GatewayErrorCode::from_str(code.as_str());
-            assert_eq!(parsed, Some(code));
+    #[test]
+    fn round_trip_all_error_codes() {
+        for &code in ALL_CODES {
+            assert_eq!(GatewayErrorCode::from_str(code.as_str()), Some(code));
         }
     }
 

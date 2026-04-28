@@ -1,32 +1,72 @@
 //! Usage: Gateway proxy failover loop (provider iteration + retries + upstream response handling).
+//!
+//! Submodules are organised into physical subdirectories by responsibility while
+//! staying flat in the Rust module tree (via `#[path]`) so that existing
+//! `use super::` imports inside each file continue to resolve against
+//! `failover_loop` itself.
+//!
+//! - `prepare/`  — provider selection, gating, credential resolution, protocol bridging
+//! - `attempt/`  — single-attempt execution, auth injection, retry decisions
+//! - `response/` — response routing, stream/non-stream handling, error/finalize
 
-mod attempt_auth;
-mod attempt_executor;
-mod attempt_record;
-mod claude_metadata_user_id_injection;
-mod claude_model_mapping;
-mod codex_chatgpt;
-mod codex_service_tier;
-mod codex_session_id_completion;
+// --- shared (stay in root) ---
 mod context;
-mod cx2cc_preparation;
 mod event_helpers;
-mod finalize;
 mod loop_helpers;
-mod oauth;
-mod provider_checks;
-mod provider_gate;
-mod provider_iterator;
-mod provider_limits;
 mod request_end_helpers;
+
+// --- prepare/ : provider selection & request shaping ---
+#[path = "prepare/claude_metadata_user_id_injection.rs"]
+mod claude_metadata_user_id_injection;
+#[path = "prepare/claude_model_mapping.rs"]
+mod claude_model_mapping;
+#[path = "prepare/codex_chatgpt.rs"]
+mod codex_chatgpt;
+#[path = "prepare/codex_service_tier.rs"]
+mod codex_service_tier;
+#[path = "prepare/codex_session_id_completion.rs"]
+mod codex_session_id_completion;
+#[path = "prepare/cx2cc_preparation.rs"]
+mod cx2cc_preparation;
+#[path = "prepare/oauth.rs"]
+mod oauth;
+#[path = "prepare/provider_checks.rs"]
+mod provider_checks;
+#[path = "prepare/provider_gate.rs"]
+mod provider_gate;
+#[path = "prepare/provider_iterator.rs"]
+mod provider_iterator;
+#[path = "prepare/provider_limits.rs"]
+mod provider_limits;
+#[path = "prepare/request_sanitizer.rs"]
 mod request_sanitizer;
-mod response_router;
+
+// --- attempt/ : single-attempt execution & retry ---
+#[path = "attempt/attempt_auth.rs"]
+mod attempt_auth;
+#[path = "attempt/attempt_executor.rs"]
+mod attempt_executor;
+#[path = "attempt/attempt_record.rs"]
+mod attempt_record;
+#[path = "attempt/retry_engine.rs"]
 mod retry_engine;
+#[path = "attempt/send.rs"]
 mod send;
+#[path = "attempt/send_timeout.rs"]
 mod send_timeout;
+
+// --- response/ : upstream response handling & finalization ---
+#[path = "response/finalize.rs"]
+mod finalize;
+#[path = "response/response_router.rs"]
+mod response_router;
+#[path = "response/success_event_stream.rs"]
 mod success_event_stream;
+#[path = "response/success_non_stream.rs"]
 mod success_non_stream;
+#[path = "response/thinking_signature_rectifier_400.rs"]
 mod thinking_signature_rectifier_400;
+#[path = "response/upstream_error.rs"]
 mod upstream_error;
 
 use crate::gateway::proxy::request_context::RequestContext;
