@@ -36,6 +36,7 @@ type SettingsPersistPatch = Partial<{
   auto_start: boolean;
   start_minimized: boolean;
   tray_enabled: boolean;
+  enable_debug_log: boolean;
 }>;
 
 const HOME_USAGE_PERIOD_OPTIONS: Array<{ value: HomeUsagePeriod; label: string }> = [
@@ -80,6 +81,8 @@ export type SettingsMainColumnProps = {
   setTrayEnabled: (next: boolean) => void;
   logRetentionDays: number;
   setLogRetentionDays: (next: number) => void;
+  enableDebugLog: boolean;
+  setEnableDebugLog: (next: boolean) => void;
   requestPersist: (patch: SettingsPersistPatch) => void;
 
   noticePermissionStatus: NoticePermissionStatus;
@@ -119,6 +122,8 @@ export function SettingsMainColumn({
   setTrayEnabled,
   logRetentionDays,
   setLogRetentionDays,
+  enableDebugLog,
+  setEnableDebugLog,
   requestPersist,
   noticePermissionStatus,
   requestingNoticePermission,
@@ -312,6 +317,16 @@ export function SettingsMainColumn({
                     />
                   </SettingsRow>
                 ))}
+                <SettingsRow label="调试日志">
+                    <Switch
+                      checked={enableDebugLog}
+                      onCheckedChange={(next) => {
+                        setEnableDebugLog(next);
+                        requestPersist({ enable_debug_log: next });
+                      }}
+                      disabled={settingsInputsDisabled}
+                    />
+                  </SettingsRow>
                 <SettingsRow label="日志保留">
                   <div className="flex items-center gap-2">
                     <Input

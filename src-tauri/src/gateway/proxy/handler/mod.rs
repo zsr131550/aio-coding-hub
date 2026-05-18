@@ -8,7 +8,7 @@ use super::is_claude_count_tokens_request;
 use super::logging::enqueue_request_log_placeholder;
 use super::request_context::RequestContext;
 
-use crate::gateway::events::emit_request_start_event;
+use crate::gateway::events::{emit_gateway_debug_log, emit_request_start_event};
 use crate::gateway::proxy::should_seed_in_progress_request_log;
 use crate::gateway::response_fixer;
 use crate::gateway::util::{new_trace_id, now_unix_millis};
@@ -220,6 +220,21 @@ pub(in crate::gateway) async fn proxy_impl(
             ctx.created_at,
         );
     }
+
+    emit_gateway_debug_log(
+        &ctx.state.app,
+        format!(
+            "[REQ] trace_id={} cli_key={} method={} path={} model={}\n  headers={:?}\n  body({} bytes)={}",
+            ctx.trace_id,
+            ctx.cli_key,
+            ctx.method_hint,
+            ctx.forwarded_path,
+            ctx.requested_model.as_deref().unwrap_or("-"),
+            ctx.headers,
+            ctx.body_bytes.len(),
+            String::from_utf8_lossy(&ctx.body_bytes),
+        ),
+    );
 
     if let Some(args) = build_in_progress_request_log_args(&ctx) {
         enqueue_request_log_placeholder(&ctx.state.app, &ctx.state.log_tx, args).await;

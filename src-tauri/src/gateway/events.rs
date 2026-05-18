@@ -213,6 +213,16 @@ pub(crate) fn emit_gateway_log(
     gated_emit(app, GATEWAY_LOG_EVENT_NAME, payload);
 }
 
+pub(crate) fn emit_gateway_debug_log(app: &tauri::AppHandle, message: String) {
+    let enabled = settings::read(app)
+        .map(|cfg| cfg.enable_debug_log)
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+    tracing::info!(target: "gateway_debug", "{message}");
+}
+
 fn should_emit_gateway_detail_event(app: &tauri::AppHandle) -> bool {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return true;

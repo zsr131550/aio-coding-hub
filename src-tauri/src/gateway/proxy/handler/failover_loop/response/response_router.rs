@@ -73,6 +73,19 @@ pub(super) async fn route_response(
         claude_model_mapping: prepared.claude_model_mapping.as_ref(),
     };
 
+    emit_gateway_debug_log(
+        &ctx.state.app,
+        format!(
+            "[RESP] trace_id={} status={} provider={} (id={}) is_stream={}\n  headers={:?}",
+            ctx.trace_id,
+            status.as_u16(),
+            prepared.provider_name_base,
+            prepared.provider_id,
+            is_event_stream(&response_headers),
+            response_headers,
+        ),
+    );
+
     if status.is_success() {
         // When upstream returns SSE, always route to the stream handler.
         // Previous logic required `anthropic_stream_requested` for cx2cc,

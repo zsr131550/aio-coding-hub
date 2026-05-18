@@ -60,6 +60,7 @@ pub(crate) struct SettingsUpdate {
     pub enable_billing_header_rectifier: Option<bool>,
     pub enable_claude_metadata_user_id_injection: Option<bool>,
     pub enable_cache_anomaly_monitor: Option<bool>,
+    pub enable_debug_log: Option<bool>,
     pub enable_task_complete_notify: Option<bool>,
     pub enable_notification_sound: Option<bool>,
     pub enable_response_fixer: Option<bool>,
@@ -166,6 +167,7 @@ pub(crate) struct SettingsView {
     pub enable_codex_session_id_completion: bool,
     pub enable_claude_metadata_user_id_injection: bool,
     pub enable_cache_anomaly_monitor: bool,
+    pub enable_debug_log: bool,
     pub enable_task_complete_notify: bool,
     pub enable_notification_sound: bool,
     pub enable_response_fixer: bool,
@@ -286,6 +288,7 @@ impl From<&settings::AppSettings> for SettingsView {
             enable_claude_metadata_user_id_injection: value
                 .enable_claude_metadata_user_id_injection,
             enable_cache_anomaly_monitor: value.enable_cache_anomaly_monitor,
+            enable_debug_log: value.enable_debug_log,
             enable_task_complete_notify: value.enable_task_complete_notify,
             enable_notification_sound: value.enable_notification_sound,
             enable_response_fixer: value.enable_response_fixer,
@@ -530,6 +533,7 @@ pub(crate) async fn settings_set_impl(
         enable_billing_header_rectifier,
         enable_claude_metadata_user_id_injection,
         enable_cache_anomaly_monitor,
+        enable_debug_log,
         enable_task_complete_notify,
         enable_notification_sound,
         enable_response_fixer,
@@ -684,6 +688,8 @@ pub(crate) async fn settings_set_impl(
                 .unwrap_or(previous.enable_claude_metadata_user_id_injection);
             let enable_cache_anomaly_monitor =
                 enable_cache_anomaly_monitor.unwrap_or(previous.enable_cache_anomaly_monitor);
+            let enable_debug_log =
+                enable_debug_log.unwrap_or(previous.enable_debug_log);
             let enable_task_complete_notify =
                 enable_task_complete_notify.unwrap_or(previous.enable_task_complete_notify);
             let enable_notification_sound =
@@ -748,6 +754,7 @@ pub(crate) async fn settings_set_impl(
                 enable_codex_session_id_completion: previous.enable_codex_session_id_completion,
                 enable_claude_metadata_user_id_injection,
                 enable_cache_anomaly_monitor,
+                enable_debug_log,
                 enable_task_complete_notify,
                 enable_notification_sound,
                 enable_response_fixer,

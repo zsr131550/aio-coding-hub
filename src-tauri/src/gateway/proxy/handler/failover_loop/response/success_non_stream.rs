@@ -524,7 +524,18 @@ pub(super) async fn handle_success_non_stream(
     };
 
     let mut body_bytes = match bytes_result {
-        Ok(b) => b,
+        Ok(b) => {
+            emit_gateway_debug_log(
+                &state.app,
+                format!(
+                    "[RESP_BODY] trace_id={} body({} bytes)={}",
+                    common.trace_id,
+                    b.len(),
+                    String::from_utf8_lossy(&b),
+                ),
+            );
+            b
+        }
         Err(kind) => {
             let error_code = if kind == "timeout" {
                 GatewayErrorCode::UpstreamTimeout.as_str()

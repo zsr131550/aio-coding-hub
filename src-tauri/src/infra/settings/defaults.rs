@@ -54,6 +54,7 @@ pub(super) const DEFAULT_ENABLE_BILLING_HEADER_RECTIFIER: bool = false;
 pub(super) const DEFAULT_ENABLE_CODEX_SESSION_ID_COMPLETION: bool = true;
 pub(super) const DEFAULT_ENABLE_CLAUDE_METADATA_USER_ID_INJECTION: bool = true;
 pub(super) const DEFAULT_ENABLE_CACHE_ANOMALY_MONITOR: bool = false;
+pub(super) const DEFAULT_ENABLE_DEBUG_LOG: bool = false;
 pub(super) const DEFAULT_ENABLE_TASK_COMPLETE_NOTIFY: bool = true;
 pub(super) const DEFAULT_ENABLE_NOTIFICATION_SOUND: bool = true;
 pub(super) const DEFAULT_ENABLE_RESPONSE_FIXER: bool = true;

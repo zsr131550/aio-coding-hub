@@ -29,6 +29,7 @@ export type PersistedSettings = {
   upstream_request_timeout_non_streaming_seconds: number;
   intercept_anthropic_warmup_requests: boolean;
   enable_thinking_signature_rectifier: boolean;
+  enable_debug_log: boolean;
   enable_response_fixer: boolean;
   response_fixer_fix_encoding: boolean;
   response_fixer_fix_sse_format: boolean;
@@ -59,6 +60,7 @@ export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
   upstream_request_timeout_non_streaming_seconds: 0,
   intercept_anthropic_warmup_requests: false,
   enable_thinking_signature_rectifier: true,
+  enable_debug_log: false,
   enable_response_fixer: true,
   response_fixer_fix_encoding: true,
   response_fixer_fix_sse_format: true,
@@ -86,6 +88,7 @@ const PERSISTED_SETTINGS_INPUT_KEYS = [
   "upstreamRequestTimeoutNonStreamingSeconds",
   "interceptAnthropicWarmupRequests",
   "enableThinkingSignatureRectifier",
+  "enableDebugLog",
   "enableResponseFixer",
   "responseFixerFixEncoding",
   "responseFixerFixSseFormat",
@@ -184,6 +187,7 @@ export function buildPersistedSettingsSnapshot(
     enable_thinking_signature_rectifier:
       settingsValue.enable_thinking_signature_rectifier ??
       fallback.enable_thinking_signature_rectifier,
+    enable_debug_log: settingsValue.enable_debug_log ?? fallback.enable_debug_log,
     enable_response_fixer: settingsValue.enable_response_fixer ?? fallback.enable_response_fixer,
     response_fixer_fix_encoding:
       settingsValue.response_fixer_fix_encoding ?? fallback.response_fixer_fix_encoding,
