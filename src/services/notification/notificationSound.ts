@@ -4,12 +4,13 @@
  * Usage:
  * - `setNotificationSoundEnabled(true/false)` to toggle
  * - `useNotificationSoundEnabled()` for React state
- * - `playNotificationSound()` to play ding.mp3
+ * - `playNotificationSound()` to play the bundled native notification sound
  */
 
 import { useSyncExternalStore } from "react";
 
 import { logToConsole } from "../consoleLog";
+import { desktopNotificationPlaySound } from "../desktop/notification";
 
 let enabled = true;
 type NotificationSoundListener = () => void;
@@ -48,19 +49,8 @@ export function useNotificationSoundEnabled(): boolean {
   return useSyncExternalStore(subscribeNotificationSoundEnabled, () => enabled);
 }
 
-let cachedAudio: HTMLAudioElement | null = null;
-
 export function playNotificationSound(): void {
-  try {
-    // Create a fresh Audio instance each time to avoid stale state issues in Tauri WebView.
-    // Reusing a cached instance can fail silently after the first play on some platforms.
-    const audio = cachedAudio ?? new Audio("/ding.mp3");
-    cachedAudio = audio;
-    audio.currentTime = 0;
-    audio.play()?.catch((err) => {
-      logToConsole("warn", "通知音效播放失败", { error: String(err) });
-    });
-  } catch (err) {
-    logToConsole("warn", "通知音效创建失败", { error: String(err) });
-  }
+  void desktopNotificationPlaySound().catch((err) => {
+    logToConsole("warn", "通知音效播放失败", { error: String(err) });
+  });
 }

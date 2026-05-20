@@ -178,6 +178,14 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async desktopNotificationPlaySound(): Promise<Result<boolean, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("desktop_notification_play_sound") };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async desktopNotificationRequestPermission(): Promise<
     Result<DesktopNotificationPermissionState, string>
   > {

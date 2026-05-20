@@ -3,6 +3,7 @@ import { tauriInvoke } from "../../../test/mocks/tauri";
 import {
   desktopNotificationIsPermissionGranted,
   desktopNotificationNotify,
+  desktopNotificationPlaySound,
   desktopNotificationRequestPermission,
 } from "../notification";
 
@@ -116,5 +117,13 @@ describe("services/desktop/notification", () => {
     ).rejects.toThrow("sound is too long");
 
     expect(tauriInvoke).not.toHaveBeenCalled();
+  });
+
+  it("delegates custom notification sound playback to the backend", async () => {
+    vi.mocked(tauriInvoke).mockResolvedValue(true as any);
+
+    await expect(desktopNotificationPlaySound()).resolves.toBeUndefined();
+
+    expect(tauriInvoke).toHaveBeenCalledWith("desktop_notification_play_sound");
   });
 });
