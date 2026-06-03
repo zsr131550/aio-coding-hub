@@ -1,6 +1,6 @@
 //! Usage: Gateway proxy module facade (exports the proxy handler + shared types).
 
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::HeaderMap;
 
 mod abort_guard;
 mod caches;
@@ -99,13 +99,6 @@ pub(super) fn is_internal_forwarded_request(headers: &HeaderMap) -> bool {
         .filter(|value| !value.is_empty())
         .map(|value| value == AIO_INTERNAL_FORWARD_VALUE)
         .unwrap_or(false)
-}
-
-pub(super) fn mark_internal_forwarded_request(headers: &mut HeaderMap) {
-    headers.insert(
-        AIO_INTERNAL_FORWARD_HEADER,
-        HeaderValue::from_static(AIO_INTERNAL_FORWARD_VALUE),
-    );
 }
 
 fn compute_observe_request(

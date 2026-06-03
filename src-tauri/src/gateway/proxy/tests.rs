@@ -1,7 +1,6 @@
 use super::{
     build_claude_probe_response_body, compute_observe_request, is_claude_count_tokens_request,
-    is_internal_forwarded_request, mark_internal_forwarded_request, should_observe_request,
-    should_seed_in_progress_request_log,
+    is_internal_forwarded_request, should_observe_request, should_seed_in_progress_request_log,
 };
 use axum::http::HeaderMap;
 use serde_json::json;
@@ -65,7 +64,10 @@ fn claude_probe_requests_are_not_observed() {
 #[test]
 fn internally_forwarded_claude_requests_are_not_observed() {
     let mut headers = HeaderMap::new();
-    mark_internal_forwarded_request(&mut headers);
+    headers.insert(
+        "x-aio-gateway-forwarded",
+        "aio-coding-hub".parse().expect("valid header"),
+    );
 
     assert!(is_internal_forwarded_request(&headers));
     assert!(!compute_observe_request(
@@ -79,7 +81,10 @@ fn internally_forwarded_claude_requests_are_not_observed() {
 #[test]
 fn internally_forwarded_codex_requests_are_not_observed() {
     let mut headers = HeaderMap::new();
-    mark_internal_forwarded_request(&mut headers);
+    headers.insert(
+        "x-aio-gateway-forwarded",
+        "aio-coding-hub".parse().expect("valid header"),
+    );
 
     assert!(is_internal_forwarded_request(&headers));
     assert!(!compute_observe_request(
