@@ -33,6 +33,24 @@ impl GatewayPluginHookName {
         }
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn from_str(raw: &str) -> Option<Self> {
+        match raw {
+            "gateway.request.received" => Some(Self::RequestReceived),
+            "gateway.request.afterBodyRead" => Some(Self::RequestAfterBodyRead),
+            "gateway.request.beforeProviderResolution" => {
+                Some(Self::RequestBeforeProviderResolution)
+            }
+            "gateway.request.beforeSend" => Some(Self::RequestBeforeSend),
+            "gateway.response.headers" => Some(Self::ResponseHeaders),
+            "gateway.response.chunk" => Some(Self::ResponseChunk),
+            "gateway.response.after" => Some(Self::ResponseAfter),
+            "gateway.error" => Some(Self::Error),
+            "log.beforePersist" => Some(Self::LogBeforePersist),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_request_hook(self) -> bool {
         matches!(
             self,
@@ -398,6 +416,26 @@ mod tests {
     use super::*;
     use axum::body::Bytes;
     use axum::http::{HeaderMap, HeaderValue, Method};
+
+    #[test]
+    fn hook_name_from_str_maps_all_known_hook_names() {
+        let hooks = [
+            GatewayPluginHookName::RequestReceived,
+            GatewayPluginHookName::RequestAfterBodyRead,
+            GatewayPluginHookName::RequestBeforeProviderResolution,
+            GatewayPluginHookName::RequestBeforeSend,
+            GatewayPluginHookName::ResponseHeaders,
+            GatewayPluginHookName::ResponseChunk,
+            GatewayPluginHookName::ResponseAfter,
+            GatewayPluginHookName::Error,
+            GatewayPluginHookName::LogBeforePersist,
+        ];
+
+        for hook in hooks {
+            assert_eq!(GatewayPluginHookName::from_str(hook.as_str()), Some(hook));
+        }
+        assert_eq!(GatewayPluginHookName::from_str("gateway.unknown"), None);
+    }
 
     fn headers() -> HeaderMap {
         let mut headers = HeaderMap::new();

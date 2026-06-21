@@ -5,3 +5,4 @@ pub(crate) mod context;
 pub(crate) mod contract;
 pub(crate) mod permissions;
 pub(crate) mod pipeline;
+pub(crate) mod registry;
