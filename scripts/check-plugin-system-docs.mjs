@@ -199,7 +199,15 @@ const requiredDocs = [
   },
   {
     path: "docs/plugins/reference/compatibility.md",
-    phrases: ["SemVer", "pluginApi", "platforms", "WASM ABI"],
+    phrases: [
+      "SemVer",
+      "pluginApi",
+      "platforms",
+      "WASM ABI",
+      "Plugin API v1 remains externally compatible in 0.62",
+      "0.62 does not add public provider plugin APIs",
+      "0.62 keeps third-party JavaScript and WebView plugin execution unsupported",
+    ],
   },
 ];
 
