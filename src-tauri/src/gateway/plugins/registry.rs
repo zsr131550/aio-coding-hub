@@ -1,7 +1,5 @@
 //! Usage: Internal descriptors for gateway plugin hook metadata.
 
-#![allow(dead_code)]
-
 use super::context::GatewayPluginHookName;
 use super::contract::{hook_contract, HookKind};
 

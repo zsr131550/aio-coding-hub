@@ -1,7 +1,9 @@
 //! Usage: Gateway plugin permission trimming and result enforcement.
 
 use super::context::{GatewayHookResult, GatewayPluginHookName};
+use super::mutation;
 use super::pipeline::GatewayPluginAuditEvent;
+use super::registry::HookRegistry;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -22,6 +24,10 @@ impl GatewayPluginError {
 
     #[cfg(test)]
     pub(crate) fn code(&self) -> &'static str {
+        self.code_for_logging()
+    }
+
+    pub(crate) fn code_for_logging(&self) -> &'static str {
         self.code
     }
 
@@ -46,7 +52,7 @@ impl GatewayPluginError {
 
 impl fmt::Display for GatewayPluginError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
+        write!(f, "{}: {}", self.code_for_logging(), self.message)
     }
 }
 
@@ -90,83 +96,17 @@ pub(crate) fn enforce_hook_result_permissions(
     permissions: &[String],
     result: &GatewayHookResult,
 ) -> Result<(), GatewayPluginError> {
-    if result.request_body.is_some() {
-        require_hook(
-            hook_name.is_request_hook(),
-            "request body mutation",
-            hook_name,
-        )?;
-        require_permission(permissions, "request.body.write")?;
-    }
-    if result.response_body.is_some() {
-        require_hook(
-            matches!(
-                hook_name,
-                GatewayPluginHookName::ResponseAfter | GatewayPluginHookName::Error
-            ),
-            "response body mutation",
-            hook_name,
-        )?;
-        require_permission(permissions, "response.body.write")?;
-    }
-    if result.stream_chunk.is_some() {
-        require_hook(
-            matches!(hook_name, GatewayPluginHookName::ResponseChunk),
-            "stream chunk mutation",
-            hook_name,
-        )?;
-        require_permission(permissions, "stream.modify")?;
-    }
-    if !result.headers.is_empty() {
-        if hook_name.is_request_hook() {
-            require_permission(permissions, "request.header.write")?;
-        } else if hook_name.is_response_hook() {
-            require_permission(permissions, "response.header.write")?;
-        } else {
-            return Err(GatewayPluginError::new(
-                "PLUGIN_PERMISSION_DENIED",
-                format!("headers cannot be mutated in {}", hook_name.as_str()),
-            ));
-        }
-    }
-    if result.log_message.is_some() {
-        require_hook(
-            matches!(hook_name, GatewayPluginHookName::LogBeforePersist),
-            "log mutation",
-            hook_name,
-        )?;
-        require_permission(permissions, "log.redact")?;
-    }
-    Ok(())
-}
-
-fn require_permission(
-    permissions: &[String],
-    permission: &'static str,
-) -> Result<(), GatewayPluginError> {
-    if permissions.iter().any(|item| item == permission) {
-        Ok(())
-    } else {
-        Err(GatewayPluginError::new(
-            "PLUGIN_PERMISSION_DENIED",
-            format!("missing plugin permission: {permission}"),
-        ))
-    }
-}
-
-fn require_hook(
-    allowed: bool,
-    operation: &'static str,
-    hook_name: GatewayPluginHookName,
-) -> Result<(), GatewayPluginError> {
-    if allowed {
-        Ok(())
-    } else {
-        Err(GatewayPluginError::new(
-            "PLUGIN_PERMISSION_DENIED",
-            format!("{operation} is not allowed in {}", hook_name.as_str()),
-        ))
-    }
+    let descriptor = HookRegistry::new().descriptor(hook_name).ok_or_else(|| {
+        GatewayPluginError::new(
+            "PLUGIN_UNKNOWN_HOOK",
+            format!("unknown hook: {}", hook_name.as_str()),
+        )
+    })?;
+    debug_assert!(descriptor
+        .read_permissions
+        .iter()
+        .all(|permission| descriptor.allows_read_permission(permission)));
+    mutation::enforce_descriptor_permissions(descriptor, permissions, result)
 }
 
 #[cfg(test)]

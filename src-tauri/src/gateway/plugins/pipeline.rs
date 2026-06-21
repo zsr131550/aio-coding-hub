@@ -5,7 +5,9 @@ use super::context::{
     GatewayRequestHookInput, GatewayResponseHookInput, GatewayStreamHookInput,
     GatewayVisibleHookContext,
 };
-use super::permissions::{enforce_hook_result_permissions, GatewayPluginError};
+use super::permissions::{
+    enforce_hook_result_permissions as enforce_descriptor_result_permissions, GatewayPluginError,
+};
 use crate::domain::plugins::{PluginDetail, PluginStatus};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
@@ -283,7 +285,7 @@ impl GatewayPluginPipeline {
                 }
             };
 
-            if let Err(err) = enforce_hook_result_permissions(
+            if let Err(err) = enforce_descriptor_result_permissions(
                 input.hook_name,
                 &plugin.granted_permissions,
                 &result,
@@ -403,7 +405,7 @@ impl GatewayPluginPipeline {
                 }
             };
 
-            if let Err(err) = enforce_hook_result_permissions(
+            if let Err(err) = enforce_descriptor_result_permissions(
                 input.hook_name,
                 &plugin.granted_permissions,
                 &result,
@@ -508,9 +510,11 @@ impl GatewayPluginPipeline {
                 }
             };
 
-            if let Err(err) =
-                enforce_hook_result_permissions(hook_name, &plugin.granted_permissions, &result)
-            {
+            if let Err(err) = enforce_descriptor_result_permissions(
+                hook_name,
+                &plugin.granted_permissions,
+                &result,
+            ) {
                 self.record_failure(&plugin.summary.plugin_id);
                 audit_events.push(failed_event(plugin, hook_name, &err.to_string()));
                 if failure_policy(plugin, hook_name) == FailurePolicy::FailClosed {
@@ -606,9 +610,11 @@ impl GatewayPluginPipeline {
                 }
             };
 
-            if let Err(err) =
-                enforce_hook_result_permissions(hook_name, &plugin.granted_permissions, &result)
-            {
+            if let Err(err) = enforce_descriptor_result_permissions(
+                hook_name,
+                &plugin.granted_permissions,
+                &result,
+            ) {
                 self.record_failure(&plugin.summary.plugin_id);
                 audit_events.push(failed_event(plugin, hook_name, &err.to_string()));
                 if failure_policy(plugin, hook_name) == FailurePolicy::FailClosed {
