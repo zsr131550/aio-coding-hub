@@ -386,7 +386,7 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                 </div>
 
                 {isInProgress ? (
-                  <div className="grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-9">
+                  <div className="grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-12">
                     <div
                       className={cn(
                         LIVE_METRIC_CARD_BASE,
@@ -401,7 +401,7 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                       className={cn(
                         LIVE_METRIC_CARD_BASE,
                         LIVE_METRIC_CARD_SURFACE,
-                        "sm:col-span-3"
+                        "sm:col-span-2"
                       )}
                     >
                       <div className={LIVE_METRIC_LABEL}>尝试次数</div>
@@ -413,7 +413,7 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                       className={cn(
                         LIVE_METRIC_CARD_BASE,
                         LIVE_METRIC_CARD_SURFACE,
-                        "sm:col-span-3"
+                        "sm:col-span-7"
                       )}
                     >
                       <div className={LIVE_METRIC_LABEL}>当前链路</div>
