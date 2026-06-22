@@ -75,6 +75,16 @@ function requireArray(path, value) {
   return value;
 }
 
+function requireUniqueArray(path, values) {
+  const seen = new Set();
+  for (const value of values) {
+    if (seen.has(value)) {
+      failures.push(`${path} contains duplicate ${value}`);
+    }
+    seen.add(value);
+  }
+}
+
 function requireOneOf(path, value, allowed) {
   if (!allowed.includes(value)) {
     failures.push(`${path} must be one of ${allowed.join(", ")}`);
@@ -108,6 +118,8 @@ if (contract) {
     }
     const readPermissions = requireArray(`hookMatrix.${hook}.readPermissions`, entry.readPermissions);
     const writePermissions = requireArray(`hookMatrix.${hook}.writePermissions`, entry.writePermissions);
+    requireUniqueArray(`hookMatrix.${hook}.readPermissions`, readPermissions);
+    requireUniqueArray(`hookMatrix.${hook}.writePermissions`, writePermissions);
     const permissionDependencies =
       requireObject(`hookMatrix.${hook}.permissionDependencies`, entry.permissionDependencies) ?? {};
     for (const [permission, requires] of Object.entries(permissionDependencies)) {
@@ -126,8 +138,10 @@ if (contract) {
         }
       }
     }
-    requireArray(`hookMatrix.${hook}.mutationFields`, entry.mutationFields);
-    requireArray(`hookMatrix.${hook}.contextFields`, entry.contextFields);
+    const mutationFields = requireArray(`hookMatrix.${hook}.mutationFields`, entry.mutationFields);
+    const contextFields = requireArray(`hookMatrix.${hook}.contextFields`, entry.contextFields);
+    requireUniqueArray(`hookMatrix.${hook}.mutationFields`, mutationFields);
+    requireUniqueArray(`hookMatrix.${hook}.contextFields`, contextFields);
     if (entry.defaultFailurePolicy !== contract.defaultFailurePolicy) {
       failures.push(`hookMatrix.${hook}.defaultFailurePolicy must equal defaultFailurePolicy`);
     }

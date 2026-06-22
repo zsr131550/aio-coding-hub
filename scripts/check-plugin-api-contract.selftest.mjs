@@ -228,3 +228,47 @@ if (
     `expected hookMatrix consistency failure, got status ${inconsistentHookMetadataResult.status}\n${inconsistentHookMetadataResult.stderr}`
   );
 }
+
+const duplicateHookMetadataRoot = makeRoot("duplicate-hook-metadata");
+writeJson(duplicateHookMetadataRoot, "docs/plugins/plugin-api-v1-contract.json", {
+  apiVersion: "1.0.0",
+  defaultHookTimeoutMs: 150,
+  defaultFailurePolicy: "fail-open",
+  activeHooks: ["gateway.request.afterBodyRead"],
+  reservedHooks: ["gateway.response.headers"],
+  activeMutationFields: ["requestBody"],
+  configSchemaTypes: ["object"],
+  activePermissions: ["request.body.read"],
+  reservedPermissions: ["network.fetch"],
+  hookMatrix: {
+    "gateway.request.afterBodyRead": {
+      phase: "after request body read and before upstream provider send",
+      kind: "request",
+      status: "active",
+      defaultFailurePolicy: "fail-open",
+      timeoutMs: 150,
+      reservedHeaderPolicy: "block-gateway-owned",
+      readPermissions: ["request.body.read", "request.body.read"],
+      writePermissions: [],
+      permissionDependencies: {},
+      mutationFields: ["requestBody"],
+      contextFields: ["traceId"],
+    },
+  },
+  communityRuntimes: ["declarativeRules"],
+  policyGatedRuntimes: ["wasm"],
+  officialRuntimes: ["native:privacyFilter"],
+});
+writePassingScaffold(duplicateHookMetadataRoot);
+
+const duplicateHookMetadataResult = runCheck(duplicateHookMetadataRoot);
+if (
+  duplicateHookMetadataResult.status === 0 ||
+  !duplicateHookMetadataResult.stderr.includes(
+    "hookMatrix.gateway.request.afterBodyRead.readPermissions contains duplicate request.body.read"
+  )
+) {
+  throw new Error(
+    `expected hookMatrix duplicate metadata failure, got status ${duplicateHookMetadataResult.status}\n${duplicateHookMetadataResult.stderr}`
+  );
+}
