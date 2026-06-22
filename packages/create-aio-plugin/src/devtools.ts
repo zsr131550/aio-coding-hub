@@ -242,7 +242,18 @@ export function doctorPluginFiles(files: ScaffoldFiles, options: DoctorOptions =
     return { ok: false, diagnostics };
   }
 
-  const validation = validateManifest(manifest);
+  let validation: ValidationResult;
+  try {
+    validation = validateManifest(manifest);
+  } catch (error) {
+    validation = {
+      ok: false,
+      error: {
+        code: "PLUGIN_INVALID_MANIFEST",
+        message: errorMessage(error),
+      },
+    };
+  }
   if (!validation.ok) {
     diagnostics.push({
       severity: "error",
@@ -253,8 +264,11 @@ export function doctorPluginFiles(files: ScaffoldFiles, options: DoctorOptions =
     });
   }
 
-  if (manifest.runtime.kind === "declarativeRules") {
-    for (const rulePath of manifest.runtime.rules) {
+  const runtimeKind = manifestRuntimeKind(manifest);
+  const runtime = manifest.runtime;
+
+  if (runtimeKind === "declarativeRules" && runtime.kind === "declarativeRules") {
+    for (const rulePath of runtime.rules) {
       if (!files[rulePath]) {
         diagnostics.push({
           severity: "error",
@@ -267,7 +281,7 @@ export function doctorPluginFiles(files: ScaffoldFiles, options: DoctorOptions =
     }
   }
 
-  if (manifest.runtime.kind === "wasm") {
+  if (runtimeKind === "wasm") {
     const entry = manifest.entry ?? "plugin.wasm";
     if (!files[entry]) {
       diagnostics.push({
@@ -290,15 +304,12 @@ export function doctorPluginFiles(files: ScaffoldFiles, options: DoctorOptions =
     diagnostics.push(...strictRuleDiagnostics(files, manifest));
   }
 
+  const manifestSummary = doctorManifestSummary(manifest, runtimeKind);
+
   return {
     ok: !hasErrorDiagnostics(diagnostics),
     diagnostics,
-    manifest: {
-      id: manifest.id,
-      name: manifest.name,
-      version: manifest.version,
-      runtime: manifest.runtime.kind,
-    },
+    ...(manifestSummary ? { manifest: manifestSummary } : {}),
   };
 }
 
@@ -310,8 +321,44 @@ function hasErrorDiagnostics(diagnostics: readonly PluginDiagnostic[]): boolean 
   return diagnostics.some((diagnostic) => diagnostic.severity === "error");
 }
 
-function strictRuleDiagnostics(_files: ScaffoldFiles, _manifest: PluginManifest): PluginDiagnostic[] {
+function strictRuleDiagnostics(
+  _files: ScaffoldFiles,
+  _manifest: PluginManifest
+): PluginDiagnostic[] {
   return [];
+}
+
+function manifestRuntimeKind(
+  manifest: Partial<PluginManifest>
+): PluginManifest["runtime"]["kind"] | null {
+  const runtime = asRecord(manifest.runtime);
+  if (runtime?.kind === "declarativeRules" && Array.isArray(runtime.rules)) {
+    return "declarativeRules";
+  }
+  if (runtime?.kind === "wasm") {
+    return "wasm";
+  }
+  return null;
+}
+
+function doctorManifestSummary(
+  manifest: Partial<PluginManifest>,
+  runtimeKind: PluginManifest["runtime"]["kind"] | null
+): DoctorResult["manifest"] | undefined {
+  if (
+    typeof manifest.id !== "string" ||
+    typeof manifest.name !== "string" ||
+    typeof manifest.version !== "string" ||
+    !runtimeKind
+  ) {
+    return undefined;
+  }
+  return {
+    id: manifest.id,
+    name: manifest.name,
+    version: manifest.version,
+    runtime: runtimeKind,
+  };
 }
 
 function walkPluginDirectory(root: string, dir: string, files: ScaffoldFiles): void {

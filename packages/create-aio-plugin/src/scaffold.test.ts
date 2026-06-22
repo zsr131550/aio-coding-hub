@@ -217,6 +217,19 @@ describe("create-aio-plugin scaffold", () => {
     ]);
   });
 
+  it("doctor reports an invalid manifest diagnostic for incomplete plugin.json", () => {
+    const result = doctorPluginFiles({ "plugin.json": "{}\n" });
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_INVALID_ID",
+        path: "plugin.json",
+      }),
+    ]);
+  });
+
   it("doctor reports missing rule files and policy-gated wasm runtime", () => {
     const ruleFiles = createPluginScaffold({
       id: "acme.redactor",
@@ -258,10 +271,7 @@ describe("create-aio-plugin scaffold", () => {
 
   it("doctor command reads a real plugin directory and returns non-zero for errors", () => {
     const root = mkdtempSync(join(tmpdir(), "aio-plugin-doctor-"));
-    writeScaffold(
-      root,
-      createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" })
-    );
+    writeScaffold(root, createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" }));
     const output: string[] = [];
 
     const directoryResult = doctorPluginDirectory(root);
