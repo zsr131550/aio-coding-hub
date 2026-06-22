@@ -4,12 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CLIS } from "../../constants/clis";
 import type { CliKey } from "../../services/providers/providers";
 import { Button } from "../../ui/Button";
 import { Dialog } from "../../ui/Dialog";
 import { EmptyState } from "../../ui/EmptyState";
 import { Input } from "../../ui/Input";
+import { Select } from "../../ui/Select";
 import { Spinner } from "../../ui/Spinner";
+import { Switch } from "../../ui/Switch";
 import { ProviderEditorDialog } from "./ProviderEditorDialog";
 import { SortableProviderCard } from "./SortableProviderCard";
 import { SortableProviderOrderItem } from "./SortableProviderOrderItem";
@@ -26,6 +29,11 @@ type PendingProvidersScrollRestore = {
   observedRefresh: boolean;
 };
 
+function getRouteRowEnabled(row: unknown) {
+  if (!row || typeof row !== "object" || !("enabled" in row)) return true;
+  return typeof row.enabled === "boolean" ? row.enabled : true;
+}
+
 export function ProvidersView({ activeCli }: ProvidersViewProps) {
   const model = useProvidersViewDataModel(activeCli);
   const {
@@ -33,6 +41,45 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
     codexProviders,
     providersLoading,
     providersRefreshing,
+    sortModes,
+    sortModesLoading,
+    activeModeId,
+    routeDraftSelection,
+    selectedSortMode,
+    selectedRouteLabel,
+    currentRouteActive,
+    activatingRoute,
+    pendingRouteActivation,
+    setPendingRouteActivation,
+    confirmPendingRouteActivation,
+    providersById,
+    routeRows,
+    routeProviderIdSet,
+    callableRouteCount,
+    routeLoading,
+    routeSaving,
+    createModeDialogOpen,
+    setCreateModeDialogOpen,
+    createModeName,
+    setCreateModeName,
+    createModeSaving,
+    renameModeDialogOpen,
+    setRenameModeDialogOpen,
+    renameModeName,
+    setRenameModeName,
+    renameModeSaving,
+    deleteModeTarget,
+    setDeleteModeTarget,
+    deleteModeDeleting,
+    selectRouteDraft,
+    addProviderToCurrentRoute,
+    removeProviderFromCurrentRoute,
+    setModeProviderEnabled,
+    handleRouteDragEnd,
+    createSortMode,
+    renameSortMode,
+    deleteSortMode,
+    setCurrentRouteActive,
     filteredProviders,
     tagCounts,
     selectedTags,
@@ -51,7 +98,6 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
     resetCircuit,
     copyTerminalLaunchCommand,
     duplicateProvider,
-    handleDragEnd,
     handleProviderCardDragEnd,
     sensors,
     createDialogState,
@@ -69,9 +115,11 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
     testProviderAvailability,
     testingByProviderId,
   } = model;
-  const enabledProviders = providers.filter((provider) => provider.enabled);
   const providersListScrollRef = useRef<HTMLDivElement | null>(null);
   const pendingProvidersScrollRestoreRef = useRef<PendingProvidersScrollRestore | null>(null);
+  const routeDraftValue =
+    routeDraftSelection.kind === "default" ? "default" : `mode:${routeDraftSelection.modeId}`;
+  const selectedCliName = CLIS.find((cli) => cli.key === activeCli)?.name ?? activeCli;
   const [clearUsageStatsOnDelete, setClearUsageStatsOnDelete] = useState(false);
 
   useEffect(() => {
@@ -170,7 +218,7 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
                 })}
               </>
             )}
-            <span className="text-[11px] text-muted-foreground">路由顺序：右侧拖拽（上→下）</span>
+            <span className="text-[11px] text-muted-foreground">资源池展示顺序：左侧拖拽保存</span>
             <span className="text-[11px] text-muted-foreground">
               共 {filteredProviders.length} / {providers.length} 条
             </span>
@@ -226,7 +274,7 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
           </div>
         </div>
 
-        <div className="grid gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_280px] xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="grid gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_400px]">
           <div
             ref={providersListScrollRef}
             className="lg:min-h-0 lg:overflow-auto lg:pr-1 scrollbar-overlay"
@@ -237,14 +285,14 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
                 加载中…
               </div>
             ) : providers.length === 0 ? (
-              <EmptyState title="暂无 Provider" description="请点击「添加」新增。" />
+              <EmptyState title="暂无供应商" description="请点击「添加」新增。" />
             ) : filteredProviders.length === 0 ? (
               <EmptyState
-                title="无匹配的 Provider"
+                title="无匹配的供应商"
                 description={
                   selectedTags.size > 0 || providerSearch.trim()
                     ? "当前名称搜索或标签筛选无结果，请调整筛选条件。"
-                    : "当前列表无可展示的 Provider。"
+                    : "当前列表无可展示的供应商。"
                 }
               />
             ) : (
@@ -258,38 +306,65 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
                   strategy={verticalListSortingStrategy}
                 >
                   <div className="space-y-3">
-                    {filteredProviders.map((provider) => (
-                      <SortableProviderCard
-                        key={provider.id}
-                        provider={provider}
-                        sourceProviderName={
-                          provider.source_provider_id != null
-                            ? (sourceProviderNamesById[provider.source_provider_id] ?? null)
-                            : provider.bridge_type === "cx2cc"
-                              ? "当前 AIO 服务 Codex 网关"
-                              : undefined
-                        }
-                        sourceProvider={
-                          provider.source_provider_id != null
-                            ? (sourceProvidersById[provider.source_provider_id] ?? null)
-                            : null
-                        }
-                        circuit={circuitByProviderId[provider.id] ?? null}
-                        circuitResetting={Boolean(circuitResetting[provider.id]) || circuitLoading}
-                        onToggleEnabled={toggleProviderEnabled}
-                        onResetCircuit={resetCircuit}
-                        onCopyTerminalLaunchCommand={
-                          provider.cli_key === "claude" ? copyTerminalLaunchCommand : undefined
-                        }
-                        terminalLaunchCopying={Boolean(terminalCopyingByProviderId[provider.id])}
-                        onTestAvailability={testProviderAvailability}
-                        testAvailabilityLoading={Boolean(testingByProviderId[provider.id])}
-                        onDuplicate={duplicateProvider}
-                        duplicateLoading={Boolean(duplicatingByProviderId[provider.id])}
-                        onEdit={setEditTarget}
-                        onDelete={openDeleteDialog}
-                      />
-                    ))}
+                    {filteredProviders.map((provider) => {
+                      const joined = routeProviderIdSet.has(provider.id);
+                      return (
+                        <SortableProviderCard
+                          key={provider.id}
+                          provider={provider}
+                          trailing={
+                            joined ? (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                className="px-2 py-1 text-[11px]"
+                                disabled
+                              >
+                                已加入
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                className="px-2 py-1 text-[11px]"
+                                disabled={routeSaving}
+                                onClick={() => addProviderToCurrentRoute(provider.id)}
+                              >
+                                加入
+                              </Button>
+                            )
+                          }
+                          sourceProviderName={
+                            provider.source_provider_id != null
+                              ? (sourceProviderNamesById[provider.source_provider_id] ?? null)
+                              : provider.bridge_type === "cx2cc"
+                                ? "当前 AIO 服务 Codex 网关"
+                                : undefined
+                          }
+                          sourceProvider={
+                            provider.source_provider_id != null
+                              ? (sourceProvidersById[provider.source_provider_id] ?? null)
+                              : null
+                          }
+                          circuit={circuitByProviderId[provider.id] ?? null}
+                          circuitResetting={
+                            Boolean(circuitResetting[provider.id]) || circuitLoading
+                          }
+                          onToggleEnabled={toggleProviderEnabled}
+                          onResetCircuit={resetCircuit}
+                          onCopyTerminalLaunchCommand={
+                            provider.cli_key === "claude" ? copyTerminalLaunchCommand : undefined
+                          }
+                          terminalLaunchCopying={Boolean(terminalCopyingByProviderId[provider.id])}
+                          onTestAvailability={testProviderAvailability}
+                          testAvailabilityLoading={Boolean(testingByProviderId[provider.id])}
+                          onDuplicate={duplicateProvider}
+                          duplicateLoading={Boolean(duplicatingByProviderId[provider.id])}
+                          onEdit={setEditTarget}
+                          onDelete={openDeleteDialog}
+                        />
+                      );
+                    })}
                   </div>
                 </SortableContext>
               </DndContext>
@@ -305,35 +380,145 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
                 <div className="min-w-0">
                   <div className="text-sm font-semibold text-foreground">调用顺序</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    调用顺序按照从上到下依次调用
+                    {selectedRouteLabel} 按照从上到下依次调用
                   </div>
                 </div>
                 <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
-                  {enabledProviders.length}
+                  {callableRouteCount}/{routeRows.length}
                 </span>
               </div>
 
+              <div className="mt-3 space-y-2">
+                <Select
+                  value={routeDraftValue}
+                  onChange={(event) => selectRouteDraft(event.currentTarget.value)}
+                  disabled={sortModesLoading || routeSaving}
+                  aria-label="选择调用顺序"
+                  className="h-9"
+                >
+                  <option value="default">Default{activeModeId == null ? "（当前）" : ""}</option>
+                  {sortModes.map((mode) => (
+                    <option key={mode.id} value={`mode:${mode.id}`}>
+                      {mode.name}
+                      {activeModeId === mode.id ? "（当前）" : ""}
+                    </option>
+                  ))}
+                </Select>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="h-8"
+                      onClick={() => setCreateModeDialogOpen(true)}
+                    >
+                      新建模板
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="h-8"
+                      disabled={!selectedSortMode}
+                      onClick={() => setRenameModeDialogOpen(true)}
+                    >
+                      重命名
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      className="h-8"
+                      disabled={!selectedSortMode}
+                      onClick={() => {
+                        if (selectedSortMode) setDeleteModeTarget(selectedSortMode);
+                      }}
+                    >
+                      删除
+                    </Button>
+                  </div>
+                  <Button
+                    variant={currentRouteActive ? "secondary" : "primary"}
+                    size="sm"
+                    className="ml-auto h-8"
+                    disabled={currentRouteActive || activatingRoute || sortModesLoading}
+                    onClick={setCurrentRouteActive}
+                    title={currentRouteActive ? "当前路由策略" : "设为当前路由策略"}
+                  >
+                    {activatingRoute ? "切换中…" : "设为当前路由策略"}
+                  </Button>
+                </div>
+              </div>
+
               <div className="mt-3 lg:min-h-0 lg:flex-1 lg:overflow-auto lg:pr-1 scrollbar-overlay">
-                {enabledProviders.length === 0 ? (
-                  <div className="text-sm text-muted-foreground">当前没有已启用的 Provider。</div>
+                {routeLoading ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Spinner size="sm" />
+                    加载调用顺序…
+                  </div>
+                ) : routeRows.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+                    当前方案没有供应商，请从左侧资源池加入。
+                  </div>
                 ) : (
                   <DndContext
                     sensors={sensors}
                     collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
+                    onDragEnd={handleRouteDragEnd}
                   >
                     <SortableContext
-                      items={enabledProviders.map((p) => p.id)}
+                      items={routeRows.map((row) => row.provider_id)}
                       strategy={verticalListSortingStrategy}
                     >
                       <div className="space-y-2">
-                        {enabledProviders.map((provider, index) => (
-                          <SortableProviderOrderItem
-                            key={provider.id}
-                            provider={provider}
-                            index={index}
-                          />
-                        ))}
+                        {routeRows.map((row, index) => {
+                          const provider = providersById[row.provider_id] ?? null;
+                          const providerLabel = provider?.name?.trim()
+                            ? provider.name
+                            : `未知 Provider #${provider?.id ?? row.provider_id}`;
+                          const routeRowEnabled = getRouteRowEnabled(row);
+                          const showModeProviderSwitch = routeDraftSelection.kind === "mode";
+                          return (
+                            <SortableProviderOrderItem
+                              key={row.provider_id}
+                              provider={provider}
+                              providerId={row.provider_id}
+                              index={index}
+                              disabled={routeSaving}
+                              trailing={
+                                <div className="flex shrink-0 items-center gap-2">
+                                  {showModeProviderSwitch ? (
+                                    <div
+                                      className="flex shrink-0 items-center gap-1.5"
+                                      onPointerDown={(event) => event.stopPropagation()}
+                                    >
+                                      <span className="text-[11px] text-muted-foreground">
+                                        {routeRowEnabled ? "启用" : "关闭"}
+                                      </span>
+                                      <Switch
+                                        checked={routeRowEnabled}
+                                        onCheckedChange={(checked) =>
+                                          void setModeProviderEnabled(row.provider_id, checked)
+                                        }
+                                        size="sm"
+                                        disabled={routeSaving}
+                                        aria-label={`${providerLabel} 在模板中启用`}
+                                      />
+                                    </div>
+                                  ) : null}
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    className="h-7 px-2 text-xs"
+                                    disabled={routeSaving}
+                                    onPointerDown={(event) => event.stopPropagation()}
+                                    onClick={() => removeProviderFromCurrentRoute(row.provider_id)}
+                                  >
+                                    移出
+                                  </Button>
+                                </div>
+                              }
+                            />
+                          );
+                        })}
                       </div>
                     </SortableContext>
                   </DndContext>
@@ -418,6 +603,127 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
               {deleting ? "删除中…" : "确认删除"}
             </Button>
           </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={createModeDialogOpen}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && createModeSaving) return;
+          setCreateModeDialogOpen(nextOpen);
+        }}
+        title="新建排序模板"
+        description={`为 ${selectedCliName} 新建一个可编辑调用顺序。`}
+        className="max-w-lg"
+      >
+        <div className="space-y-4">
+          <Input
+            value={createModeName}
+            onChange={(event) => setCreateModeName(event.currentTarget.value)}
+            placeholder="模板名称"
+            aria-label="模板名称"
+            maxLength={32}
+          />
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              onClick={() => setCreateModeDialogOpen(false)}
+              variant="secondary"
+              disabled={createModeSaving}
+            >
+              取消
+            </Button>
+            <Button onClick={createSortMode} variant="primary" disabled={createModeSaving}>
+              {createModeSaving ? "创建中…" : "创建"}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={renameModeDialogOpen}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && renameModeSaving) return;
+          setRenameModeDialogOpen(nextOpen);
+        }}
+        title="重命名排序模板"
+        description={selectedSortMode ? `当前模板：${selectedSortMode.name}` : undefined}
+        className="max-w-lg"
+      >
+        <div className="space-y-4">
+          <Input
+            value={renameModeName}
+            onChange={(event) => setRenameModeName(event.currentTarget.value)}
+            placeholder="模板名称"
+            aria-label="模板名称"
+            maxLength={32}
+          />
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              onClick={() => setRenameModeDialogOpen(false)}
+              variant="secondary"
+              disabled={renameModeSaving}
+            >
+              取消
+            </Button>
+            <Button onClick={renameSortMode} variant="primary" disabled={renameModeSaving}>
+              {renameModeSaving ? "保存中…" : "保存"}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={!!deleteModeTarget}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && deleteModeDeleting) return;
+          if (!nextOpen) setDeleteModeTarget(null);
+        }}
+        title="确认删除排序模板"
+        description={deleteModeTarget ? `将删除：${deleteModeTarget.name}` : undefined}
+        className="max-w-lg"
+      >
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button
+            onClick={() => setDeleteModeTarget(null)}
+            variant="secondary"
+            disabled={deleteModeDeleting}
+          >
+            取消
+          </Button>
+          <Button onClick={deleteSortMode} variant="primary" disabled={deleteModeDeleting}>
+            {deleteModeDeleting ? "删除中…" : "确认删除"}
+          </Button>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={pendingRouteActivation != null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setPendingRouteActivation(null);
+        }}
+        title={`确认切换 ${selectedCliName} 路由策略？`}
+        description={
+          pendingRouteActivation
+            ? `目前还有 ${pendingRouteActivation.activeSessionCount} 个活跃 Session，切换策略可能导致会话中断，是否确认？`
+            : undefined
+        }
+        className="max-w-lg"
+      >
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button
+            onClick={() => setPendingRouteActivation(null)}
+            variant="secondary"
+            disabled={activatingRoute}
+          >
+            取消
+          </Button>
+          <Button
+            onClick={confirmPendingRouteActivation}
+            variant="primary"
+            disabled={activatingRoute}
+          >
+            {activatingRoute ? "切换中…" : "确认切换"}
+          </Button>
         </div>
       </Dialog>
     </>
