@@ -106,8 +106,26 @@ if (contract) {
     if (entry.status !== "active") {
       failures.push(`hookMatrix.${hook}.status must be active`);
     }
-    requireArray(`hookMatrix.${hook}.readPermissions`, entry.readPermissions);
-    requireArray(`hookMatrix.${hook}.writePermissions`, entry.writePermissions);
+    const readPermissions = requireArray(`hookMatrix.${hook}.readPermissions`, entry.readPermissions);
+    const writePermissions = requireArray(`hookMatrix.${hook}.writePermissions`, entry.writePermissions);
+    const permissionDependencies =
+      requireObject(`hookMatrix.${hook}.permissionDependencies`, entry.permissionDependencies) ?? {};
+    for (const [permission, requires] of Object.entries(permissionDependencies)) {
+      if (!writePermissions.includes(permission)) {
+        failures.push(`hookMatrix.${hook}.permissionDependencies.${permission} must be a write permission`);
+      }
+      const requiredPermissions = requireArray(
+        `hookMatrix.${hook}.permissionDependencies.${permission}`,
+        requires
+      );
+      for (const requiredPermission of requiredPermissions) {
+        if (!readPermissions.includes(requiredPermission)) {
+          failures.push(
+            `hookMatrix.${hook}.permissionDependencies.${permission} requires unknown read permission ${requiredPermission}`
+          );
+        }
+      }
+    }
     requireArray(`hookMatrix.${hook}.mutationFields`, entry.mutationFields);
     requireArray(`hookMatrix.${hook}.contextFields`, entry.contextFields);
     if (entry.defaultFailurePolicy !== contract.defaultFailurePolicy) {

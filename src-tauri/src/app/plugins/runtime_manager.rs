@@ -40,6 +40,7 @@ impl PluginRuntimeManager {
 
     pub(crate) fn runtime_dispatch(
         &self,
+        plugin_id: &str,
         runtime: &PluginRuntime,
     ) -> Result<RuntimeDispatch, GatewayPluginError> {
         self.validate_runtime_policy(runtime)?;
@@ -49,7 +50,9 @@ impl PluginRuntimeManager {
 
         match runtime {
             PluginRuntime::DeclarativeRules { .. } => Ok(RuntimeDispatch::DeclarativeRules),
-            PluginRuntime::Native { engine } if engine == "privacyFilter" => {
+            PluginRuntime::Native { engine }
+                if plugin_id == "official.privacy-filter" && engine == "privacyFilter" =>
+            {
                 Ok(RuntimeDispatch::NativePrivacyFilter)
             }
             PluginRuntime::Native { engine } => Err(GatewayPluginError::new(
@@ -98,7 +101,7 @@ mod tests {
             .expect("declarative rules should be allowed by host policy");
         assert_eq!(
             manager
-                .runtime_dispatch(&runtime)
+                .runtime_dispatch("example.rules", &runtime)
                 .expect("declarative rules should resolve"),
             RuntimeDispatch::DeclarativeRules
         );
@@ -117,9 +120,27 @@ mod tests {
 
         assert_eq!(
             manager
-                .runtime_dispatch(&runtime)
+                .runtime_dispatch("example.wasm", &runtime)
                 .expect("enabled wasm policy should reach dispatch decision"),
             RuntimeDispatch::WasmNotWired
+        );
+    }
+
+    #[test]
+    fn runtime_manager_rejects_non_official_native_privacy_filter() {
+        let manager = PluginRuntimeManager::for_tests(RuntimePolicy::default());
+        let runtime = PluginRuntime::Native {
+            engine: "privacyFilter".to_string(),
+        };
+
+        let err = manager
+            .runtime_dispatch("example.privacy-filter", &runtime)
+            .expect_err("non-official native privacyFilter should be rejected by the manager");
+
+        assert_eq!(err.code(), "PLUGIN_UNSUPPORTED_RUNTIME");
+        assert_eq!(
+            err.to_string(),
+            "PLUGIN_UNSUPPORTED_RUNTIME: unsupported native plugin runtime engine: privacyFilter"
         );
     }
 }

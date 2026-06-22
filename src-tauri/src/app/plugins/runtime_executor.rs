@@ -38,20 +38,13 @@ impl RuntimeGatewayPluginExecutor {
             process_enabled: false,
         });
 
-        match manager.runtime_dispatch(&plugin.manifest.runtime)? {
+        match manager.runtime_dispatch(&plugin.summary.plugin_id, &plugin.manifest.runtime)? {
             RuntimeDispatch::DeclarativeRules => self
                 .rule_runtime
                 .execute_declarative_rules_plugin(plugin, context),
-            RuntimeDispatch::NativePrivacyFilter
-                if plugin.summary.plugin_id == "official.privacy-filter" =>
-            {
-                self.rule_runtime
-                    .execute_official_privacy_filter_plugin(plugin, context)
-            }
-            RuntimeDispatch::NativePrivacyFilter => Err(GatewayPluginError::new(
-                "PLUGIN_UNSUPPORTED_RUNTIME",
-                "unsupported native plugin runtime engine: privacyFilter",
-            )),
+            RuntimeDispatch::NativePrivacyFilter => self
+                .rule_runtime
+                .execute_official_privacy_filter_plugin(plugin, context),
             RuntimeDispatch::WasmNotWired => Err(GatewayPluginError::new(
                 "PLUGIN_WASM_NOT_WIRED",
                 "wasm runtime policy is enabled but gateway execution is not wired in this release",

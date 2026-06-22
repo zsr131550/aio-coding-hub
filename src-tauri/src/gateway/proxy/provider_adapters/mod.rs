@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub(crate) mod claude;
 pub(crate) mod codex_chatgpt;
 pub(crate) mod cx2cc;

@@ -60,6 +60,9 @@
         "request.body.read"
       ],
       "writePermissions": ["request.header.write", "request.body.write"],
+      "permissionDependencies": {
+        "request.body.write": ["request.body.read"]
+      },
       "mutationFields": ["headers", "requestBody"],
       "contextFields": [
         "traceId",
@@ -87,6 +90,7 @@
         "request.body.read"
       ],
       "writePermissions": ["request.header.write", "request.body.write"],
+      "permissionDependencies": {},
       "mutationFields": ["headers", "requestBody"],
       "contextFields": [
         "traceId",
@@ -109,6 +113,9 @@
       "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["stream.inspect"],
       "writePermissions": ["stream.modify"],
+      "permissionDependencies": {
+        "stream.modify": ["stream.inspect"]
+      },
       "mutationFields": ["streamChunk"],
       "contextFields": ["traceId", "stream.sequence", "stream.chunk"]
     },
@@ -121,6 +128,9 @@
       "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["response.header.read", "response.body.read"],
       "writePermissions": ["response.header.write", "response.body.write"],
+      "permissionDependencies": {
+        "response.body.write": ["response.body.read"]
+      },
       "mutationFields": ["headers", "responseBody"],
       "contextFields": [
         "traceId",
@@ -138,6 +148,7 @@
       "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["response.header.read", "response.body.read"],
       "writePermissions": ["response.header.write", "response.body.write"],
+      "permissionDependencies": {},
       "mutationFields": ["headers", "responseBody"],
       "contextFields": [
         "traceId",
@@ -155,6 +166,7 @@
       "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["log.redact"],
       "writePermissions": ["log.redact"],
+      "permissionDependencies": {},
       "mutationFields": ["logMessage"],
       "contextFields": ["traceId", "log.message"]
     }

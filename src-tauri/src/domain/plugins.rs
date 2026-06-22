@@ -397,30 +397,21 @@ fn validate_hook_permissions(
 ) -> Result<(), PluginValidationError> {
     let has = |permission: &str| permissions.iter().any(|item| item == permission);
     for hook in hooks {
-        match hook.name.as_str() {
-            "gateway.request.afterBodyRead"
-                if has("request.body.write") && !has("request.body.read") =>
-            {
-                return Err(PluginValidationError::new(
-                    "PLUGIN_PERMISSION_MISMATCH",
-                    "request.body.write requires request.body.read",
-                ));
+        let Some(contract) = crate::gateway::plugins::contract::hook_contract(&hook.name) else {
+            continue;
+        };
+        for dependency in contract.permission_dependencies {
+            if !has(dependency.permission) {
+                continue;
             }
-            "gateway.response.chunk" if has("stream.modify") && !has("stream.inspect") => {
-                return Err(PluginValidationError::new(
-                    "PLUGIN_PERMISSION_MISMATCH",
-                    "stream.modify requires stream.inspect",
-                ));
+            for required in dependency.requires {
+                if !has(required) {
+                    return Err(PluginValidationError::new(
+                        "PLUGIN_PERMISSION_MISMATCH",
+                        format!("{} requires {required}", dependency.permission),
+                    ));
+                }
             }
-            "gateway.response.after"
-                if has("response.body.write") && !has("response.body.read") =>
-            {
-                return Err(PluginValidationError::new(
-                    "PLUGIN_PERMISSION_MISMATCH",
-                    "response.body.write requires response.body.read",
-                ));
-            }
-            _ => {}
         }
     }
     Ok(())
@@ -688,6 +679,17 @@ mod tests {
             validate_manifest(&manifest, "0.56.0")
                 .unwrap_or_else(|err| panic!("active hook {hook_name} rejected: {err:?}"));
         }
+    }
+
+    #[test]
+    fn validate_manifest_preserves_before_send_write_without_read_compatibility() {
+        let mut raw = valid_manifest();
+        raw["hooks"][0]["name"] = serde_json::json!("gateway.request.beforeSend");
+        raw["permissions"] = serde_json::json!(["request.body.write"]);
+        let manifest: PluginManifest = serde_json::from_value(raw).unwrap();
+
+        validate_manifest(&manifest, "0.56.0")
+            .expect("beforeSend write-only permission is part of Plugin API v1 compatibility");
     }
 
     #[test]

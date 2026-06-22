@@ -170,6 +170,9 @@ if (
   missingHookMetadataResult.status === 0 ||
   !missingHookMetadataResult.stderr.includes("hookMatrix.gateway.request.afterBodyRead.kind") ||
   !missingHookMetadataResult.stderr.includes("hookMatrix.gateway.request.afterBodyRead.status") ||
+  !missingHookMetadataResult.stderr.includes(
+    "hookMatrix.gateway.request.afterBodyRead.permissionDependencies"
+  ) ||
   !missingHookMetadataResult.stderr.includes("hookMatrix.gateway.request.afterBodyRead.mutationFields")
 ) {
   throw new Error(

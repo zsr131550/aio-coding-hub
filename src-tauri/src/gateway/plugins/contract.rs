@@ -47,8 +47,15 @@ pub(crate) struct HookContract {
     pub(crate) reserved_header_policy: &'static str,
     pub(crate) read_permissions: &'static [&'static str],
     pub(crate) write_permissions: &'static [&'static str],
+    pub(crate) permission_dependencies: &'static [PermissionDependency],
     pub(crate) mutation_fields: &'static [&'static str],
     pub(crate) context_fields: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PermissionDependency {
+    pub(crate) permission: &'static str,
+    pub(crate) requires: &'static [&'static str],
 }
 
 pub(crate) const DEFAULT_HOOK_TIMEOUT_MS: u64 = 150;
@@ -71,6 +78,10 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
             "request.body.read",
         ],
         write_permissions: &["request.header.write", "request.body.write"],
+        permission_dependencies: &[PermissionDependency {
+            permission: "request.body.write",
+            requires: &["request.body.read"],
+        }],
         mutation_fields: &["headers", "requestBody"],
         context_fields: &[
             "traceId",
@@ -99,6 +110,7 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
             "request.body.read",
         ],
         write_permissions: &["request.header.write", "request.body.write"],
+        permission_dependencies: &[],
         mutation_fields: &["headers", "requestBody"],
         context_fields: &[
             "traceId",
@@ -122,6 +134,10 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
         reserved_header_policy: RESERVED_HEADER_POLICY,
         read_permissions: &["stream.inspect"],
         write_permissions: &["stream.modify"],
+        permission_dependencies: &[PermissionDependency {
+            permission: "stream.modify",
+            requires: &["stream.inspect"],
+        }],
         mutation_fields: &["streamChunk"],
         context_fields: &["traceId", "stream.sequence", "stream.chunk"],
     },
@@ -135,6 +151,10 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
         reserved_header_policy: RESERVED_HEADER_POLICY,
         read_permissions: &["response.header.read", "response.body.read"],
         write_permissions: &["response.header.write", "response.body.write"],
+        permission_dependencies: &[PermissionDependency {
+            permission: "response.body.write",
+            requires: &["response.body.read"],
+        }],
         mutation_fields: &["headers", "responseBody"],
         context_fields: &[
             "traceId",
@@ -153,6 +173,7 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
         reserved_header_policy: RESERVED_HEADER_POLICY,
         read_permissions: &["response.header.read", "response.body.read"],
         write_permissions: &["response.header.write", "response.body.write"],
+        permission_dependencies: &[],
         mutation_fields: &["headers", "responseBody"],
         context_fields: &[
             "traceId",
@@ -171,6 +192,7 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
         reserved_header_policy: RESERVED_HEADER_POLICY,
         read_permissions: &["log.redact"],
         write_permissions: &["log.redact"],
+        permission_dependencies: &[],
         mutation_fields: &["logMessage"],
         context_fields: &["traceId", "log.message"],
     },
@@ -187,6 +209,7 @@ pub(crate) const RESERVED_HOOKS: &[HookContract] = &[
         reserved_header_policy: RESERVED_HEADER_POLICY,
         read_permissions: &[],
         write_permissions: &[],
+        permission_dependencies: &[],
         mutation_fields: &[],
         context_fields: &[],
     },
@@ -200,6 +223,7 @@ pub(crate) const RESERVED_HOOKS: &[HookContract] = &[
         reserved_header_policy: RESERVED_HEADER_POLICY,
         read_permissions: &[],
         write_permissions: &[],
+        permission_dependencies: &[],
         mutation_fields: &[],
         context_fields: &[],
     },
@@ -213,6 +237,7 @@ pub(crate) const RESERVED_HOOKS: &[HookContract] = &[
         reserved_header_policy: RESERVED_HEADER_POLICY,
         read_permissions: &[],
         write_permissions: &[],
+        permission_dependencies: &[],
         mutation_fields: &[],
         context_fields: &[],
     },
@@ -298,6 +323,43 @@ mod tests {
 
     fn string_slice(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn dependency_pairs(dependencies: &[PermissionDependency]) -> Vec<(String, Vec<String>)> {
+        dependencies
+            .iter()
+            .map(|dependency| {
+                (
+                    dependency.permission.to_string(),
+                    string_slice(dependency.requires),
+                )
+            })
+            .collect()
+    }
+
+    fn contract_dependency_pairs(entry: &serde_json::Value) -> Vec<(String, Vec<String>)> {
+        let dependencies = entry["permissionDependencies"]
+            .as_object()
+            .expect("hookMatrix permissionDependencies should be an object");
+        dependencies
+            .iter()
+            .map(|(permission, requires)| {
+                (
+                    permission.clone(),
+                    requires
+                        .as_array()
+                        .expect("permission dependency entries should be arrays")
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .expect("permission dependency entries should be strings")
+                                .to_string()
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -419,5 +481,23 @@ mod tests {
             assert!(!is_reserved_permission(&permission));
         }
         assert!(!is_reserved_permission("unknown.permission"));
+    }
+
+    #[test]
+    fn permission_dependency_metadata_matches_plugin_api_v1() {
+        let contract = plugin_api_v1_contract();
+        let matrix = contract["hookMatrix"]
+            .as_object()
+            .expect("hookMatrix should be an object");
+
+        for hook in ACTIVE_HOOKS {
+            let entry = matrix
+                .get(hook.id)
+                .unwrap_or_else(|| panic!("hookMatrix entry missing for {}", hook.id));
+            assert_eq!(
+                dependency_pairs(hook.permission_dependencies),
+                contract_dependency_pairs(entry)
+            );
+        }
     }
 }
