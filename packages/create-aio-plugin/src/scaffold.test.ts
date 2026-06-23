@@ -13,6 +13,7 @@ import {
   packPluginBytes,
   packPluginDirectory,
   replayHook,
+  replayHookExplain,
   runCreateAioPluginCli,
   signPackage,
   validatePluginDirectory,
@@ -1574,6 +1575,124 @@ describe("create-aio-plugin scaffold", () => {
       )
     ).toEqual({ action: "replace", logMessage: "apiKey=[REDACTED]" });
   });
+
+  it("replay explain reports a pass when no rule matches", () => {
+    const result = replayHookExplain(
+      rulePluginFilesWithTarget(undefined),
+      "gateway.request.afterBodyRead",
+      { request: { body: "ordinary text" } }
+    );
+
+    expect(result).toMatchObject({
+      pluginId: "acme.redactor",
+      runtime: "declarativeRules",
+      hook: "gateway.request.afterBodyRead",
+      evaluatedRuleCount: 1,
+      matchedRuleIds: [],
+      actionKind: "pass",
+      outputKind: "pass",
+      mutationSummary: { changed: false },
+      result: { action: "pass" },
+    });
+  });
+
+  it("replay explain reports replacement mutation details", () => {
+    const result = replayHookExplain(
+      rulePluginFilesWithTarget("$.messages[*].content"),
+      "gateway.request.afterBodyRead",
+      {
+        request: {
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "SECRET_TOKEN" }],
+          }),
+        },
+      }
+    );
+
+    expect(result).toMatchObject({
+      matchedRuleIds: ["redact-token-rule"],
+      actionKind: "replace",
+      outputKind: "replace",
+      mutationSummary: {
+        changed: true,
+        field: "requestBody",
+        targetField: "request.body",
+        jsonPath: "$.messages[*].content",
+      },
+    });
+    expect(JSON.stringify(result)).toContain("[REDACTED]");
+  });
+
+  it("replay explain reports block and warn matches without mutations", () => {
+    const blockResult = replayHookExplain(
+      rulePluginFilesWithAction({ kind: "block", reason: "blocked" }),
+      "gateway.request.afterBodyRead",
+      { request: { body: "danger" } }
+    );
+
+    expect(blockResult).toMatchObject({
+      matchedRuleIds: ["redact-token-rule"],
+      actionKind: "block",
+      outputKind: "block",
+      mutationSummary: { changed: false },
+      result: { action: "block", reason: "blocked" },
+    });
+
+    const warnResult = replayHookExplain(
+      rulePluginFilesWithAction({ kind: "warn", message: "careful" }),
+      "gateway.request.afterBodyRead",
+      { request: { body: "danger" } }
+    );
+
+    expect(warnResult).toMatchObject({
+      matchedRuleIds: ["redact-token-rule"],
+      actionKind: "warn",
+      outputKind: "warn",
+      mutationSummary: { changed: false },
+      result: { action: "warn", message: "careful" },
+    });
+  });
+
+  it("replay explain command emits JSON explanation", () => {
+    const root = mkdtempSync(join(tmpdir(), "aio-plugin-replay-explain-"));
+    const fixturePath = join(root, "fixture.json");
+    writeScaffold(root, rulePluginFilesWithTarget("$.messages[*].content"));
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        request: {
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "SECRET_TOKEN" }],
+          }),
+        },
+      })
+    );
+    const output: string[] = [];
+
+    expect(
+      runCreateAioPluginCli(
+        ["replay", "--explain", root, fixturePath, "gateway.request.afterBodyRead"],
+        process.cwd(),
+        {
+          log: (line) => output.push(line),
+          error: (line) => output.push(line),
+        }
+      )
+    ).toBe(0);
+
+    expect(JSON.parse(output[0] ?? "{}")).toMatchObject({
+      pluginId: "acme.redactor",
+      matchedRuleIds: ["redact-token-rule"],
+      actionKind: "replace",
+      outputKind: "replace",
+      mutationSummary: {
+        changed: true,
+        field: "requestBody",
+        targetField: "request.body",
+        jsonPath: "$.messages[*].content",
+      },
+    });
+  });
 });
 
 function writeScaffold(root: string, files: Record<string, string>): void {
@@ -1640,6 +1759,7 @@ function rulePluginFilesWithRule(options: {
   };
   const rule = document.rules?.[0];
   if (rule) {
+    rule.id = "redact-token-rule";
     rule.hook = options.hook;
     rule.target = options.target;
   }

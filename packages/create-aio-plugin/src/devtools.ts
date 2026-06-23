@@ -54,6 +54,35 @@ export type StrictValidationResult =
   | { ok: true; diagnostics: PluginDiagnostic[] }
   | { ok: false; error: { code: string; message: string }; diagnostics: PluginDiagnostic[] };
 
+export type ReplayMutationSummary =
+  | { changed: false }
+  | {
+      changed: true;
+      field: "requestBody" | "responseBody" | "streamChunk" | "logMessage";
+      targetField: string;
+      jsonPath?: string;
+    };
+
+export type ReplayExplainResult = {
+  pluginId: string;
+  runtime: PluginManifest["runtime"]["kind"];
+  hook: GatewayHookName;
+  evaluatedRuleCount: number;
+  matchedRuleIds: string[];
+  actionKind: ReplayRuleResult["action"];
+  outputKind: ReplayRuleResult["action"];
+  mutationSummary: ReplayMutationSummary;
+  warnings: PluginDiagnostic[];
+  result: ReplayRuleResult;
+};
+
+export type ReplayRuleTrace = {
+  ruleId?: string;
+  result: ReplayRuleResult;
+  targetField?: string;
+  jsonPath?: string;
+};
+
 type DoctorOptions = {
   strict?: boolean;
 };
@@ -115,14 +144,24 @@ export function runCreateAioPluginCli(args: string[], cwd: string, io: CliIo = c
   }
 
   if (commandOrId === "replay") {
-    if (!firstArg || !secondArg || !thirdArg) {
+    const explain = firstArg === "--explain";
+    const pluginDir = explain ? secondArg : firstArg;
+    const fixturePath = explain ? thirdArg : secondArg;
+    const hookName = explain ? args[4] : thirdArg;
+    if (!pluginDir || !fixturePath || !hookName) {
       io.error("Usage: create-aio-plugin replay <plugin-dir> <fixture.json> <hook>");
       return 1;
     }
     try {
-      const files = readPluginDirectory(resolve(cwd, firstArg));
-      const fixture = JSON.parse(readFileSync(resolve(cwd, secondArg), "utf8")) as unknown;
-      io.log(JSON.stringify(replayHook(files, thirdArg as GatewayHookName, fixture)));
+      const files = readPluginDirectory(resolve(cwd, pluginDir));
+      const fixture = JSON.parse(readFileSync(resolve(cwd, fixturePath), "utf8")) as unknown;
+      io.log(
+        JSON.stringify(
+          explain
+            ? replayHookExplain(files, hookName as GatewayHookName, fixture)
+            : replayHook(files, hookName as GatewayHookName, fixture)
+        )
+      );
       return 0;
     } catch (error) {
       io.error(`failed to replay plugin hook: ${errorMessage(error)}`);
@@ -1223,6 +1262,72 @@ export function replayHook(files: ScaffoldFiles, hook: GatewayHookName, context:
   return { action: "pass" };
 }
 
+export function replayHookExplain(
+  files: ScaffoldFiles,
+  hook: GatewayHookName,
+  context: unknown
+): ReplayExplainResult {
+  const validation = validatePluginFilesStrict(files);
+  if (!validation.ok) {
+    throw new Error(`${validation.error.code}: ${validation.error.message}`);
+  }
+  const manifest = JSON.parse(files["plugin.json"] ?? "{}") as PluginManifest;
+  const warnings: PluginDiagnostic[] = [];
+  const passResult: ReplayRuleResult = { action: "pass" };
+
+  if (manifest.runtime.kind !== "declarativeRules") {
+    warnings.push({
+      severity: "warn",
+      code: "PLUGIN_REPLAY_UNSUPPORTED_RUNTIME",
+      message: "replay explain is only supported for declarative rule plugins",
+    });
+    return {
+      pluginId: manifest.id,
+      runtime: manifest.runtime.kind,
+      hook,
+      evaluatedRuleCount: 0,
+      matchedRuleIds: [],
+      actionKind: passResult.action,
+      outputKind: passResult.action,
+      mutationSummary: { changed: false },
+      warnings,
+      result: passResult,
+    };
+  }
+
+  let evaluatedRuleCount = 0;
+  const matchedRuleIds: string[] = [];
+  let result: ReplayRuleResult = passResult;
+  let mutationSummary: ReplayMutationSummary = { changed: false };
+
+  for (const rulePath of manifest.runtime.rules) {
+    const document = JSON.parse(files[rulePath] ?? '{"rules":[]}') as { rules?: unknown[] };
+    for (const rule of document.rules ?? []) {
+      evaluatedRuleCount += 1;
+      const trace = replayDeclarativeRuleWithTrace(rule, hook, context);
+      if (trace.result.action === "pass") continue;
+      if (trace.ruleId) matchedRuleIds.push(trace.ruleId);
+      result = trace.result;
+      mutationSummary = mutationSummaryFromReplayResult(trace);
+      break;
+    }
+    if (result.action !== "pass") break;
+  }
+
+  return {
+    pluginId: manifest.id,
+    runtime: manifest.runtime.kind,
+    hook,
+    evaluatedRuleCount,
+    matchedRuleIds,
+    actionKind: result.action,
+    outputKind: result.action,
+    mutationSummary,
+    warnings,
+    result,
+  };
+}
+
 export function packPlugin(files: ScaffoldFiles): PackedPlugin {
   const bytes = createStoredZipBytes(textFilesToBytes(files));
   return {
@@ -1320,18 +1425,28 @@ function replayDeclarativeRule(
   hook: GatewayHookName,
   context: unknown
 ): ReplayRuleResult {
+  return replayDeclarativeRuleWithTrace(rawRule, hook, context).result;
+}
+
+function replayDeclarativeRuleWithTrace(
+  rawRule: unknown,
+  hook: GatewayHookName,
+  context: unknown
+): ReplayRuleTrace {
   const rule = asRecord(rawRule);
-  if (rule?.hook !== hook) return { action: "pass" };
+  const ruleId = typeof rule?.id === "string" ? rule.id : undefined;
+  const pass = (): ReplayRuleTrace => ({ ruleId, result: { action: "pass" } });
+  if (rule?.hook !== hook) return pass();
   const target = asRecord(rule.target);
   const matcher = asRecord(rule.matcher) ?? asRecord(rule.match);
   const action = asRecord(rule.action);
-  if (!target || !matcher || !action) return { action: "pass" };
+  if (!target || !matcher || !action) return pass();
   const regex = compileReplayRegex(matcher);
-  if (!regex) return { action: "pass" };
+  if (!regex) return pass();
 
   const targetField = typeof target.field === "string" ? target.field : "request.body";
   const text = textFromFixture(context, targetField);
-  if (!text) return { action: "pass" };
+  if (!text) return pass();
 
   const path =
     typeof target.jsonPath === "string"
@@ -1343,9 +1458,18 @@ function replayDeclarativeRule(
     !path ||
     (target.field && target.field !== "request.body" && target.field !== "response.body")
   ) {
-    return replayTextAction(text, regex, action, targetField);
+    return {
+      ruleId,
+      result: replayTextAction(text, regex, action, targetField),
+      targetField,
+    };
   }
-  return replayJsonPathAction(text, path, regex, action, targetField);
+  return {
+    ruleId,
+    result: replayJsonPathAction(text, path, regex, action, targetField),
+    targetField,
+    jsonPath: path,
+  };
 }
 
 type ReplayRuleResult =
@@ -1391,14 +1515,19 @@ function textFromFixture(context: unknown, field: string): string | undefined {
   return undefined;
 }
 
+function replayRegexMatches(regex: RegExp, value: string): boolean {
+  const matched = regex.test(value);
+  regex.lastIndex = 0;
+  return matched;
+}
+
 function replayTextAction(
   body: string,
   regex: RegExp,
   action: Record<string, unknown>,
   field: string
 ): ReplayRuleResult {
-  if (!regex.test(body)) return { action: "pass" };
-  regex.lastIndex = 0;
+  if (!replayRegexMatches(regex, body)) return { action: "pass" };
   if (action.kind === "replace" && typeof action.replacement === "string") {
     return replaceResult(field, body.replace(regex, action.replacement));
   }
@@ -1437,8 +1566,7 @@ function replayJsonPathAction(
   let matched = false;
   let changed = false;
   applyToJsonStrings(root, segments, (candidate) => {
-    if (!regex.test(candidate.value)) return;
-    regex.lastIndex = 0;
+    if (!replayRegexMatches(regex, candidate.value)) return;
     matched = true;
     if (action.kind === "replace" && typeof action.replacement === "string") {
       const next = candidate.value.replace(regex, action.replacement);
@@ -1467,6 +1595,48 @@ function replayJsonPathAction(
     return appendMessageToBody(body, action.role, action.content);
   }
   return { action: "pass" };
+}
+
+function mutationSummaryFromReplayResult(trace: ReplayRuleTrace): ReplayMutationSummary {
+  if (trace.result.action !== "replace") return { changed: false };
+  return summaryForReplacement(trace.result, trace.targetField, trace.jsonPath);
+}
+
+function summaryForReplacement(
+  result: Extract<ReplayRuleResult, { action: "replace" }>,
+  targetField: string | undefined,
+  jsonPath: string | undefined
+): ReplayMutationSummary {
+  if ("requestBody" in result) {
+    return {
+      changed: true,
+      field: "requestBody",
+      targetField: targetField ?? "request.body",
+      ...(jsonPath ? { jsonPath } : {}),
+    };
+  }
+  if ("responseBody" in result) {
+    return {
+      changed: true,
+      field: "responseBody",
+      targetField: targetField ?? "response.body",
+      ...(jsonPath ? { jsonPath } : {}),
+    };
+  }
+  if ("streamChunk" in result) {
+    return {
+      changed: true,
+      field: "streamChunk",
+      targetField: targetField ?? "stream.chunk",
+      ...(jsonPath ? { jsonPath } : {}),
+    };
+  }
+  return {
+    changed: true,
+    field: "logMessage",
+    targetField: targetField ?? "log.message",
+    ...(jsonPath ? { jsonPath } : {}),
+  };
 }
 
 function replaceResult(field: string, value: string): ReplayRuleResult {
