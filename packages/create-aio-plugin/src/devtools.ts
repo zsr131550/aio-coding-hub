@@ -662,22 +662,15 @@ function ruleMatcherDiagnostics(
     });
     return diagnostics;
   }
-  try {
-    new RegExp(regex);
-  } catch (error) {
-    diagnostics.push({
-      severity: "error",
-      code: "PLUGIN_RULE_MATCHER_INVALID",
-      message: `invalid regex for host runtime: ${errorMessage(error)}`,
-      path,
-      hint: "Fix the regex pattern before packing the plugin.",
-    });
-  }
   return diagnostics;
 }
 
 function usesUnsupportedRustRegexSyntax(regex: string): boolean {
-  return /\\[1-9]/.test(regex) || /\(\?(?:[=!]|<[=!])/.test(regex);
+  return (
+    /\\[1-9]/.test(regex) ||
+    /\\k(?:<[^>]+>|'[^']+')/.test(regex) ||
+    /\(\?(?:[=!]|<[=!])/.test(regex)
+  );
 }
 
 function ruleJsonPathDiagnostics(

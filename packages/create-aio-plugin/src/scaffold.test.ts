@@ -513,7 +513,7 @@ describe("create-aio-plugin scaffold", () => {
             id: "invalid-syntax",
             hook: "gateway.request.afterBodyRead",
             target: { field: "request.body" },
-            match: { regex: "[" },
+            match: { regex: "(?<word>secret)\\k<word>" },
             action: { kind: "replace", replacement: "[x]" },
           },
         ],
@@ -543,9 +543,28 @@ describe("create-aio-plugin scaffold", () => {
       expect.objectContaining({
         code: "PLUGIN_RULE_MATCHER_INVALID",
         path: "rules/main.json#/rules/2/match/regex",
-        message: expect.stringContaining("invalid regex"),
+        message: expect.stringContaining("unsupported Rust regex syntax"),
       })
     );
+  });
+
+  it("validate strict accepts Rust regex inline flags that JavaScript RegExp cannot compile", () => {
+    const files = rulePluginFilesWithRule({
+      hook: "gateway.request.afterBodyRead",
+      target: { field: "request.body" },
+    });
+    const document = JSON.parse(files["rules/main.json"] ?? "{}") as {
+      rules?: Array<Record<string, unknown>>;
+    };
+    const rule = document.rules?.[0];
+    if (rule) {
+      rule.match = { regex: "(?i)secret" };
+    }
+    files["rules/main.json"] = `${JSON.stringify(document, null, 2)}\n`;
+
+    const result = validatePluginFilesStrict(files);
+
+    expect(result.ok).toBe(true);
   });
 
   it("validate strict rejects matcher and when fields that host serde cannot parse", () => {
