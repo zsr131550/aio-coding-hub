@@ -33,3 +33,20 @@ Plugin API v1 remains externally compatible in 0.62. 这个版本重组的是宿
 Provider behavior remains host-owned. Provider ordering, failover, OAuth limits, token counting, cx2cc translation, and session binding are covered by internal acceptance tests, but no Provider Plugin API is exposed.
 
 WASM remains policy-gated. The scaffold and pack flow can carry WASM artifacts, but marketplace WASM execution is not enabled by default.
+
+## 0.62.2 Lifecycle Boundary
+
+0.62.2 still keeps Plugin API v1 externally stable. 安装预检、更新 diff、rollback availability、quarantine reason 和 trust summary 都是宿主解释现有安装/更新规则的 lifecycle layer，不是新的 manifest schema，也不是插件可调用的新 API。
+
+安装或更新前，宿主会把 `hostCompatibility`、runtime support、permissions、hooks、checksum/signature 和 package source 组合成 preview/diff 给用户确认。确认后，真实 install/update 仍会重新执行完整校验；preview/diff 不能作为跳过兼容性、签名或权限策略的依据。
+
+兼容性判断仍以这些字段为准：
+
+- `hostCompatibility.app` 必须匹配当前 AIO Coding Hub 版本。
+- `hostCompatibility.pluginApi` 必须匹配当前 Plugin API v1。
+- `hostCompatibility.platforms` 如果存在，必须包含当前桌面平台。
+- runtime 必须由宿主策略支持。
+
+Quarantined 和 incompatible 插件不能启用。更新新增的 permissions 会进入 pending，不会静默继承授权。
+
+0.62.2 也不开放 browser-like plugin container。Linux、macOS、Windows 上的插件仍运行在宿主支持的本地 runtime 中；第三方插件不能把 AIO Coding Hub 内部变成浏览器或 WebView 插件容器。

@@ -581,6 +581,10 @@ describe("pages/PluginsPage", () => {
     const previewDialog = await screen.findByRole("dialog", { name: "安装前预检" });
     expect(within(previewDialog).getByText("Community Prompt Helper")).toBeInTheDocument();
     expect(within(previewDialog).getByText("sha256-install")).toBeInTheDocument();
+    expect(within(previewDialog).getByText("gateway.request.afterBodyRead")).toBeInTheDocument();
+    expect(
+      within(previewDialog).getByText("预检只是解释层，最终安装仍会重新校验。")
+    ).toBeInTheDocument();
     expect(importMutation.mutateAsync).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "确认安装" }));
@@ -702,6 +706,12 @@ describe("pages/PluginsPage", () => {
 
     renderWithProviders(<PluginsPage />);
     fireEvent.click(screen.getAllByText("Community Redactor")[0]);
+    const lifecyclePanel = screen.getByText("生命周期").closest("section");
+    expect(lifecyclePanel).not.toBeNull();
+    expect(within(lifecyclePanel as HTMLElement).getByText("当前版本")).toBeInTheDocument();
+    expect(within(lifecyclePanel as HTMLElement).getByText("1.1.0")).toBeInTheDocument();
+    expect(within(lifecyclePanel as HTMLElement).getByText("有可用更新")).toBeInTheDocument();
+    expect(within(lifecyclePanel as HTMLElement).getByText("最后更新")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "更新" }));
     await screen.findByRole("dialog", { name: "更新预检" });
     fireEvent.click(screen.getByRole("button", { name: "确认更新" }));
@@ -729,7 +739,17 @@ describe("pages/PluginsPage", () => {
 
   it("shows update diff before applying update", async () => {
     const previewUpdateMutation = mutation({
-      mutateAsync: vi.fn().mockResolvedValue(updateDiff()),
+      mutateAsync: vi.fn().mockResolvedValue(
+        updateDiff({
+          warnings: [
+            {
+              severity: "warning",
+              code: "PLUGIN_MARKET_REVOKED",
+              message: "Plugin revoked by market index",
+            },
+          ],
+        })
+      ),
     });
     const updateMutation = mutation();
     vi.mocked(usePluginPreviewUpdateFromFileMutation).mockReturnValue(previewUpdateMutation as any);
@@ -756,6 +776,8 @@ describe("pages/PluginsPage", () => {
     const updateDialog = await screen.findByRole("dialog", { name: "更新预检" });
     expect(within(updateDialog).getByText("1.0.0 -> 1.1.0")).toBeInTheDocument();
     expect(within(updateDialog).getByText("gateway.response.beforeSend")).toBeInTheDocument();
+    expect(within(updateDialog).getByText("隔离与撤销")).toBeInTheDocument();
+    expect(within(updateDialog).getByText("Plugin revoked by market index")).toBeInTheDocument();
     expect(updateMutation.mutateAsync).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "确认更新" }));
@@ -769,6 +791,47 @@ describe("pages/PluginsPage", () => {
       );
       expect(toast.success).toHaveBeenCalledWith("更新插件成功");
     });
+  });
+
+  it("keeps blocking revocation notices visually distinct in update preview", async () => {
+    const previewUpdateMutation = mutation({
+      mutateAsync: vi.fn().mockResolvedValue(
+        updateDiff({
+          blockingReasons: [
+            {
+              severity: "error",
+              code: "PLUGIN_MARKET_REVOKED",
+              message: "Plugin revoked by market index",
+            },
+          ],
+        })
+      ),
+    });
+    const updateMutation = mutation();
+    vi.mocked(usePluginPreviewUpdateFromFileMutation).mockReturnValue(previewUpdateMutation as any);
+    vi.mocked(usePluginUpdateFromFileMutation).mockReturnValue(updateMutation as any);
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary({ update_available: true })],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginQuery).mockReturnValue({
+      data: detail({ summary: summary({ update_available: true }) }),
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(openDesktopSinglePath).mockResolvedValue("/tmp/revoked-update.aio-plugin");
+
+    renderWithProviders(<PluginsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "更新" }));
+
+    const updateDialog = await screen.findByRole("dialog", { name: "更新预检" });
+    expect(within(updateDialog).getByText("隔离/撤销阻断项")).toBeInTheDocument();
+    expect(within(updateDialog).getByText("Plugin revoked by market index")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确认更新" })).toBeDisabled();
+    expect(updateMutation.mutateAsync).not.toHaveBeenCalled();
   });
 
   it("does not offer enable action for quarantined or uninstalled plugins", () => {

@@ -18,6 +18,13 @@ type PluginUpdatePreviewDialogProps = {
 type PluginLifecycleChange = PluginUpdateDiff["hookChanges"][number];
 type PluginLifecycleNotice = PluginUpdateDiff["warnings"][number];
 type PluginPermissionLifecycleChange = PluginUpdateDiff["permissionChanges"][number];
+type NoticeVariant = "warning" | "destructive";
+
+const LIFECYCLE_NOTICE_CODES = new Set([
+  "PLUGIN_MARKET_REVOKED",
+  "PLUGIN_REVOKED",
+  "PLUGIN_QUARANTINED",
+]);
 
 function changeLabel(change: string) {
   const labels: Record<string, string> = {
@@ -29,20 +36,37 @@ function changeLabel(change: string) {
   return labels[change] ?? change;
 }
 
-function NoticeList({ notices }: { notices: readonly PluginLifecycleNotice[] }) {
+function NoticeList({
+  notices,
+  variant = "warning",
+}: {
+  notices: readonly PluginLifecycleNotice[];
+  variant?: NoticeVariant;
+}) {
   if (notices.length === 0) return null;
+  const className =
+    variant === "destructive"
+      ? "rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+      : "rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning";
   return (
     <div className="grid gap-2">
       {notices.map((notice) => (
-        <div
-          key={`${notice.severity}:${notice.code}:${notice.message}`}
-          className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning"
-        >
+        <div key={`${notice.severity}:${notice.code}:${notice.message}`} className={className}>
           <div className="font-medium">{notice.message}</div>
           <div className="mt-0.5 font-mono text-xs opacity-80">{notice.code}</div>
         </div>
       ))}
     </div>
+  );
+}
+
+function isQuarantineOrRevocationNotice(notice: PluginLifecycleNotice) {
+  const code = notice.code.toUpperCase();
+  return (
+    LIFECYCLE_NOTICE_CODES.has(code) ||
+    code.endsWith("_REVOKED") ||
+    code.endsWith("_QUARANTINED") ||
+    code.includes("_QUARANTINE")
   );
 }
 
@@ -127,6 +151,16 @@ export function PluginUpdatePreviewDialog({
 }: PluginUpdatePreviewDialogProps) {
   const blocked = Boolean(diff && diff.blockingReasons.length > 0);
   const canConfirm = Boolean(diff) && !blocked;
+  const lifecycleNotices = diff ? diff.warnings.filter(isQuarantineOrRevocationNotice) : [];
+  const lifecycleBlockingReasons = diff
+    ? diff.blockingReasons.filter(isQuarantineOrRevocationNotice)
+    : [];
+  const warnings = diff
+    ? diff.warnings.filter((notice) => !isQuarantineOrRevocationNotice(notice))
+    : [];
+  const blockingReasons = diff
+    ? diff.blockingReasons.filter((notice) => !isQuarantineOrRevocationNotice(notice))
+    : [];
 
   return (
     <Dialog
@@ -221,23 +255,43 @@ export function PluginUpdatePreviewDialog({
             </div>
           ) : null}
 
-          {diff.warnings.length > 0 ? (
+          {lifecycleBlockingReasons.length > 0 ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm font-semibold text-destructive">
+                <AlertTriangle className="h-4 w-4" />
+                隔离/撤销阻断项
+              </div>
+              <NoticeList notices={lifecycleBlockingReasons} variant="destructive" />
+            </div>
+          ) : null}
+
+          {lifecycleNotices.length > 0 ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm font-semibold text-warning">
+                <ShieldAlert className="h-4 w-4" />
+                隔离与撤销
+              </div>
+              <NoticeList notices={lifecycleNotices} />
+            </div>
+          ) : null}
+
+          {warnings.length > 0 ? (
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-sm font-semibold text-warning">
                 <ShieldAlert className="h-4 w-4" />
                 警告
               </div>
-              <NoticeList notices={diff.warnings} />
+              <NoticeList notices={warnings} />
             </div>
           ) : null}
 
-          {diff.blockingReasons.length > 0 ? (
+          {blockingReasons.length > 0 ? (
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-sm font-semibold text-destructive">
                 <AlertTriangle className="h-4 w-4" />
                 阻断项
               </div>
-              <NoticeList notices={diff.blockingReasons} />
+              <NoticeList notices={blockingReasons} />
             </div>
           ) : null}
 

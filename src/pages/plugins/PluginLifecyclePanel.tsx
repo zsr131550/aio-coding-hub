@@ -3,6 +3,7 @@
 import { RotateCcw, ShieldAlert } from "lucide-react";
 import type { JsonValue, PluginDetail } from "../../services/plugins";
 import { Button } from "../../ui/Button";
+import { formatUnixSeconds } from "../../utils/formatters";
 import { pluginStatusLabel } from "./pluginProductCopy";
 
 type PluginLifecyclePanelProps = {
@@ -65,6 +66,8 @@ export function PluginLifecyclePanel({
   const unsigned = isUnsigned(detail);
   const sourceLabel = INSTALL_SOURCE_LABELS[detail.install_source] ?? detail.install_source;
   const reason = quarantineReason(detail);
+  const currentVersion = detail.summary.current_version ?? detail.manifest.version ?? "-";
+  const updateState = detail.summary.update_available ? "有可用更新" : "无可用更新";
 
   return (
     <section className="space-y-3">
@@ -87,6 +90,18 @@ export function PluginLifecyclePanel({
         <div className="rounded-md border border-border px-3 py-2">
           <div className="text-xs text-muted-foreground">状态</div>
           <div className="mt-1 text-foreground">{pluginStatusLabel(detail.summary.status)}</div>
+        </div>
+        <div className="rounded-md border border-border px-3 py-2">
+          <div className="text-xs text-muted-foreground">当前版本</div>
+          <div className="mt-1 text-foreground">{currentVersion}</div>
+        </div>
+        <div className="rounded-md border border-border px-3 py-2">
+          <div className="text-xs text-muted-foreground">更新状态</div>
+          <div className="mt-1 text-foreground">{updateState}</div>
+        </div>
+        <div className="rounded-md border border-border px-3 py-2">
+          <div className="text-xs text-muted-foreground">最后更新</div>
+          <div className="mt-1 text-foreground">{formatUnixSeconds(detail.summary.updated_at)}</div>
         </div>
         <div className="rounded-md border border-border px-3 py-2">
           <div className="text-xs text-muted-foreground">来源</div>
