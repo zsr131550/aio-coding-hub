@@ -180,6 +180,33 @@ Capture groups 使用 Rust regex replacement syntax：
 
 Replay 支持社区规则运行时相同的 v1.1 rule actions：`replace`、`block`、`warn` 和 `appendMessage`。对 request body rewrites，它支持 raw text targets，也支持文档化 JSONPath 子集，例如 `$.messages[*].content`、`$.input[*].content[*].text` 和 `$.input`。
 
+`replay --explain` 会返回规则评估和 mutation 摘要：
+
+```json
+{
+  "pluginId": "acme.redactor",
+  "runtime": "declarativeRules",
+  "hook": "gateway.request.afterBodyRead",
+  "evaluatedRuleCount": 1,
+  "matchedRuleIds": ["redact-token-rule"],
+  "actionKind": "replace",
+  "outputKind": "replace",
+  "mutationSummary": {
+    "changed": true,
+    "field": "requestBody",
+    "targetField": "request.body",
+    "jsonPath": "$.messages[*].content"
+  },
+  "warnings": [],
+  "result": {
+    "action": "replace",
+    "requestBody": "{\"messages\":[{\"role\":\"user\",\"content\":\"[REDACTED]\"}]}"
+  }
+}
+```
+
+`replay --explain` is a deterministic local simulator for the supported declarative-rules subset. The Rust gateway remains the source of truth for runtime execution, audit events, failure policy, timeouts, and circuit behavior.
+
 ## 适合场景
 
 - 通过追加 instructions 做 prompt optimization。

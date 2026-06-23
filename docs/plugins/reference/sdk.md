@@ -48,9 +48,22 @@ TypeScript SDK 导出：
 `create-aio-plugin` 使用 SDK 做 manifest validation，并针对真实插件目录提供本地开发命令：
 
 ```bash
-pnpm create-aio-plugin validate ./acme.redactor
-pnpm create-aio-plugin replay ./acme.redactor ./fixtures/request.json gateway.request.afterBodyRead
+pnpm create-aio-plugin doctor ./acme.redactor
+pnpm create-aio-plugin validate --strict ./acme.redactor
+pnpm create-aio-plugin replay --explain ./acme.redactor ./fixtures/request.json gateway.request.afterBodyRead
 pnpm create-aio-plugin pack ./acme.redactor
+```
+
+开发工具的诊断对象使用稳定 shape，便于 CLI、GUI 和测试共享：
+
+```json
+{
+  "severity": "error",
+  "code": "PLUGIN_RULE_PERMISSION_MISMATCH",
+  "message": "rule targeting request.body with action replace requires request.body.write",
+  "path": "rules/main.json#/rules/0",
+  "hint": "Add request.body.write to manifest.permissions or change the rule target/action."
+}
 ```
 
 Rust/WASM SDK 导出：

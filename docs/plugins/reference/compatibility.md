@@ -25,3 +25,11 @@ Plugin API v1 remains externally compatible in 0.62. 这个版本重组的是宿
 0.62 does not add public provider plugin APIs. Provider adapter 仍是 host-internal 设计，用于先降低 gateway/provider 分支扩散和维护成本；未来是否公开 provider 插件 API，需要另行设计版本化契约。
 
 0.62 keeps third-party JavaScript and WebView plugin execution unsupported. 社区插件继续使用 `declarativeRules`；WASM 仍受宿主策略控制，未启用时安装或执行会被拒绝。
+
+## 0.62.1 Developer Loop Boundary
+
+0.62.1 does not change Plugin API v1. `doctor`, `validate --strict`, and `replay --explain` are developer tooling around the same manifest and hook contract.
+
+Provider behavior remains host-owned. Provider ordering, failover, OAuth limits, token counting, cx2cc translation, and session binding are covered by internal acceptance tests, but no Provider Plugin API is exposed.
+
+WASM remains policy-gated. The scaffold and pack flow can carry WASM artifacts, but marketplace WASM execution is not enabled by default.
