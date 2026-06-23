@@ -1485,11 +1485,36 @@ type JsonPathSegment = { kind: "key"; key: string } | { kind: "wildcardArray" };
 
 function compileReplayRegex(matcher: Record<string, unknown>): RegExp | null {
   if (typeof matcher.regex !== "string") return null;
+  const parsed = parseReplayRegexPattern(matcher.regex);
   try {
-    return new RegExp(matcher.regex, matcher.caseSensitive === false ? "gi" : "g");
+    return new RegExp(parsed.pattern, replayRegexFlags(matcher, parsed.flags));
   } catch {
     return null;
   }
+}
+
+function parseReplayRegexPattern(regex: string): { pattern: string; flags: Set<string> } {
+  const flags = new Set<string>();
+  const match = regex.match(/^\(\?([imsux-]+)\)/);
+  if (!match) return { pattern: regex, flags };
+  let enabled = true;
+  for (const flag of match[1] ?? "") {
+    if (flag === "-") {
+      enabled = false;
+      continue;
+    }
+    if (enabled) flags.add(flag);
+  }
+  return { pattern: regex.slice(match[0].length), flags };
+}
+
+function replayRegexFlags(matcher: Record<string, unknown>, inlineFlags: Set<string>): string {
+  const flags = new Set<string>(["g"]);
+  if (matcher.caseSensitive === false || inlineFlags.has("i")) flags.add("i");
+  if (inlineFlags.has("m")) flags.add("m");
+  if (inlineFlags.has("s")) flags.add("s");
+  if (inlineFlags.has("u")) flags.add("u");
+  return Array.from(flags).join("");
 }
 
 function textFromFixture(context: unknown, field: string): string | undefined {

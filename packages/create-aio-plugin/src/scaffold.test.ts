@@ -1623,6 +1623,29 @@ describe("create-aio-plugin scaffold", () => {
     expect(JSON.stringify(result)).toContain("[REDACTED]");
   });
 
+  it("replay explain supports Rust regex inline flags accepted by strict validation", () => {
+    const files = rulePluginFilesWithTarget(undefined);
+    const document = JSON.parse(files["rules/main.json"] ?? "{}") as {
+      rules?: Array<Record<string, unknown>>;
+    };
+    const rule = document.rules?.[0];
+    if (rule) {
+      rule.match = { regex: "(?i)secret" };
+    }
+    files["rules/main.json"] = `${JSON.stringify(document, null, 2)}\n`;
+
+    const result = replayHookExplain(files, "gateway.request.afterBodyRead", {
+      request: { body: "SECRET token" },
+    });
+
+    expect(result).toMatchObject({
+      matchedRuleIds: ["redact-token-rule"],
+      actionKind: "replace",
+      outputKind: "replace",
+      result: { action: "replace", requestBody: "[REDACTED] token" },
+    });
+  });
+
   it("replay explain reports block and warn matches without mutations", () => {
     const blockResult = replayHookExplain(
       rulePluginFilesWithAction({ kind: "block", reason: "blocked" }),
