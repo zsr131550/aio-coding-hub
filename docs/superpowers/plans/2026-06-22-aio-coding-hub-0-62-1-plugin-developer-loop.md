@@ -788,6 +788,57 @@ it("replay explain command emits JSON explanation", () => {
     matchedRuleIds: ["redact-token-rule"],
   });
 });
+
+it("legacy replay keeps JavaScript best-effort regex behavior while explain reports Rust-aware diagnostics", () => {
+  const toggledFiles = rulePluginFilesWithTarget(undefined);
+  const toggledDocument = JSON.parse(toggledFiles["rules/main.json"] ?? "{}") as {
+    rules?: Array<Record<string, unknown>>;
+  };
+  const toggledRule = toggledDocument.rules?.[0];
+  if (toggledRule) {
+    toggledRule.match = { regex: "(?i)sec(?-i)ret" };
+  }
+  toggledFiles["rules/main.json"] = `${JSON.stringify(toggledDocument, null, 2)}\n`;
+
+  expect(
+    replayHook(toggledFiles, "gateway.request.afterBodyRead", {
+      request: { body: "SECRET token" },
+    })
+  ).toEqual({ action: "pass" });
+  expect(
+    replayHookExplain(toggledFiles, "gateway.request.afterBodyRead", {
+      request: { body: "SECRET token" },
+    })
+  ).toMatchObject({
+    outputKind: "pass",
+    warnings: [expect.objectContaining({ code: "PLUGIN_REPLAY_REGEX_UNSUPPORTED" })],
+  });
+
+  const unicodeFiles = rulePluginFilesWithTarget(undefined);
+  const unicodeDocument = JSON.parse(unicodeFiles["rules/main.json"] ?? "{}") as {
+    rules?: Array<Record<string, unknown>>;
+  };
+  const unicodeRule = unicodeDocument.rules?.[0];
+  if (unicodeRule) {
+    unicodeRule.match = { regex: "\\p{L}+" };
+  }
+  unicodeFiles["rules/main.json"] = `${JSON.stringify(unicodeDocument, null, 2)}\n`;
+
+  expect(
+    replayHook(unicodeFiles, "gateway.request.afterBodyRead", {
+      request: { body: "é token" },
+    })
+  ).toEqual({ action: "pass" });
+  expect(
+    replayHookExplain(unicodeFiles, "gateway.request.afterBodyRead", {
+      request: { body: "é token" },
+    })
+  ).toMatchObject({
+    matchedRuleIds: ["redact-token-rule"],
+    outputKind: "replace",
+    result: { action: "replace", requestBody: "[REDACTED] [REDACTED]" },
+  });
+});
 ```
 
 Update `rulePluginFilesWithRule` so test rule ids are stable and not coupled to scaffold text:
@@ -844,6 +895,7 @@ type ReplayRuleTrace = {
   actionKind: string | null;
   targetField?: string;
   jsonPath?: string;
+  warning?: PluginDiagnostic;
 };
 ```
 
@@ -917,6 +969,7 @@ export function replayHookExplain(
     for (const [index, rule] of (document.rules ?? []).entries()) {
       evaluatedRuleCount += 1;
       const trace = replayDeclarativeRuleWithTrace(rule, hook, context, `${rulePath}#${index + 1}`);
+      if (trace.warning) warnings.push(trace.warning);
       if (trace.matched) matchedRuleIds.push(trace.ruleId);
       if (trace.result.action !== "pass") {
         finalTrace = trace;
@@ -942,15 +995,52 @@ export function replayHookExplain(
 }
 ```
 
-- [ ] **Step 4: Instrument declarative rule replay without changing `replayHook` output**
+- [ ] **Step 4: Add an explain-only trace path and keep legacy `replayHook` on its old best-effort path**
 
-Replace the body of `replayDeclarativeRule` with:
+Keep `replayDeclarativeRule` as the legacy implementation. It must continue compiling regexes with JavaScript's `RegExp` directly and silently pass when JavaScript cannot compile a pattern. This preserves the old local replay contract:
 
 ```ts
-return replayDeclarativeRuleWithTrace(rawRule, hook, context, "rule").result;
+function replayDeclarativeRule(
+  rawRule: unknown,
+  hook: GatewayHookName,
+  context: unknown
+): ReplayRuleResult {
+  const rule = asRecord(rawRule);
+  if (rule?.hook !== hook) return { action: "pass" };
+  const target = asRecord(rule.target);
+  const matcher = asRecord(rule.matcher) ?? asRecord(rule.match);
+  const action = asRecord(rule.action);
+  if (!target || !matcher || !action) return { action: "pass" };
+  if (typeof matcher.regex !== "string") return { action: "pass" };
+
+  let regex: RegExp;
+  try {
+    regex = new RegExp(matcher.regex, matcher.caseSensitive === false ? "gi" : "g");
+  } catch {
+    return { action: "pass" };
+  }
+
+  const targetField = typeof target.field === "string" ? target.field : "request.body";
+  const text = textFromFixture(context, targetField);
+  if (!text) return { action: "pass" };
+
+  const path =
+    typeof target.jsonPath === "string"
+      ? target.jsonPath
+      : target.kind === "jsonPath" && typeof target.path === "string"
+        ? target.path
+        : undefined;
+  if (
+    !path ||
+    (target.field && target.field !== "request.body" && target.field !== "response.body")
+  ) {
+    return replayTextAction(text, regex, action, targetField);
+  }
+  return replayJsonPathAction(text, path, regex, action, targetField);
+}
 ```
 
-Add this helper before `replayDeclarativeRule`:
+Add the new explain-only helper after `replayDeclarativeRule`:
 
 ```ts
 function replayDeclarativeRuleWithTrace(
@@ -979,10 +1069,19 @@ function replayDeclarativeRuleWithTrace(
   if (!target || !matcher || !action) {
     return { result: { action: "pass" }, matched: false, ruleId, actionKind, targetField, jsonPath };
   }
-  const regex = compileReplayRegex(matcher);
-  if (!regex) {
-    return { result: { action: "pass" }, matched: false, ruleId, actionKind, targetField, jsonPath };
+  const compiled = compileReplayRegex(matcher);
+  if (!compiled.ok) {
+    return {
+      result: { action: "pass" },
+      matched: false,
+      ruleId,
+      actionKind,
+      targetField,
+      jsonPath,
+      ...(compiled.warning ? { warning: compiled.warning } : {}),
+    };
   }
+  const regex = compiled.regex;
 
   const text = textFromFixture(context, targetField);
   if (!text) {
@@ -1056,6 +1155,8 @@ function summaryForReplacement(
   };
 }
 ```
+
+`compileReplayRegex`, `parseReplayRegexPattern`, and `replayRegexFlags` belong only to the explain path. Do not call them from `replayDeclarativeRule` or legacy `replayHook`.
 
 - [ ] **Step 5: Run tests to verify the task passes**
 

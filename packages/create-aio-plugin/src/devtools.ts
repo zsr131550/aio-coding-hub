@@ -1508,9 +1508,38 @@ function replayDeclarativeRule(
   hook: GatewayHookName,
   context: unknown
 ): ReplayRuleResult {
-  const trace = replayDeclarativeRuleWithTrace(rawRule, hook, context);
-  if (trace.warning) throw new Error(`${trace.warning.code}: ${trace.warning.message}`);
-  return trace.result;
+  const rule = asRecord(rawRule);
+  if (rule?.hook !== hook) return { action: "pass" };
+  const target = asRecord(rule.target);
+  const matcher = asRecord(rule.matcher) ?? asRecord(rule.match);
+  const action = asRecord(rule.action);
+  if (!target || !matcher || !action) return { action: "pass" };
+  if (typeof matcher.regex !== "string") return { action: "pass" };
+
+  let regex: RegExp;
+  try {
+    regex = new RegExp(matcher.regex, matcher.caseSensitive === false ? "gi" : "g");
+  } catch {
+    return { action: "pass" };
+  }
+
+  const targetField = typeof target.field === "string" ? target.field : "request.body";
+  const text = textFromFixture(context, targetField);
+  if (!text) return { action: "pass" };
+
+  const path =
+    typeof target.jsonPath === "string"
+      ? target.jsonPath
+      : target.kind === "jsonPath" && typeof target.path === "string"
+        ? target.path
+        : undefined;
+  if (
+    !path ||
+    (target.field && target.field !== "request.body" && target.field !== "response.body")
+  ) {
+    return replayTextAction(text, regex, action, targetField);
+  }
+  return replayJsonPathAction(text, path, regex, action, targetField);
 }
 
 function replayDeclarativeRuleWithTrace(

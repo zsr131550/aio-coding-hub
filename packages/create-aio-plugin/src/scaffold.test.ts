@@ -1693,11 +1693,11 @@ describe("create-aio-plugin scaffold", () => {
         }),
       ],
     });
-    expect(() =>
+    expect(
       replayHook(toggledFiles, "gateway.request.afterBodyRead", {
         request: { body: "SECRET token" },
       })
-    ).toThrow(/PLUGIN_REPLAY_REGEX_UNSUPPORTED/);
+    ).toEqual({ action: "pass" });
 
     const extendedFiles = rulePluginFilesWithTarget(undefined);
     const extendedDocument = JSON.parse(extendedFiles["rules/main.json"] ?? "{}") as {
@@ -1748,8 +1748,7 @@ describe("create-aio-plugin scaffold", () => {
     expect(
       replayHook(files, "gateway.request.afterBodyRead", { request: { body: "é token" } })
     ).toEqual({
-      action: "replace",
-      requestBody: "[REDACTED] [REDACTED]",
+      action: "pass",
     });
   });
 
