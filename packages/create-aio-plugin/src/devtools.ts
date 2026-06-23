@@ -285,7 +285,7 @@ export function doctorPluginFiles(files: ScaffoldFiles, options: DoctorOptions =
 
   if (runtimeKind === "declarativeRules" && runtime.kind === "declarativeRules") {
     for (const rulePath of runtime.rules) {
-      if (files[rulePath] == null) {
+      if (!hasPluginFile(files, rulePath)) {
         diagnostics.push({
           severity: "error",
           code: "PLUGIN_RULE_FILE_MISSING",
@@ -299,7 +299,7 @@ export function doctorPluginFiles(files: ScaffoldFiles, options: DoctorOptions =
 
   if (runtimeKind === "wasm") {
     const entry = manifest.entry ?? "plugin.wasm";
-    if (files[entry] == null) {
+    if (!hasPluginFile(files, entry)) {
       diagnostics.push({
         severity: "error",
         code: "PLUGIN_WASM_ENTRY_MISSING",
@@ -335,6 +335,10 @@ export function packPluginDirectory(root: string): PackedPlugin {
 
 function hasErrorDiagnostics(diagnostics: readonly PluginDiagnostic[]): boolean {
   return diagnostics.some((diagnostic) => diagnostic.severity === "error");
+}
+
+function hasPluginFile(files: ScaffoldFiles, path: string): boolean {
+  return Object.prototype.hasOwnProperty.call(files, path);
 }
 
 function strictRuleDiagnostics(
@@ -382,6 +386,51 @@ function manifestShapeDiagnostics(manifest: Partial<PluginManifest>): PluginDiag
       path: "plugin.json#/hooks",
       hint: "Declare at least one Plugin API v1 hook.",
     });
+  } else {
+    manifest.hooks.forEach((hook, index) => {
+      const hookRecord = asRecord(hook);
+      if (!hookRecord) {
+        diagnostics.push({
+          severity: "error",
+          code: "PLUGIN_INVALID_MANIFEST",
+          message: "hook entries must be objects",
+          path: `plugin.json#/hooks/${index}`,
+          hint: "Declare hooks as Plugin API v1 hook objects.",
+        });
+        return;
+      }
+      if (typeof hookRecord.name !== "string") {
+        diagnostics.push({
+          severity: "error",
+          code: "PLUGIN_INVALID_MANIFEST",
+          message: "hook name must be a string",
+          path: `plugin.json#/hooks/${index}/name`,
+          hint: "Use a Plugin API v1 hook name.",
+        });
+      }
+      if (hookRecord.priority != null && typeof hookRecord.priority !== "number") {
+        diagnostics.push({
+          severity: "error",
+          code: "PLUGIN_INVALID_MANIFEST",
+          message: "hook priority must be a number when present",
+          path: `plugin.json#/hooks/${index}/priority`,
+          hint: "Use a numeric hook priority.",
+        });
+      }
+      if (
+        hookRecord.failurePolicy != null &&
+        hookRecord.failurePolicy !== "fail-open" &&
+        hookRecord.failurePolicy !== "fail-closed"
+      ) {
+        diagnostics.push({
+          severity: "error",
+          code: "PLUGIN_INVALID_MANIFEST",
+          message: "hook failurePolicy must be fail-open or fail-closed when present",
+          path: `plugin.json#/hooks/${index}/failurePolicy`,
+          hint: "Use fail-open or fail-closed.",
+        });
+      }
+    });
   }
   if (!Array.isArray(manifest.permissions)) {
     diagnostics.push({
@@ -413,6 +462,19 @@ function manifestShapeDiagnostics(manifest: Partial<PluginManifest>): PluginDiag
         });
       }
     }
+    if (
+      compatibility.platforms != null &&
+      (!Array.isArray(compatibility.platforms) ||
+        !compatibility.platforms.every((platform) => typeof platform === "string"))
+    ) {
+      diagnostics.push({
+        severity: "error",
+        code: "PLUGIN_INVALID_MANIFEST",
+        message: "hostCompatibility.platforms must be an array of strings when present",
+        path: "plugin.json#/hostCompatibility/platforms",
+        hint: "Use platform names as strings.",
+      });
+    }
   }
   if (manifest.entry != null && typeof manifest.entry !== "string") {
     diagnostics.push({
@@ -431,6 +493,19 @@ function manifestShapeDiagnostics(manifest: Partial<PluginManifest>): PluginDiag
       message: "wasm runtime requires a string abiVersion",
       path: "plugin.json#/runtime/abiVersion",
       hint: 'Use runtime: { kind: "wasm", abiVersion: "1.0.0" }.',
+    });
+  }
+  if (
+    runtime?.kind === "wasm" &&
+    runtime.memoryLimitBytes != null &&
+    typeof runtime.memoryLimitBytes !== "number"
+  ) {
+    diagnostics.push({
+      severity: "error",
+      code: "PLUGIN_INVALID_RUNTIME",
+      message: "wasm memoryLimitBytes must be a number when present",
+      path: "plugin.json#/runtime/memoryLimitBytes",
+      hint: "Use a byte count number.",
     });
   }
   return diagnostics;

@@ -293,6 +293,47 @@ describe("create-aio-plugin scaffold", () => {
     );
   });
 
+  it("doctor only treats own runtime file entries as present", () => {
+    const ruleFiles = createPluginScaffold({
+      id: "acme.redactor",
+      name: "Redactor",
+      template: "rule",
+    });
+    delete ruleFiles["rules/main.json"];
+    const ruleManifest = JSON.parse(ruleFiles["plugin.json"] ?? "{}") as Record<string, unknown>;
+    ruleManifest.runtime = { kind: "declarativeRules", rules: ["toString"] };
+    ruleFiles["plugin.json"] = `${JSON.stringify(ruleManifest, null, 2)}\n`;
+
+    const ruleResult = doctorPluginFiles(ruleFiles);
+
+    expect(ruleResult.ok).toBe(false);
+    expect(ruleResult.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "PLUGIN_RULE_FILE_MISSING",
+        path: "toString",
+      })
+    );
+
+    const wasmFiles = createPluginScaffold({
+      id: "acme.policy",
+      name: "Policy",
+      template: "wasm",
+    });
+    const wasmManifest = JSON.parse(wasmFiles["plugin.json"] ?? "{}") as Record<string, unknown>;
+    wasmManifest.entry = "toString";
+    wasmFiles["plugin.json"] = `${JSON.stringify(wasmManifest, null, 2)}\n`;
+
+    const wasmResult = doctorPluginFiles(wasmFiles);
+
+    expect(wasmResult.ok).toBe(false);
+    expect(wasmResult.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "PLUGIN_WASM_ENTRY_MISSING",
+        path: "toString",
+      })
+    );
+  });
+
   it("doctor treats empty runtime files as present", () => {
     const ruleFiles = createPluginScaffold({
       id: "acme.redactor",
@@ -418,6 +459,60 @@ describe("create-aio-plugin scaffold", () => {
         severity: "error",
         code: "PLUGIN_INVALID_MANIFEST",
         path: "plugin.json#/entry",
+      })
+    );
+  });
+
+  it("doctor rejects malformed optional manifest metadata", () => {
+    const files = createPluginScaffold({
+      id: "acme.redactor",
+      name: "Redactor",
+      template: "rule",
+    });
+    const manifest = JSON.parse(files["plugin.json"] ?? "{}") as Record<string, unknown>;
+    manifest.hooks = [{ name: "gateway.request.afterBodyRead", priority: "high" }];
+    manifest.hostCompatibility = {
+      app: ">=0.56.0 <1.0.0",
+      pluginApi: "^1.0.0",
+      platforms: "linux",
+    };
+    files["plugin.json"] = `${JSON.stringify(manifest, null, 2)}\n`;
+
+    const result = doctorPluginFiles(files);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "PLUGIN_INVALID_MANIFEST",
+        path: "plugin.json#/hooks/0/priority",
+      })
+    );
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "PLUGIN_INVALID_MANIFEST",
+        path: "plugin.json#/hostCompatibility/platforms",
+      })
+    );
+  });
+
+  it("doctor rejects malformed wasm memory limits", () => {
+    const files = createPluginScaffold({
+      id: "acme.policy",
+      name: "Policy",
+      template: "wasm",
+    });
+    const manifest = JSON.parse(files["plugin.json"] ?? "{}") as Record<string, unknown>;
+    manifest.runtime = { kind: "wasm", abiVersion: "1.0.0", memoryLimitBytes: "16MB" };
+    files["plugin.json"] = `${JSON.stringify(manifest, null, 2)}\n`;
+    files["plugin.wasm"] = "";
+
+    const result = doctorPluginFiles(files);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "PLUGIN_INVALID_RUNTIME",
+        path: "plugin.json#/runtime/memoryLimitBytes",
       })
     );
   });
