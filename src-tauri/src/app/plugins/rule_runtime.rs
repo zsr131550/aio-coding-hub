@@ -913,6 +913,7 @@ mod tests {
                 status: Some(200),
                 headers: None,
                 body: Some(body.to_string()),
+                ..GatewayVisibleResponseContext::default()
             },
             stream: GatewayVisibleStreamContext::default(),
             log: GatewayVisibleLogContext::default(),
@@ -928,6 +929,7 @@ mod tests {
             stream: GatewayVisibleStreamContext {
                 sequence: Some(1),
                 chunk: Some(chunk.to_string()),
+                ..GatewayVisibleStreamContext::default()
             },
             log: GatewayVisibleLogContext::default(),
         }

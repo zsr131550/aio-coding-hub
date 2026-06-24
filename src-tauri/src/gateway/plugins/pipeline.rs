@@ -1,13 +1,15 @@
 //! Usage: Ordered, timeout-bounded gateway plugin hook pipeline.
 
 use super::context::{
-    GatewayHookAction, GatewayHookResult, GatewayLogHookInput, GatewayPluginHookName,
-    GatewayRequestHookInput, GatewayResponseHookInput, GatewayStreamHookInput,
-    GatewayVisibleHookContext,
+    GatewayHookAction, GatewayHookResult, GatewayLogHookInput, GatewayPluginContextBudget,
+    GatewayPluginHookName, GatewayRequestHookInput, GatewayResponseHookInput,
+    GatewayStreamHookInput, GatewayVisibleHookContext,
 };
+use super::mutation::{enforce_descriptor_permissions_with_budget, GatewayPluginMutationBudget};
 use super::permissions::{
     enforce_hook_result_permissions as enforce_descriptor_result_permissions, GatewayPluginError,
 };
+use super::registry::HookRegistry;
 use crate::domain::plugins::{PluginDetail, PluginStatus};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
@@ -89,6 +91,8 @@ pub(crate) struct GatewayPluginPipelineConfig {
     pub(crate) hook_timeout: Duration,
     pub(crate) circuit_failure_threshold: u32,
     pub(crate) circuit_cooldown: Duration,
+    pub(crate) context_budget: GatewayPluginContextBudget,
+    pub(crate) mutation_budget: GatewayPluginMutationBudget,
 }
 
 impl Default for GatewayPluginPipelineConfig {
@@ -97,6 +101,8 @@ impl Default for GatewayPluginPipelineConfig {
             hook_timeout: Duration::from_millis(150),
             circuit_failure_threshold: 3,
             circuit_cooldown: Duration::from_secs(30),
+            context_budget: GatewayPluginContextBudget::default(),
+            mutation_budget: GatewayPluginMutationBudget::default(),
         }
     }
 }
@@ -239,7 +245,10 @@ impl GatewayPluginPipeline {
                 body: body.clone(),
                 ..input.clone()
             };
-            let visible = current_input.visible_context(&plugin.granted_permissions);
+            let visible = current_input.visible_context_with_budget(
+                &plugin.granted_permissions,
+                self.config.context_budget,
+            );
             let future = self.executor.execute_request_hook(plugin, visible);
             let result = match tokio::time::timeout(self.config.hook_timeout, future).await {
                 Ok(Ok(result)) => result,
@@ -285,10 +294,11 @@ impl GatewayPluginPipeline {
                 }
             };
 
-            if let Err(err) = enforce_descriptor_result_permissions(
+            if let Err(err) = enforce_hook_result_with_budget(
                 input.hook_name,
                 &plugin.granted_permissions,
                 &result,
+                self.config.mutation_budget,
             ) {
                 self.record_failure(&plugin.summary.plugin_id);
                 audit_events.push(audit_event(
@@ -378,7 +388,10 @@ impl GatewayPluginPipeline {
                 body: body.clone(),
                 ..input.clone()
             };
-            let visible = current_input.visible_context(&plugin.granted_permissions);
+            let visible = current_input.visible_context_with_budget(
+                &plugin.granted_permissions,
+                self.config.context_budget,
+            );
             let result = match tokio::time::timeout(
                 self.config.hook_timeout,
                 self.executor.execute_response_hook(plugin, visible),
@@ -405,10 +418,11 @@ impl GatewayPluginPipeline {
                 }
             };
 
-            if let Err(err) = enforce_descriptor_result_permissions(
+            if let Err(err) = enforce_hook_result_with_budget(
                 input.hook_name,
                 &plugin.granted_permissions,
                 &result,
+                self.config.mutation_budget,
             ) {
                 self.record_failure(&plugin.summary.plugin_id);
                 audit_events.push(failed_event(plugin, input.hook_name, &err.to_string()));
@@ -483,7 +497,10 @@ impl GatewayPluginPipeline {
                 chunk: chunk.clone(),
                 ..input.clone()
             };
-            let visible = current_input.visible_context(&plugin.granted_permissions);
+            let visible = current_input.visible_context_with_budget(
+                &plugin.granted_permissions,
+                self.config.context_budget,
+            );
             let result = match tokio::time::timeout(
                 self.config.hook_timeout,
                 self.executor.execute_stream_hook(plugin, visible),
@@ -510,10 +527,11 @@ impl GatewayPluginPipeline {
                 }
             };
 
-            if let Err(err) = enforce_descriptor_result_permissions(
+            if let Err(err) = enforce_hook_result_with_budget(
                 hook_name,
                 &plugin.granted_permissions,
                 &result,
+                self.config.mutation_budget,
             ) {
                 self.record_failure(&plugin.summary.plugin_id);
                 audit_events.push(failed_event(plugin, hook_name, &err.to_string()));
@@ -583,7 +601,10 @@ impl GatewayPluginPipeline {
                 message: message.clone(),
                 ..input.clone()
             };
-            let visible = current_input.visible_context(&plugin.granted_permissions);
+            let visible = current_input.visible_context_with_budget(
+                &plugin.granted_permissions,
+                self.config.context_budget,
+            );
             let result = match tokio::time::timeout(
                 self.config.hook_timeout,
                 self.executor.execute_log_hook(plugin, visible),
@@ -610,10 +631,11 @@ impl GatewayPluginPipeline {
                 }
             };
 
-            if let Err(err) = enforce_descriptor_result_permissions(
+            if let Err(err) = enforce_hook_result_with_budget(
                 hook_name,
                 &plugin.granted_permissions,
                 &result,
+                self.config.mutation_budget,
             ) {
                 self.record_failure(&plugin.summary.plugin_id);
                 audit_events.push(failed_event(plugin, hook_name, &err.to_string()));
@@ -753,6 +775,29 @@ impl GatewayPluginPipeline {
 enum FailurePolicy {
     FailOpen,
     FailClosed,
+}
+
+fn enforce_hook_result_with_budget(
+    hook_name: GatewayPluginHookName,
+    permissions: &[String],
+    result: &GatewayHookResult,
+    budget: GatewayPluginMutationBudget,
+) -> Result<(), GatewayPluginError> {
+    if budget == GatewayPluginMutationBudget::default() {
+        return enforce_descriptor_result_permissions(hook_name, permissions, result);
+    }
+
+    let descriptor = HookRegistry::new().descriptor(hook_name).ok_or_else(|| {
+        GatewayPluginError::new(
+            "PLUGIN_UNKNOWN_HOOK",
+            format!("unknown hook: {}", hook_name.as_str()),
+        )
+    })?;
+    debug_assert!(descriptor
+        .read_permissions
+        .iter()
+        .all(|permission| descriptor.allows_read_permission(permission)));
+    enforce_descriptor_permissions_with_budget(descriptor, permissions, result, budget)
 }
 
 fn failure_policy(plugin: &PluginDetail, hook_name: GatewayPluginHookName) -> FailurePolicy {
@@ -1371,6 +1416,7 @@ mod tests {
                 hook_timeout: Duration::from_secs(1),
                 circuit_failure_threshold: 2,
                 circuit_cooldown: Duration::from_secs(30),
+                ..GatewayPluginPipelineConfig::default()
             },
         );
 
@@ -1409,6 +1455,7 @@ mod tests {
                 hook_timeout: Duration::from_millis(1),
                 circuit_failure_threshold: 1,
                 circuit_cooldown: Duration::from_secs(60),
+                ..GatewayPluginPipelineConfig::default()
             },
         );
 
@@ -1448,6 +1495,7 @@ mod tests {
                 hook_timeout: Duration::from_millis(1),
                 circuit_failure_threshold: 1,
                 circuit_cooldown: Duration::from_secs(60),
+                ..GatewayPluginPipelineConfig::default()
             },
         );
 
@@ -1491,6 +1539,7 @@ mod tests {
                 hook_timeout: Duration::from_secs(1),
                 circuit_failure_threshold: 1,
                 circuit_cooldown: Duration::from_millis(1),
+                ..GatewayPluginPipelineConfig::default()
             },
         );
 
@@ -1528,6 +1577,7 @@ mod tests {
                 hook_timeout: Duration::from_secs(1),
                 circuit_failure_threshold: 2,
                 circuit_cooldown: Duration::from_secs(30),
+                ..GatewayPluginPipelineConfig::default()
             },
         );
 

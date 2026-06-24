@@ -4,10 +4,51 @@ use super::context::{GatewayHookResult, GatewayPluginHookName};
 use super::permissions::GatewayPluginError;
 use super::registry::HookDescriptor;
 
+pub(crate) const DEFAULT_PLUGIN_MUTATION_BODY_BYTES: usize = 256 * 1024;
+pub(crate) const DEFAULT_PLUGIN_MUTATION_STREAM_BYTES: usize = 64 * 1024;
+pub(crate) const DEFAULT_PLUGIN_MUTATION_LOG_BYTES: usize = 64 * 1024;
+pub(crate) const DEFAULT_PLUGIN_MUTATION_HEADER_COUNT: usize = 64;
+pub(crate) const DEFAULT_PLUGIN_MUTATION_HEADER_VALUE_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayPluginMutationBudget {
+    pub(crate) body_bytes: usize,
+    pub(crate) stream_bytes: usize,
+    pub(crate) log_bytes: usize,
+    pub(crate) header_count: usize,
+    pub(crate) header_value_bytes: usize,
+}
+
+impl Default for GatewayPluginMutationBudget {
+    fn default() -> Self {
+        Self {
+            body_bytes: DEFAULT_PLUGIN_MUTATION_BODY_BYTES,
+            stream_bytes: DEFAULT_PLUGIN_MUTATION_STREAM_BYTES,
+            log_bytes: DEFAULT_PLUGIN_MUTATION_LOG_BYTES,
+            header_count: DEFAULT_PLUGIN_MUTATION_HEADER_COUNT,
+            header_value_bytes: DEFAULT_PLUGIN_MUTATION_HEADER_VALUE_BYTES,
+        }
+    }
+}
+
 pub(crate) fn enforce_descriptor_permissions(
     descriptor: HookDescriptor,
     permissions: &[String],
     result: &GatewayHookResult,
+) -> Result<(), GatewayPluginError> {
+    enforce_descriptor_permissions_with_budget(
+        descriptor,
+        permissions,
+        result,
+        GatewayPluginMutationBudget::default(),
+    )
+}
+
+pub(crate) fn enforce_descriptor_permissions_with_budget(
+    descriptor: HookDescriptor,
+    permissions: &[String],
+    result: &GatewayHookResult,
+    budget: GatewayPluginMutationBudget,
 ) -> Result<(), GatewayPluginError> {
     if result.request_body.is_some() {
         require_mutation_field(descriptor, "requestBody", "request body mutation")?;
@@ -28,7 +69,60 @@ pub(crate) fn enforce_descriptor_permissions(
     if !result.headers.is_empty() {
         require_header_mutation(descriptor, permissions)?;
     }
+    enforce_output_budget(result, budget)?;
     Ok(())
+}
+
+fn enforce_output_budget(
+    result: &GatewayHookResult,
+    budget: GatewayPluginMutationBudget,
+) -> Result<(), GatewayPluginError> {
+    if result
+        .request_body
+        .as_ref()
+        .is_some_and(|body| body.len() > budget.body_bytes)
+        || result
+            .response_body
+            .as_ref()
+            .is_some_and(|body| body.len() > budget.body_bytes)
+    {
+        return Err(output_too_large(
+            "body mutation exceeds plugin output budget",
+        ));
+    }
+    if result
+        .stream_chunk
+        .as_ref()
+        .is_some_and(|chunk| chunk.len() > budget.stream_bytes)
+    {
+        return Err(output_too_large(
+            "stream mutation exceeds plugin output budget",
+        ));
+    }
+    if result
+        .log_message
+        .as_ref()
+        .is_some_and(|message| message.len() > budget.log_bytes)
+    {
+        return Err(output_too_large(
+            "log mutation exceeds plugin output budget",
+        ));
+    }
+    if result.headers.len() > budget.header_count
+        || result
+            .headers
+            .values()
+            .any(|value| value.len() > budget.header_value_bytes)
+    {
+        return Err(output_too_large(
+            "header mutation exceeds plugin output budget",
+        ));
+    }
+    Ok(())
+}
+
+fn output_too_large(message: &'static str) -> GatewayPluginError {
+    GatewayPluginError::new("PLUGIN_OUTPUT_TOO_LARGE", message)
 }
 
 fn require_mutation_field(
@@ -149,5 +243,33 @@ mod tests {
 
         enforce_descriptor_permissions(descriptor, &["response.header.write".to_string()], &result)
             .expect("legacy response header write permission should allow stream hook result");
+    }
+
+    #[test]
+    fn mutation_budget_rejects_oversized_hook_outputs() {
+        let descriptor = HookRegistry::new()
+            .descriptor(GatewayPluginHookName::RequestBeforeSend)
+            .expect("request before send descriptor should resolve");
+        let result = GatewayHookResult {
+            request_body: Some("x".repeat(128)),
+            ..GatewayHookResult::continue_unchanged()
+        };
+        let budget = GatewayPluginMutationBudget {
+            body_bytes: 16,
+            stream_bytes: 16,
+            log_bytes: 16,
+            header_count: 8,
+            header_value_bytes: 64,
+        };
+
+        let err = enforce_descriptor_permissions_with_budget(
+            descriptor,
+            &["request.body.write".to_string()],
+            &result,
+            budget,
+        )
+        .expect_err("oversized body mutation should be rejected");
+
+        assert_eq!(err.code_for_logging(), "PLUGIN_OUTPUT_TOO_LARGE");
     }
 }

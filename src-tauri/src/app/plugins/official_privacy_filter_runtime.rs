@@ -596,6 +596,7 @@ mod tests {
             stream: GatewayVisibleStreamContext::default(),
             log: GatewayVisibleLogContext {
                 message: Some(message.to_string()),
+                ..GatewayVisibleLogContext::default()
             },
         }
     }
