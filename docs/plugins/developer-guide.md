@@ -15,15 +15,24 @@
 
 ## 推荐开发路径
 
+简写成一条主线就是：
+
+```text
+doctor -> validate --strict -> replay --explain -> export replay fixture -> fix -> pack -> publish-check -> install/update
+```
+
 1. 明确插件目标和目标 hook：请求前处理通常用 `gateway.request.afterBodyRead` 或 `gateway.request.beforeSend`，日志脱敏用 `log.beforePersist`。
 2. 优先判断能否用 `declarativeRules` 表达。正则匹配、替换、阻断、告警和追加消息都应先走规则运行时。
 3. 编写最小 `plugin.json`：只声明必要 runtime、hooks、permissions、hostCompatibility 和 configSchema。
 4. 准备 fixture：至少覆盖 Claude `messages[].content[].text` 和 Codex/OpenAI Responses `input[].content[].text` / `input_text` 形态。
 5. 使用 `pnpm create-aio-plugin doctor` 和 `validate --strict` 做 package health、manifest 与规则校验。
 6. 使用 `pnpm create-aio-plugin replay --explain` 在本地 fixture 上验证行为并查看规则解释。
-7. 使用 `pnpm create-aio-plugin pack` 打包为 `.aio-plugin`。
-8. 在 Plugins 页面本地导入，先检查安装预检，再确认安装、授权权限、启用插件，检查审计日志。
-9. 发布前计算 `sha256`，可信索引分发时补 Ed25519 签名。
+7. 对真实请求问题，从宿主导出 `plugin_export_replay_fixture`，用导出的 trace、attempts、runtime reports 和本地 body fixture 复现。
+8. 修复规则或代码后再次 replay。
+9. 使用 `pnpm create-aio-plugin pack` 打包为 `.aio-plugin`。
+10. 发布前运行 `pnpm create-aio-plugin publish-check ./acme.redactor` 生成 release metadata。
+11. 在 Plugins 页面本地导入或从市场安装，先检查安装预检，再确认安装、授权权限、启用插件，检查审计日志。
+12. 发布前计算 `sha256`，可信索引分发时补 Ed25519 签名。
 
 ## 10 分钟快速开始
 
@@ -68,13 +77,18 @@ pnpm create-aio-plugin replay --explain ./acme.redactor ./fixtures/claude-reques
 pnpm create-aio-plugin replay --explain ./acme.redactor ./fixtures/codex-request.json gateway.request.afterBodyRead
 ```
 
+如果问题来自真实网关请求，先在 Plugins 页面或 request log 操作里导出 replay fixture。宿主命令名是 `plugin_export_replay_fixture`；它会把 trace id、hook name、plugin id、attempts 和 `plugin_hook_execution_reports` 放进 fixture。当前 request logs 不持久化完整 body，所以导出结果会在 `notes` 里说明缺口，插件作者需要用本地 fixture 补齐要复现的 request/response body。
+
 打包插件并从 Plugins 页面本地安装：
 
 ```bash
 pnpm create-aio-plugin pack ./acme.redactor
+pnpm create-aio-plugin publish-check ./acme.redactor
 ```
 
 在 Plugins 页面选择本地包 `acme.redactor.aio-plugin` 后，宿主会先展示安装预检。确认插件 id、版本、runtime、hooks、permissions、host compatibility、checksum/signature 和风险提示无误后，再执行真实安装。安装后确认 `request.body.read` 和 `request.body.write` permissions 并启用插件。命中请求后，插件详情面板应展示 hook completion 或 block/failure events，且不应存储 sensitive payload text。
+
+`publish-check` 只输出市场发布 metadata，不写入插件包，也不替代 `pack`、`sign`、`verify` 或宿主安装时的 checksum/signature/compatibility/revoked 检查。
 
 SDK 检查命令：
 

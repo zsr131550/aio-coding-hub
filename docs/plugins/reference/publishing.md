@@ -7,6 +7,7 @@
 - 校验 `plugin.json`。
 - 控制 package size 和 entry count。
 - 对 package bytes 计算 `sha256`。
+- 使用 `publish-check` 输出 release metadata。
 - 通过可信 index 发布时，用 Ed25519 签名 release metadata。
 - 对新增权限、runtime/hook/config 变化和 breaking update 写清升级与 rollback 说明。
 
@@ -51,3 +52,41 @@
 - 如果同时提供 signature 和 trusted public key，宿主会校验 Ed25519 signature。
 
 开发者工具输出 base64 编码的 Ed25519 signature。Public key 是原始 32-byte Ed25519 public key 的 base64 编码，和宿主 verifier 输入保持一致。
+
+## publish-check
+
+`pnpm create-aio-plugin publish-check <plugin-dir>` 会读取插件目录，复用打包/校验路径计算 package metadata，并输出适合放进市场索引的字段，例如 plugin id、version、checksum、signature 状态、runtime、hooks、permissions 和 compatibility summary。
+
+`publish-check` 不写 `.aio-plugin` artifact，不替代 `pack`、`sign` 或 `verify`。它的职责是让发布者在提交市场索引前看到宿主安装时会关心的 metadata。真实安装仍由宿主重新下载包、校验 checksum、校验 signature、判断 compatibility、应用 permission policy，并处理 revoked / incompatible install blocks。
+
+## Market Index
+
+市场索引是一个发布清单，不是插件运行时 API。Plugins 页面可以加载 market index URL，也可以解析用户粘贴的 index JSON。索引条目应至少包含：
+
+- plugin id、name、latest version。
+- `.aio-plugin` download URL。
+- `sha256` checksum。
+- 可选 signature。
+- 可选 trusted public key。
+- compatibility summary。
+- risk labels。
+- revoked 状态和 install block reason。
+
+market index URL 只用于定位索引来源。trusted public key 用于校验 release signature；它不能扩大插件权限，也不能绕过 host compatibility、runtime policy、checksum、permission grant 或 quarantine 规则。
+
+## Trust And Install Blocks
+
+远程或市场安装必须提供 checksum。宿主会下载 `.aio-plugin` 后重新计算 `sha256`，和索引中的 checksum 对比。提供 signature 和 trusted public key 时，宿主会校验 Ed25519 signature；没有 trusted public key 时，插件仍可能被当作 unsigned package 展示给用户。
+
+revoked / incompatible install blocks 必须在市场 UI 和宿主安装路径同时生效。UI 可以提前禁用安装按钮并解释原因；宿主命令仍要在真实安装时重新检查 revoked、host/app/pluginApi/platform compatibility、runtime policy 和包安全限制。
+
+## Replay Fixtures In Publishing
+
+`plugin_export_replay_fixture` 导出的 replay fixture 是开发 workflow artifact，不是 release artifact。它适合放进 issue、PR 或本地 fixtures，用于复现某个 trace 的 hook 行为。由于 request logs 当前不持久化完整 request/response body，fixture 会携带 notes，发布者不应把它当成用户数据快照或市场证明材料。
+
+推荐发布前至少保留：
+
+- 一个正常命中 fixture。
+- 一个未命中 fixture。
+- 一个边界或失败策略 fixture。
+- 对应的 `replay --explain` 输出或 CI 检查。

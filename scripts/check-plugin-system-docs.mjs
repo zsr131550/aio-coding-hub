@@ -59,6 +59,9 @@ const requiredDocs = [
       "插件开发总指南",
       "plugin.json",
       "declarativeRules",
+      "doctor -> validate --strict -> replay --explain -> export replay fixture -> fix -> pack",
+      "plugin_export_replay_fixture",
+      "publish-check",
       "gateway.request.beforeSend",
       "request.normalizedMessages",
       "configSchema",
@@ -135,11 +138,7 @@ const requiredDocs = [
   },
   {
     path: "docs/plugins/examples/privacy-filter.md",
-    phrases: [
-      "official.privacy-filter",
-      "packyme/privacy-filter",
-      "已移除的内置示例",
-    ],
+    phrases: ["official.privacy-filter", "packyme/privacy-filter", "已移除的内置示例"],
   },
   {
     path: "docs/plugins/architecture/audit.md",
@@ -152,9 +151,7 @@ const requiredDocs = [
       "性能与稳定性建议",
       "0.62 does not add public provider plugin APIs",
     ],
-    caseInsensitivePhrases: [
-      "provider adapter facades remain internal",
-    ],
+    caseInsensitivePhrases: ["provider adapter facades remain internal"],
   },
   {
     path: "docs/plugins/reference/manifest.md",
@@ -166,6 +163,8 @@ const requiredDocs = [
       "gateway.request.afterBodyRead",
       "gateway.response.chunk",
       "log.beforePersist",
+      "plugin_hook_execution_reports",
+      "plugin_export_replay_fixture",
       "默认 vNext hook timeout: 150 ms",
     ],
   },
@@ -199,7 +198,26 @@ const requiredDocs = [
   },
   {
     path: "docs/plugins/reference/publishing.md",
-    phrases: [".aio-plugin", "sha256", "Ed25519", "rollback"],
+    phrases: [
+      ".aio-plugin",
+      "sha256",
+      "Ed25519",
+      "rollback",
+      "publish-check",
+      "market index URL",
+      "trusted public key",
+      "revoked / incompatible install blocks",
+      "plugin_export_replay_fixture",
+    ],
+  },
+  {
+    path: "docs/plugins/runtime/README.md",
+    phrases: [
+      "Host Runtime Lifecycle",
+      "plugin_hook_execution_reports",
+      "host-owned lifecycle",
+      "Dispose",
+    ],
   },
   {
     path: "docs/plugins/reference/compatibility.md",

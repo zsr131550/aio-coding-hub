@@ -13,8 +13,13 @@
 ## 工具与发布
 
 - [SDK](./sdk.md)：`@aio-coding-hub/plugin-sdk` 和 `aio-plugin-wasm-sdk` 的边界与示例。
-- [Publishing](./publishing.md)：`.aio-plugin`、`sha256`、Ed25519 签名、远程安装和 rollback。
+- [Publishing](./publishing.md)：`.aio-plugin`、`sha256`、Ed25519 签名、`publish-check`、市场索引、远程安装和 rollback。
 - [Compatibility](./compatibility.md)：SemVer、`pluginApi`、platforms 和 WASM ABI 兼容规则。
+
+## 调试与观测
+
+- [Hooks](./hooks.md#observability-and-replay)：`plugin_hook_execution_reports`、`plugin_export_replay_fixture` 和各 hook 的 replay 边界。
+- [运行时说明](../runtime/README.md)：host-owned lifecycle、runtime cache retain/dispose 和 release guard。
 
 ## 规范来源
 

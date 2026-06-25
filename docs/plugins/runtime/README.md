@@ -10,6 +10,8 @@
 
 ## Host Runtime Lifecycle
 
+This is a host-owned lifecycle. Plugins declare runtime type and hooks in Plugin API v1, but they do not create, retain, dispose, or inspect runtime instances directly.
+
 0.62.3 treats runtime lifecycle as a host-owned internal contract:
 
 1. **Load**: parse and validate runtime artifacts under package limits.
@@ -18,6 +20,10 @@
 4. **Dispose**: clear runtime caches when plugins are disabled, updated, uninstalled, or when the gateway plugin snapshot is replaced.
 
 Community `declarativeRules` and official `native:privacyFilter` are the only runtimes wired into gateway execution. WASM remains policy-gated, and process runtime remains PoC-only until both are routed through the same lifecycle registry with memory, IO, timeout, and shutdown guarantees.
+
+Hook execution evidence is written to `plugin_hook_execution_reports`. These reports let the GUI and developer workflow show duration, status, timeout, circuit state, budget rejection, mutation summary, and replayability without exposing a new plugin-callable diagnostics API.
+
+The lifecycle boundary exists to prevent long-lived plugin state from outliving its installed snapshot. Any future runtime that allocates memory, opens handles, or starts child processes must implement the same Load / Execute / Retain / Dispose contract before it can participate in gateway execution.
 
 ## Release Guard
 
