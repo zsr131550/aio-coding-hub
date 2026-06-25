@@ -270,7 +270,18 @@ pub(crate) fn export_typescript_bindings(output_path: &str) -> Result<(), String
                 .bigint(specta_typescript::BigIntExportBehavior::Number),
             output_path,
         )
-        .map_err(|error| format!("failed to export specta TypeScript bindings: {error}"))
+        .map_err(|error| format!("failed to export specta TypeScript bindings: {error}"))?;
+
+    let source = std::fs::read_to_string(output_path)
+        .map_err(|error| format!("failed to read generated TypeScript bindings: {error}"))?;
+    let normalized = source.replace("error: e  as any", "error: e as any");
+    if normalized != source {
+        std::fs::write(output_path, normalized).map_err(|error| {
+            format!("failed to normalize generated TypeScript bindings: {error}")
+        })?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

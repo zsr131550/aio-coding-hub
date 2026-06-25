@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS request_logs (
   excluded_from_stats INTEGER NOT NULL DEFAULT 0,
   special_settings_json TEXT,
   created_at_ms INTEGER NOT NULL DEFAULT 0,
+  last_activity_ms INTEGER,
+  activity_details_json TEXT,
   session_id TEXT,
   final_provider_id INTEGER
 );

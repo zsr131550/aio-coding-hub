@@ -997,6 +997,20 @@ fn ensure_request_logs_extended_columns(conn: &mut Connection) -> Result<(), Str
             .map_err(|e| format!("failed to ensure request_logs.error_details_json: {e}"))?;
     }
 
+    if !column_exists(conn, "request_logs", "last_activity_ms")? {
+        conn.execute_batch("ALTER TABLE request_logs ADD COLUMN last_activity_ms INTEGER;")
+            .map_err(|e| format!("failed to ensure request_logs.last_activity_ms: {e}"))?;
+        conn.execute_batch(
+            "UPDATE request_logs SET last_activity_ms = created_at_ms WHERE last_activity_ms IS NULL;",
+        )
+        .map_err(|e| format!("failed to backfill request_logs.last_activity_ms: {e}"))?;
+    }
+
+    if !column_exists(conn, "request_logs", "activity_details_json")? {
+        conn.execute_batch("ALTER TABLE request_logs ADD COLUMN activity_details_json TEXT;")
+            .map_err(|e| format!("failed to ensure request_logs.activity_details_json: {e}"))?;
+    }
+
     Ok(())
 }
 

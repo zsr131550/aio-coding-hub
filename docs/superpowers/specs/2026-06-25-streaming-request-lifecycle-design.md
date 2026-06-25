@@ -84,6 +84,7 @@
 - 不改 provider failover 策略。
 - 不改计费规则。
 - 不改插件 API。
+- 不改变插件 `gateway.response.chunk` hook 的输入、输出、调用顺序、错误 marker 和 audit/replay 结构。
 - 不重做首页请求日志 UI。
 - 不把历史所有 pending 记录做复杂迁移；只确保新逻辑和恢复逻辑稳定。
 
@@ -254,7 +255,18 @@ gateway stop / startup recovery
 
 本阶段不引入 idle timeout 配置或开关。任何“连续无数据后终止流”的新行为都不属于本设计。若现有代码存在 total timeout 或 idle timeout 会把仍连接的流主动 `Ready(None)`，实现时必须移除该终止行为或改为仅记录观测信息。首字节/connect 这类连接建立前的超时不在本设计范围内。
 
-### 6. 前端投影
+### 6. 插件兼容边界
+
+流式生命周期监控不能影响现有插件系统。实现约束：
+
+- `MaybePluginChunkStream` 和 `gateway.response.chunk` hook 的位置保持不变；插件仍然看到 response fixer / protocol bridge 之后、usage tee 之前的 chunk。
+- lifecycle tracker 只观察 tee 收到的 chunk，不修改 chunk，也不插入、删除、重排 chunk。
+- `PLUGIN_STREAM_ERROR_MARKER` 保持 `: aio-plugin-error\n`，插件 blocked/failed 产生的 SSE error chunk 仍按现有方式透传给客户端。
+- 插件错误 marker 可以被 lifecycle tracker 识别为 `GW_STREAM_ERROR`，但不能改变插件 audit、execution report、replay fixture 的结构。
+- 不在插件 hook input/output 中新增必填字段；插件 SDK 和 manifest 兼容范围不因本阶段变化而改变。
+- `activity_details_json` 不保存响应正文或插件修改后的 chunk 正文，只保存计数、时间和终止信号摘要。
+
+### 7. 前端投影
 
 `requestActivityProjection` 继续合并 request logs 和 live traces，但状态显示要分层：
 
@@ -272,7 +284,7 @@ UI 表达：
 - 长耗时但仍有活动：`进行中 · 已运行 43 分钟`
 - 恢复终止：展示已有错误码和恢复原因。
 
-### 7. 恢复与清理
+### 8. 恢复与清理
 
 `reconcile_unresolved_pending` 保留，但只在应用启动、网关停止等明确生命周期边界触发。它不应按 pending 年龄周期性扫掉仍可能活跃的请求。
 
@@ -319,6 +331,8 @@ reconcile 写入：
 - activity flush 只更新 pending row，不会修改 completed row。
 - reconcile 只处理 status/error_code 为空的 pending rows，并保留 last activity。
 - `failed`、`incomplete`、`error` 终止信号即使来自 HTTP 200 SSE，也会写成首页可识别的失败日志。
+- 插件 blocked/failed 生成的 `PLUGIN_STREAM_ERROR_MARKER` 仍透传，且 request log 归一化为 stream error。
+- 启用 `gateway.response.chunk` 插件后，插件收到的 chunk 内容、sequence 和 audit/report 行为不因 lifecycle tracker 改变。
 
 前端测试：
 

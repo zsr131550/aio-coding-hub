@@ -419,6 +419,14 @@ fn is_terminal_error_status(status: &str) -> bool {
     )
 }
 
+fn is_non_empty_marker_value(value: &Value) -> bool {
+    !value.is_null()
+        && value
+            .as_str()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(true)
+}
+
 impl SseUsageTracker {
     pub fn new(cli_key: &str) -> Self {
         Self {
@@ -647,6 +655,36 @@ impl SseUsageTracker {
         ];
         if done_like.into_iter().flatten().any(|v| v) {
             self.completion_seen = true;
+        }
+
+        let finish_fields = [
+            data.get("finish_reason"),
+            data.get("finishReason"),
+            data.get("response").and_then(|v| v.get("finish_reason")),
+            data.get("response").and_then(|v| v.get("finishReason")),
+        ];
+        if finish_fields
+            .into_iter()
+            .flatten()
+            .any(is_non_empty_marker_value)
+        {
+            self.completion_seen = true;
+        }
+
+        for array_name in ["choices", "candidates"] {
+            if data
+                .get(array_name)
+                .and_then(|v| v.as_array())
+                .is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item.get("finish_reason")
+                            .or_else(|| item.get("finishReason"))
+                            .is_some_and(is_non_empty_marker_value)
+                    })
+                })
+            {
+                self.completion_seen = true;
+            }
         }
 
         if let Some(model) = extract_model_from_json_value(data) {

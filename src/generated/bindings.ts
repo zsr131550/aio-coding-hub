@@ -3216,6 +3216,8 @@ export type RequestLogDetail = {
   error_details_json: string | null;
   cost_multiplier: number;
   created_at_ms: number;
+  last_activity_ms: number | null;
+  activity_details_json: string | null;
   created_at: number;
 };
 export type RequestLogRouteHop = {
@@ -3268,6 +3270,8 @@ export type RequestLogSummary = {
   error_details_json: string | null;
   cost_multiplier: number;
   created_at_ms: number;
+  last_activity_ms: number | null;
+  activity_details_json: string | null;
   created_at: number;
 };
 export type RiskyIpcConfirm = { confirm: IpcConfirm };

@@ -109,6 +109,8 @@ function makeRequestLog(
     error_details_json: partial.error_details_json ?? null,
     cost_multiplier: partial.cost_multiplier ?? 1,
     created_at_ms: partial.created_at_ms ?? (partial.created_at ?? 0) * 1000,
+    last_activity_ms: partial.last_activity_ms ?? null,
+    activity_details_json: partial.activity_details_json ?? null,
     created_at: partial.created_at ?? 0,
   };
 }

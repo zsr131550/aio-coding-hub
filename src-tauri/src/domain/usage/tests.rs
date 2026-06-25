@@ -110,6 +110,24 @@ fn parse_codex_response_completed_marks_completion_seen() {
 }
 
 #[test]
+fn parse_openai_chat_finish_reason_marks_completion_seen() {
+    let sse = b"data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n";
+    let mut tracker = SseUsageTracker::new("codex");
+    tracker.ingest_chunk(sse);
+    tracker.finalize();
+    assert!(tracker.completion_seen());
+}
+
+#[test]
+fn parse_gemini_finish_reason_marks_completion_seen() {
+    let sse = b"data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n";
+    let mut tracker = SseUsageTracker::new("gemini");
+    tracker.ingest_chunk(sse);
+    tracker.finalize();
+    assert!(tracker.completion_seen());
+}
+
+#[test]
 fn parse_sse_error_event_marks_terminal_error_seen() {
     let sse = b"event: error\ndata: {\"error\":{\"message\":\"upstream failed\"}}\n\n";
     let mut tracker = SseUsageTracker::new("claude");
