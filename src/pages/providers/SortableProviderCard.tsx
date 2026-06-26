@@ -482,9 +482,21 @@ export const ProviderCard = memo(function ProviderCard({
                 onCheckedChange={() => onToggleEnabled(provider)}
               />
             </div>
+
+            {trailing ? (
+              <div
+                data-provider-card-trailing-region="right"
+                className="flex shrink-0 items-center justify-end"
+              >
+                {trailing}
+              </div>
+            ) : null}
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div
+            data-provider-card-secondary-actions="true"
+            className="flex flex-wrap items-center justify-end gap-2"
+          >
             {onCopyTerminalLaunchCommand ? (
               <Button
                 onClick={() => onCopyTerminalLaunchCommand(provider)}
@@ -498,8 +510,6 @@ export const ProviderCard = memo(function ProviderCard({
                 {terminalLaunchCopying ? "复制中…" : "终端启动"}
               </Button>
             ) : null}
-
-            {trailing}
 
             {onTestAvailability ? (
               <Button

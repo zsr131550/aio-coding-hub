@@ -115,6 +115,19 @@ describe("pages/providers/SortableProviderCard", () => {
     expect(sortablePointerDownMock).toHaveBeenCalledTimes(1);
   });
 
+  it("renders trailing route action in the card right-side action row", () => {
+    renderCard(
+      {},
+      {
+        trailing: <button type="button">加入</button>,
+      }
+    );
+
+    const trailingAction = screen.getByRole("button", { name: "加入" });
+    expect(trailingAction.closest('[data-provider-card-trailing-region="right"]')).not.toBeNull();
+    expect(trailingAction.closest('[data-provider-card-secondary-actions="true"]')).toBeNull();
+  });
+
   it("renders OAuth badge with email", () => {
     renderCard({
       auth_mode: "oauth",
