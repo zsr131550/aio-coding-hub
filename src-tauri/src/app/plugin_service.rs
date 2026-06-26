@@ -829,6 +829,38 @@ fn diff_permissions(
         .collect()
 }
 
+fn reconcile_permissions_for_manifest(
+    current: &PluginDetail,
+    manifest: &PluginManifest,
+) -> (Vec<String>, Vec<String>) {
+    let mut granted: Vec<String> = current
+        .granted_permissions
+        .iter()
+        .filter(|permission| manifest.permissions.contains(*permission))
+        .cloned()
+        .collect();
+    granted.sort();
+    granted.dedup();
+
+    let mut pending: Vec<String> = manifest
+        .permissions
+        .iter()
+        .filter(|permission| !granted.contains(permission))
+        .cloned()
+        .collect();
+    pending.sort();
+    pending.dedup();
+
+    (granted, pending)
+}
+
+fn config_for_manifest_version(
+    current: &PluginDetail,
+    manifest: &PluginManifest,
+) -> serde_json::Value {
+    config_with_schema_defaults(manifest.config_schema.as_ref(), current.config.clone())
+}
+
 fn config_version_change(before: &PluginManifest, after: &PluginManifest) -> Option<String> {
     let before_version = before.config_version.unwrap_or(1);
     let after_version = after.config_version.unwrap_or(1);
@@ -1123,19 +1155,8 @@ pub(crate) fn update_plugin_from_local_package(
 
     let result = (|| -> AppResult<PluginDetail> {
         replace_dir(&extracted.root_dir, &installed_dir)?;
-        let granted: Vec<String> = current
-            .granted_permissions
-            .iter()
-            .filter(|permission| extracted.manifest.permissions.contains(*permission))
-            .cloned()
-            .collect();
-        let pending: Vec<String> = extracted
-            .manifest
-            .permissions
-            .iter()
-            .filter(|permission| !granted.contains(permission))
-            .cloned()
-            .collect();
+        let (granted, pending) = reconcile_permissions_for_manifest(&current, &extracted.manifest);
+        let next_config = config_for_manifest_version(&current, &extracted.manifest);
         let detail = repository::with_plugin_transaction(db, |tx| {
             repository::update_plugin_manifest_with_tx(
                 tx,
@@ -1146,7 +1167,7 @@ pub(crate) fn update_plugin_from_local_package(
                 tx,
                 &plugin_id,
                 extracted.manifest.config_version.unwrap_or(1),
-                &current.config,
+                &next_config,
                 &[],
             )?;
             let detail =
@@ -1202,15 +1223,27 @@ pub(crate) fn rollback_plugin_to_version(
             format!("plugin version {version} install directory is unavailable"),
         ));
     }
+    let current = repository::get_plugin(db, plugin_id)?;
+    let (granted, pending) = reconcile_permissions_for_manifest(&current, &manifest);
+    let next_config = config_for_manifest_version(&current, &manifest);
+    let config_version = manifest.config_version.unwrap_or(1);
     let detail = repository::with_plugin_transaction(db, |tx| {
-        let detail = repository::update_plugin_manifest_with_tx(tx, manifest, installed_dir)?;
+        repository::update_plugin_manifest_with_tx(tx, manifest, installed_dir)?;
+        repository::save_plugin_config_with_tx(tx, plugin_id, config_version, &next_config, &[])?;
+        let detail =
+            repository::save_plugin_permissions_with_tx(tx, plugin_id, &granted, &pending)?;
         append_audit_with_tx(
             tx,
             Some(plugin_id.to_string()),
             "plugin.rollback",
             "high",
             "Plugin rolled back",
-            serde_json::json!({ "version": version }),
+            serde_json::json!({
+                "version": version,
+                "grantedPermissions": granted,
+                "pendingPermissions": pending,
+                "configVersion": config_version,
+            }),
         )?;
         Ok(detail)
     })?;
@@ -4000,6 +4033,83 @@ INSERT INTO plugin_market_sources(
             .installed_dir
             .as_deref()
             .is_some_and(|path| path.ends_with("plugins/installed/local.manual/1.0.0")));
+    }
+
+    #[test]
+    fn plugin_update_rollback_reconciles_permissions_and_config_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        let cache_dir = dir.path().join("plugins/cache");
+        let installed_dir = dir.path().join("plugins/installed");
+        let v1_package = dir.path().join("plugin-v1.aio-plugin");
+        let v2_package = dir.path().join("plugin-v2.aio-plugin");
+
+        let mut v1_manifest = local_package_manifest("local.rollback-state", "1.0.0");
+        v1_manifest["configVersion"] = serde_json::json!(1);
+        v1_manifest["permissions"] = serde_json::json!(["request.meta.read"]);
+        write_local_package(&v1_package, v1_manifest);
+
+        let mut v2_manifest = local_package_manifest("local.rollback-state", "1.1.0");
+        v2_manifest["configVersion"] = serde_json::json!(2);
+        v2_manifest["permissions"] =
+            serde_json::json!(["request.meta.read", "request.header.read"]);
+        write_local_package(&v2_package, v2_manifest);
+
+        install_plugin_from_local_package_with_policy(
+            &db,
+            &v1_package,
+            &cache_dir,
+            &installed_dir,
+            env!("CARGO_PKG_VERSION"),
+            LocalPackageInstallPolicy {
+                allow_unsigned: true,
+                developer_mode: true,
+                ..LocalPackageInstallPolicy::default()
+            },
+        )
+        .unwrap();
+        save_plugin_config(
+            &db,
+            "local.rollback-state",
+            serde_json::json!({"enabled": true, "extra": "kept"}),
+        )
+        .unwrap();
+        grant_plugin_permissions(
+            &db,
+            "local.rollback-state",
+            vec!["request.meta.read".to_string()],
+        )
+        .unwrap();
+
+        let updated = update_plugin_from_local_package(
+            &db,
+            &v2_package,
+            &cache_dir,
+            &installed_dir,
+            env!("CARGO_PKG_VERSION"),
+            LocalPackageInstallPolicy {
+                allow_unsigned: true,
+                developer_mode: true,
+                ..LocalPackageInstallPolicy::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.pending_permissions, vec!["request.header.read"]);
+
+        let rolled_back = rollback_plugin_to_version(&db, "local.rollback-state", "1.0.0").unwrap();
+
+        assert_eq!(
+            rolled_back.summary.current_version.as_deref(),
+            Some("1.0.0")
+        );
+        assert_eq!(rolled_back.granted_permissions, vec!["request.meta.read"]);
+        assert!(rolled_back.pending_permissions.is_empty());
+        assert_eq!(rolled_back.config["enabled"], true);
+        assert_eq!(
+            repository::plugin_config_version(&db, "local.rollback-state").unwrap(),
+            Some(1)
+        );
+        assert!(enable_plugin(&db, "local.rollback-state", env!("CARGO_PKG_VERSION")).is_ok());
     }
 
     #[test]
