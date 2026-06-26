@@ -176,6 +176,7 @@ describe("services/plugins", () => {
       checksum: " sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ",
       signature: " signature ",
       publicKey: " public-key ",
+      marketSourceUrl: " https://plugins.example.test/index.json ",
       source: "github_release",
     });
     await pluginUpdateFromFile(" /tmp/plugin-update.aio-plugin ");
@@ -218,6 +219,7 @@ describe("services/plugins", () => {
       checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       signature: "signature",
       publicKey: "public-key",
+      marketSourceUrl: "https://plugins.example.test/index.json",
       source: "github_release",
     });
     expect(commands.pluginUpdateFromFile).toHaveBeenCalledWith({

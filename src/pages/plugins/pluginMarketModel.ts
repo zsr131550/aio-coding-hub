@@ -46,6 +46,7 @@ export type MarketInstallInput = {
   checksum: string;
   signature: string | null;
   publicKey: null;
+  marketSourceUrl: string | null;
   source: "market";
 };
 
@@ -171,6 +172,7 @@ export function toMarketInstallInput(card: PluginMarketCardView): MarketInstallI
     checksum: card.listing.checksum,
     signature: card.listing.signature,
     publicKey: null,
+    marketSourceUrl: card.listing.marketSourceUrl,
     source: "market",
   };
 }

@@ -30,6 +30,7 @@ function listing(overrides: Partial<PluginMarketListing> = {}): PluginMarketList
     name: "Safe Helper",
     latestVersion: "1.0.0",
     downloadUrl: "https://plugins.example.test/safe-helper.aio-plugin",
+    marketSourceUrl: "https://plugins.example.test/index.json",
     checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     signature: "signed-safe",
     riskLabels: ["request.body.read"],
@@ -230,6 +231,7 @@ describe("pluginMarketModel", () => {
       checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       signature: "signed-safe",
       publicKey: null,
+      marketSourceUrl: "https://plugins.example.test/index.json",
       source: "market",
     });
 

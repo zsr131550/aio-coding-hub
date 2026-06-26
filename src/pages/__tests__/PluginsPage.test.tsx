@@ -576,6 +576,7 @@ describe("pages/PluginsPage", () => {
         name: "Safe Helper",
         latestVersion: "1.0.0",
         downloadUrl: "https://plugins.example.test/safe-helper.aio-plugin",
+        marketSourceUrl: "https://plugins.example.test/index.json",
         checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         signature: "signed-safe",
         riskLabels: ["request.body.read"],
@@ -589,6 +590,7 @@ describe("pages/PluginsPage", () => {
         name: "Revoked Helper",
         latestVersion: "1.0.0",
         downloadUrl: "https://plugins.example.test/revoked.aio-plugin",
+        marketSourceUrl: "https://plugins.example.test/index.json",
         checksum: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         signature: null,
         riskLabels: ["request.body.write"],
@@ -602,6 +604,7 @@ describe("pages/PluginsPage", () => {
         name: "Future Helper",
         latestVersion: "2.0.0",
         downloadUrl: "https://plugins.example.test/future.aio-plugin",
+        marketSourceUrl: "https://plugins.example.test/index.json",
         checksum: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         signature: null,
         riskLabels: ["response.body.write"],
@@ -656,6 +659,7 @@ describe("pages/PluginsPage", () => {
         checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         signature: "signed-safe",
         publicKey: null,
+        marketSourceUrl: "https://plugins.example.test/index.json",
         source: "market",
       });
       expect(toast.success).toHaveBeenCalledWith("安装市场插件成功");
@@ -673,6 +677,7 @@ describe("pages/PluginsPage", () => {
         name: "Privacy Filter Advanced",
         latestVersion: "1.0.0",
         downloadUrl: "https://plugins.example.test/privacy-filter.aio-plugin",
+        marketSourceUrl: "https://plugins.example.test/index.json",
         checksum: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         signature: "signed-privacy-filter",
         riskLabels: ["request.body.read", "request.body.write"],
@@ -710,6 +715,7 @@ describe("pages/PluginsPage", () => {
         checksum: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         signature: "signed-privacy-filter",
         publicKey: null,
+        marketSourceUrl: "https://plugins.example.test/index.json",
         source: "market",
       });
       expect(installOfficialMutation.mutateAsync).not.toHaveBeenCalled();

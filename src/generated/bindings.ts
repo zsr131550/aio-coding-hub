@@ -2810,6 +2810,7 @@ export type PluginInstallRemoteInput = {
   checksum: string;
   signature: string | null;
   publicKey: string | null;
+  marketSourceUrl: string | null;
   source: string | null;
 };
 export type PluginInstallSource = "local" | "market" | "github_release" | "offline" | "official";
@@ -2858,6 +2859,7 @@ export type PluginMarketListing = {
   name: string;
   latestVersion: string | null;
   downloadUrl: string | null;
+  marketSourceUrl: string | null;
   checksum: string | null;
   signature: string | null;
   riskLabels: string[];

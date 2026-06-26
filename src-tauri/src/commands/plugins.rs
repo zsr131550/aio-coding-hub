@@ -104,6 +104,7 @@ pub(crate) struct PluginInstallRemoteInput {
     pub checksum: String,
     pub signature: Option<String>,
     pub public_key: Option<String>,
+    pub market_source_url: Option<String>,
     pub source: Option<String>,
 }
 
@@ -335,6 +336,7 @@ pub(crate) async fn plugin_parse_market_index(
             (Some(signature), Some(public_key)) => {
                 crate::infra::plugins::market::parse_signed_market_index(
                     input.index_json.as_bytes(),
+                    input.index_url.as_deref(),
                     signature,
                     public_key,
                     env!("CARGO_PKG_VERSION"),
@@ -343,6 +345,7 @@ pub(crate) async fn plugin_parse_market_index(
             }
             (None, None) => crate::infra::plugins::market::parse_market_index(
                 input.index_json.as_bytes(),
+                input.index_url.as_deref(),
                 env!("CARGO_PKG_VERSION"),
                 &installed,
             ),
@@ -382,6 +385,7 @@ pub(crate) async fn plugin_install_remote(
                 expected_checksum: input.checksum,
                 signature: input.signature,
                 public_key: input.public_key,
+                market_source_url: input.market_source_url,
             },
         )
         .and_then(|detail| refresh_running_gateway_plugins(&app, &db, detail))

@@ -148,6 +148,7 @@ export async function pluginInstallRemote(input: {
   checksum: string;
   signature?: string | null;
   publicKey?: string | null;
+  marketSourceUrl?: string | null;
   source?: "market" | "github_release" | null;
 }) {
   const pluginId = normalizePluginId(input.pluginId);
@@ -157,12 +158,16 @@ export async function pluginInstallRemote(input: {
     input.signature == null ? null : normalizeRequiredText("signature", input.signature);
   const publicKey =
     input.publicKey == null ? null : normalizeRequiredText("publicKey", input.publicKey);
+  const marketSourceUrl =
+    input.marketSourceUrl == null
+      ? null
+      : normalizeRequiredText("marketSourceUrl", input.marketSourceUrl);
   const source = input.source ?? null;
 
   return invokeGeneratedIpc<PluginDetail>({
     title: "远程安装插件失败",
     cmd: "plugin_install_remote",
-    args: { pluginId, downloadUrl, checksum, signature, publicKey, source },
+    args: { pluginId, downloadUrl, checksum, signature, publicKey, marketSourceUrl, source },
     invoke: async () =>
       commands.pluginInstallRemote({
         pluginId,
@@ -170,6 +175,7 @@ export async function pluginInstallRemote(input: {
         checksum,
         signature,
         publicKey,
+        marketSourceUrl,
         source,
       }),
   });

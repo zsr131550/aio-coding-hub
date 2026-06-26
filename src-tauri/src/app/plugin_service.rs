@@ -171,6 +171,7 @@ pub(crate) struct LocalPackageInstallPolicy {
     pub(crate) developer_mode: bool,
     pub(crate) install_source: PluginInstallSource,
     pub(crate) remote_source_url: Option<String>,
+    pub(crate) market_source_url: Option<String>,
 }
 
 impl Default for LocalPackageInstallPolicy {
@@ -184,6 +185,7 @@ impl Default for LocalPackageInstallPolicy {
             developer_mode: false,
             install_source: PluginInstallSource::Local,
             remote_source_url: None,
+            market_source_url: None,
         }
     }
 }
@@ -195,6 +197,7 @@ pub(crate) struct RemotePackageInstallPolicy {
     pub(crate) expected_checksum: String,
     pub(crate) signature: Option<String>,
     pub(crate) public_key: Option<String>,
+    pub(crate) market_source_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -925,6 +928,7 @@ pub(crate) fn install_plugin_from_local_package_with_policy(
                 install_audit_details(
                     policy.install_source,
                     policy.remote_source_url.as_deref(),
+                    policy.market_source_url.as_deref(),
                     serde_json::json!({
                     "source": "local",
                     "packageChecksum": extracted.checksum,
@@ -1001,6 +1005,7 @@ pub(crate) fn install_plugin_from_remote_package_bytes(
     let expected_plugin_id = policy.expected_plugin_id.clone();
     let expected_checksum = policy.expected_checksum.clone();
     let signature = policy.signature.clone();
+    let market_source_url = policy.market_source_url.clone();
     let public_key = remote_package_trusted_public_key(db, source_url, &policy)?;
     let result = install_plugin_from_local_package_with_policy(
         db,
@@ -1017,6 +1022,7 @@ pub(crate) fn install_plugin_from_remote_package_bytes(
             developer_mode: false,
             install_source,
             remote_source_url: Some(source_url.to_string()),
+            market_source_url,
         },
     )
     .inspect(|detail| {
@@ -1041,7 +1047,8 @@ fn remote_package_trusted_public_key(
             if policy.signature.is_none() {
                 return Ok(None);
             }
-            repository::trusted_market_public_key_for_url(db, source_url)?
+            let trust_source_url = policy.market_source_url.as_deref().unwrap_or(source_url);
+            repository::trusted_market_public_key_for_url(db, trust_source_url)?
                 .ok_or_else(|| {
                     AppError::new(
                     "PLUGIN_MARKET_TRUSTED_PUBLIC_KEY_REQUIRED",
@@ -1322,6 +1329,7 @@ fn install_audit_message(source: PluginInstallSource) -> &'static str {
 fn install_audit_details(
     source: PluginInstallSource,
     source_url: Option<&str>,
+    market_source_url: Option<&str>,
     mut details: serde_json::Value,
 ) -> serde_json::Value {
     if let serde_json::Value::Object(object) = &mut details {
@@ -1333,6 +1341,12 @@ fn install_audit_details(
             object.insert(
                 "sourceUrl".to_string(),
                 serde_json::Value::String(source_url.to_string()),
+            );
+        }
+        if let Some(market_source_url) = market_source_url {
+            object.insert(
+                "marketSourceUrl".to_string(),
+                serde_json::Value::String(market_source_url.to_string()),
             );
         }
     }
@@ -3439,6 +3453,7 @@ DROP TABLE plugins;
                 expected_checksum: checksum,
                 signature: None,
                 public_key: None,
+                market_source_url: None,
             },
         )
         .unwrap();
@@ -3474,6 +3489,7 @@ DROP TABLE plugins;
                 expected_checksum: invalid_checksum(),
                 signature: None,
                 public_key: None,
+                market_source_url: None,
             },
         )
         .unwrap_err();
@@ -3533,6 +3549,7 @@ INSERT INTO plugin_market_sources(
                 expected_checksum,
                 signature: trusted_policy.signature,
                 public_key: Some(caller_public_key),
+                market_source_url: None,
             },
         )
         .unwrap();
@@ -3552,6 +3569,75 @@ INSERT INTO plugin_market_sources(
             "https://plugins.example.test/download/market-signed-risky.aio-plugin"
         );
         assert_eq!(install_audit.details["unsigned"], false);
+        assert_eq!(install_audit.details["signatureVerified"], true);
+    }
+
+    #[test]
+    fn plugin_remote_install_uses_market_source_url_when_download_host_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        let package_path = dir.path().join("market-cdn-signed.aio-plugin");
+        let mut manifest = local_package_manifest("market.cdn-signed", "1.0.0");
+        manifest["permissions"] = serde_json::json!(["request.body.read"]);
+        write_local_package(&package_path, manifest);
+        let package_bytes = std::fs::read(&package_path).unwrap();
+        let (expected_checksum, trusted_policy) = signed_package_policy(&package_path, 19);
+        let trusted_public_key = trusted_policy.public_key.clone().unwrap();
+
+        let conn = db.open_connection().unwrap();
+        conn.execute(
+            r#"
+INSERT INTO plugin_market_sources(
+  name,
+  index_url,
+  enabled,
+  trusted_public_key,
+  created_at,
+  updated_at
+) VALUES (?1, ?2, 1, ?3, 1, 1)
+"#,
+            rusqlite::params![
+                "Community CDN",
+                "https://plugins.example.test/index.json",
+                trusted_public_key
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let detail = install_plugin_from_remote_package_bytes(
+            &db,
+            package_bytes,
+            "https://cdn.example.test/download/market-cdn-signed.aio-plugin",
+            &dir.path().join("plugins/cache"),
+            &dir.path().join("plugins/installed"),
+            env!("CARGO_PKG_VERSION"),
+            RemotePackageInstallPolicy {
+                install_source: PluginInstallSource::Market,
+                expected_plugin_id: "market.cdn-signed".to_string(),
+                expected_checksum,
+                signature: trusted_policy.signature,
+                public_key: None,
+                market_source_url: Some("https://plugins.example.test/index.json".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(detail.summary.plugin_id, "market.cdn-signed");
+        assert_eq!(detail.install_source, PluginInstallSource::Market);
+        let install_audit = detail
+            .audit_logs
+            .iter()
+            .find(|log| log.event_type == "plugin.remote.installed")
+            .unwrap();
+        assert_eq!(
+            install_audit.details["sourceUrl"],
+            "https://cdn.example.test/download/market-cdn-signed.aio-plugin"
+        );
+        assert_eq!(
+            install_audit.details["marketSourceUrl"],
+            "https://plugins.example.test/index.json"
+        );
         assert_eq!(install_audit.details["signatureVerified"], true);
     }
 
@@ -3580,6 +3666,7 @@ INSERT INTO plugin_market_sources(
                 expected_checksum,
                 signature: policy.signature,
                 public_key: policy.public_key,
+                market_source_url: None,
             },
         )
         .unwrap_err();
