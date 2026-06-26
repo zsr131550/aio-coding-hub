@@ -613,9 +613,13 @@ export function PluginsPage() {
                     saveConfigMutation.mutateAsync({ pluginId: effectiveSelectedPluginId, config })
                   );
                 }}
-                onGrantPendingPermissions={(pluginId, permissions) => {
+                onGrantPendingPermissions={(_pluginId, permissions) => {
+                  if (!effectiveSelectedPluginId) return;
                   runAction("授权权限", () =>
-                    grantPermissionsMutation.mutateAsync({ pluginId, permissions })
+                    grantPermissionsMutation.mutateAsync({
+                      pluginId: effectiveSelectedPluginId,
+                      permissions,
+                    })
                   );
                 }}
               />

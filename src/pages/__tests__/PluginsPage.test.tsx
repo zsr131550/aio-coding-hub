@@ -1272,6 +1272,54 @@ describe("pages/PluginsPage", () => {
     });
   });
 
+  it("approves pending permissions with the effective selected plugin id when detail data is stale", async () => {
+    const grantMutation = mutation();
+    vi.mocked(usePluginGrantPermissionsMutation).mockReturnValue(grantMutation as any);
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [
+        summary({
+          plugin_id: "community.current",
+          name: "Current Plugin",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginQuery).mockReturnValue({
+      data: detail({
+        summary: summary({
+          plugin_id: "community.stale",
+          name: "Stale Plugin",
+        }),
+        pending_permissions: ["request.body.write"],
+      }),
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+
+    await waitFor(() => {
+      expect(usePluginQuery).toHaveBeenLastCalledWith("community.current", {
+        enabled: true,
+      });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "授权待审批权限" }));
+
+    await waitFor(() => {
+      expect(grantMutation.mutateAsync).toHaveBeenCalledWith({
+        pluginId: "community.current",
+        permissions: ["request.body.write"],
+      });
+      expect(grantMutation.mutateAsync).not.toHaveBeenCalledWith({
+        pluginId: "community.stale",
+        permissions: ["request.body.write"],
+      });
+    });
+  });
+
   it("keeps the pending permission action visible when enable fails", async () => {
     const enableMutation = mutation({
       mutateAsync: vi
