@@ -1,8 +1,11 @@
 import {
+  cloneElement,
+  isValidElement,
   memo,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type MouseEvent as ReactMouseEvent,
+  type ReactElement,
   type ReactNode,
 } from "react";
 import { useMemo, useState } from "react";
@@ -117,6 +120,15 @@ function renderProviderNote(note: string) {
   }
 
   return nodes.length > 0 ? nodes : [note];
+}
+
+function renderEdgeAction(node: ReactNode) {
+  if (!isValidElement(node)) return node;
+
+  const element = node as ReactElement<{ className?: string }>;
+  return cloneElement(element, {
+    className: cn(element.props.className, "w-full justify-center"),
+  });
 }
 
 export type SortableProviderCardProps = {
@@ -553,9 +565,9 @@ export const ProviderCard = memo(function ProviderCard({
           {trailing ? (
             <div
               data-provider-card-edge-action="true"
-              className="flex shrink-0 items-center justify-end border-t border-border pt-2 sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0"
+              className="flex w-16 shrink-0 items-center justify-end border-t border-border pt-2 sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0"
             >
-              {trailing}
+              {renderEdgeAction(trailing)}
             </div>
           ) : null}
         </div>

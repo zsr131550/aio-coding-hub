@@ -124,7 +124,10 @@ describe("pages/providers/SortableProviderCard", () => {
     );
 
     const trailingAction = screen.getByRole("button", { name: "加入" });
-    expect(trailingAction.closest('[data-provider-card-edge-action="true"]')).not.toBeNull();
+    const edgeRegion = trailingAction.closest('[data-provider-card-edge-action="true"]');
+    expect(edgeRegion).not.toBeNull();
+    expect(edgeRegion).toHaveClass("w-16");
+    expect(trailingAction).toHaveClass("w-full");
     expect(trailingAction.closest('[data-provider-card-management-actions="true"]')).toBeNull();
     expect(trailingAction.closest('[data-provider-card-secondary-actions="true"]')).toBeNull();
   });
