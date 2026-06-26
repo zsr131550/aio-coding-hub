@@ -46,15 +46,6 @@ import {
   pluginStatusLabel,
 } from "./plugins/pluginProductCopy";
 
-const OFFICIAL_PLUGINS = [{ id: "official.privacy-filter", name: "Privacy Filter" }];
-
-const EXAMPLE_PLUGINS = [
-  { id: "official.privacy-filter", label: "官方脱敏" },
-  { id: "examples/prompt-helper", label: "请求提示词辅助" },
-  { id: "examples/redactor", label: "规则脱敏" },
-  { id: "examples/response-guard", label: "响应检查" },
-];
-
 const INSTALL_SOURCE_LABELS: Record<string, string> = {
   local: "本地",
   market: "市场",
@@ -535,50 +526,18 @@ export function PluginsPage() {
           </div>
         ) : null}
 
-        <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3">
-          <span className="text-xs font-semibold text-muted-foreground">推荐插件</span>
-          {OFFICIAL_PLUGINS.map((plugin) => {
-            const installed = plugins.some((item) => item.plugin_id === plugin.id);
-            return (
-              <Button
-                key={plugin.id}
-                size="sm"
-                variant="secondary"
-                disabled={busy || installed}
-                onClick={() =>
-                  runAction("安装官方插件", () => installOfficialMutation.mutateAsync(plugin.id))
-                }
-              >
-                <Download className="h-3.5 w-3.5" />
-                {installed ? "已安装" : plugin.name}
-              </Button>
-            );
-          })}
-        </div>
-
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1.1fr)_minmax(340px,0.9fr)]">
+        <div className="grid gap-3">
           <PluginMarketPanel
+            plugins={plugins}
             busy={busy}
             onInstall={(input) =>
               runAction("安装市场插件", () => installRemoteMutation.mutateAsync(input))
             }
+            onInstallOfficial={(pluginId) =>
+              runAction("安装官方插件", () => installOfficialMutation.mutateAsync(pluginId))
+            }
+            onSelectInstalled={(pluginId) => setSelectedPluginId(pluginId)}
           />
-          <section className="space-y-3 rounded-lg border border-border bg-card p-3">
-            <div>
-              <h2 className="text-sm font-semibold text-foreground">示例插件</h2>
-              <div className="text-xs text-muted-foreground">
-                覆盖脱敏、提示词辅助、响应检查和 replay fixture。
-              </div>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {EXAMPLE_PLUGINS.map((example) => (
-                <div key={example.id} className="rounded-md border border-border px-3 py-2">
-                  <div className="font-mono text-xs text-foreground">{example.id}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{example.label}</div>
-                </div>
-              ))}
-            </div>
-          </section>
         </div>
 
         {plugins.length === 0 && !listQuery.error ? (

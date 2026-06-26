@@ -326,6 +326,17 @@ function renderWithProviders(element: ReactElement) {
   );
 }
 
+function marketCard(pluginId: string) {
+  const card = screen
+    .getAllByText(pluginId)
+    .map((item) => item.closest("article"))
+    .find(
+      (item): item is HTMLElement => Boolean(item?.textContent?.includes("精选插件")) === false
+    );
+  if (!card) throw new Error(`Market card not found: ${pluginId}`);
+  return card;
+}
+
 describe("pages/PluginsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -475,7 +486,88 @@ describe("pages/PluginsPage", () => {
     });
   });
 
-  it("renders market state and disables revoked or incompatible installs", async () => {
+  it("renders featured marketplace by default and keeps advanced source fields folded", () => {
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+
+    expect(screen.getByText("精选插件")).toBeInTheDocument();
+    expect(screen.getByText("Privacy Filter")).toBeInTheDocument();
+    expect(screen.getByText("Prompt Helper")).toBeInTheDocument();
+    expect(screen.getByText("Redactor")).toBeInTheDocument();
+    expect(screen.getByText("Response Guard")).toBeInTheDocument();
+    expect(screen.queryByLabelText("市场索引 JSON")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("市场索引 URL")).not.toBeInTheDocument();
+  });
+
+  it("reveals advanced market source inputs only after expanding the section", () => {
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+
+    expect(screen.queryByLabelText("市场索引 URL")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("索引签名")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("市场索引 JSON")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /高级来源/ }));
+
+    expect(screen.getByLabelText("市场索引 URL")).toBeInTheDocument();
+    expect(screen.getByLabelText("索引签名")).toBeInTheDocument();
+    expect(screen.getByLabelText("市场索引 JSON")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "加载高级来源" })).toBeInTheDocument();
+  });
+
+  it("installs official Privacy Filter from the featured marketplace", async () => {
+    const installOfficialMutation = mutation();
+    vi.mocked(usePluginInstallOfficialMutation).mockReturnValue(installOfficialMutation as any);
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+
+    const privacyCard = screen.getByText("Privacy Filter").closest("article");
+    expect(privacyCard).not.toBeNull();
+    fireEvent.click(within(privacyCard as HTMLElement).getByRole("button", { name: "安装" }));
+
+    await waitFor(() => {
+      expect(installOfficialMutation.mutateAsync).toHaveBeenCalledWith("official.privacy-filter");
+      expect(toast.success).toHaveBeenCalledWith("安装官方插件成功");
+    });
+  });
+
+  it("marks example cards as disabled examples", () => {
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+
+    const promptHelperCard = screen.getByText("Prompt Helper").closest("article");
+    expect(promptHelperCard).not.toBeNull();
+    expect(
+      within(promptHelperCard as HTMLElement).getByRole("button", { name: "示例" })
+    ).toBeDisabled();
+    expect(screen.getAllByText("示例插件暂未发布为可安装包").length).toBeGreaterThan(0);
+  });
+
+  it("loads advanced market listings into cards and routes safe installs remotely", async () => {
     const installRemoteMutation = mutation();
     vi.mocked(usePluginInstallRemoteMutation).mockReturnValue(installRemoteMutation as any);
     vi.mocked(pluginParseMarketIndex).mockResolvedValue([
@@ -503,7 +595,7 @@ describe("pages/PluginsPage", () => {
         revoked: true,
         compatible: true,
         updateAvailable: false,
-        installBlockReason: "插件已被市场撤销",
+        installBlockReason: "raw revoked reason",
       },
       {
         pluginId: "community.future",
@@ -516,7 +608,7 @@ describe("pages/PluginsPage", () => {
         revoked: false,
         compatible: false,
         updateAvailable: false,
-        installBlockReason: "需要更高版本的宿主",
+        installBlockReason: "raw incompatible reason",
       },
     ]);
     vi.mocked(usePluginsListQuery).mockReturnValue({
@@ -527,13 +619,14 @@ describe("pages/PluginsPage", () => {
     } as any);
 
     renderWithProviders(<PluginsPage />);
+    fireEvent.click(screen.getByRole("button", { name: /高级来源/ }));
     fireEvent.change(screen.getByLabelText("市场索引 JSON"), {
       target: { value: '{"plugins":[]}' },
     });
     fireEvent.change(screen.getByLabelText("市场索引 URL"), {
       target: { value: "https://plugins.example.test/index.json" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "加载市场" }));
+    fireEvent.click(screen.getByRole("button", { name: "加载高级来源" }));
 
     const safeListing = await screen.findByText("Safe Helper");
     const revokedListing = screen.getByText("Revoked Helper").closest("article");
@@ -542,12 +635,14 @@ describe("pages/PluginsPage", () => {
     expect(revokedListing).not.toBeNull();
     expect(futureListing).not.toBeNull();
     expect(screen.getByText("插件已被市场撤销")).toBeInTheDocument();
-    expect(screen.getByText("需要更高版本的宿主")).toBeInTheDocument();
+    expect(screen.getByText("当前宿主版本不兼容")).toBeInTheDocument();
+    expect(screen.queryByText("raw revoked reason")).not.toBeInTheDocument();
+    expect(screen.queryByText("raw incompatible reason")).not.toBeInTheDocument();
     expect(
-      within(revokedListing as HTMLElement).getByRole("button", { name: "安装" })
+      within(revokedListing as HTMLElement).getByRole("button", { name: "已撤销" })
     ).toBeDisabled();
     expect(
-      within(futureListing as HTMLElement).getByRole("button", { name: "安装" })
+      within(futureListing as HTMLElement).getByRole("button", { name: "不兼容" })
     ).toBeDisabled();
 
     fireEvent.click(
@@ -567,9 +662,38 @@ describe("pages/PluginsPage", () => {
     });
   });
 
-  it("keeps privacy filter, prompt helper, redactor, and response guard example guidance visible", () => {
+  it("selects an installed featured Privacy Filter instead of reinstalling it", () => {
+    const installOfficialMutation = mutation();
+    vi.mocked(usePluginInstallOfficialMutation).mockReturnValue(installOfficialMutation as any);
     vi.mocked(usePluginsListQuery).mockReturnValue({
-      data: [summary()],
+      data: [
+        summary(),
+        summary({
+          id: 2,
+          plugin_id: "official.privacy-filter",
+          name: "Privacy Filter",
+          current_version: "1.0.0",
+          runtime: "native:privacyFilter",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginQuery).mockReturnValue({
+      data: detail({
+        summary: summary({
+          plugin_id: "official.privacy-filter",
+          name: "Privacy Filter",
+          runtime: "native:privacyFilter",
+        }),
+        manifest: {
+          ...detail().manifest,
+          id: "official.privacy-filter",
+          name: "Privacy Filter",
+          runtime: { kind: "native", engine: "privacyFilter" },
+        },
+      }),
       isLoading: false,
       isFetching: false,
       error: null,
@@ -577,10 +701,11 @@ describe("pages/PluginsPage", () => {
 
     renderWithProviders(<PluginsPage />);
 
-    expect(screen.getByText("official.privacy-filter")).toBeInTheDocument();
-    expect(screen.getByText("examples/prompt-helper")).toBeInTheDocument();
-    expect(screen.getByText("examples/redactor")).toBeInTheDocument();
-    expect(screen.getByText("examples/response-guard")).toBeInTheDocument();
+    const privacyCard = marketCard("official.privacy-filter");
+    fireEvent.click(within(privacyCard).getByRole("button", { name: "已安装" }));
+
+    expect(installOfficialMutation.mutateAsync).not.toHaveBeenCalled();
+    expect(screen.getAllByText("official.privacy-filter").length).toBeGreaterThan(0);
   });
 
   it("uses only the latest lifecycle audit for trust state", () => {
@@ -857,7 +982,7 @@ describe("pages/PluginsPage", () => {
     renderWithProviders(<PluginsPage />);
 
     expect(screen.getByText("检测策略")).toBeInTheDocument();
-    expect(screen.getByText("官方来源")).toBeInTheDocument();
+    expect(screen.getAllByText("官方来源").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/200\+ Gitleaks/).length).toBeGreaterThanOrEqual(2);
     expect(screen.getByLabelText("邮箱地址")).toBeChecked();
     expect(screen.queryByLabelText("sensitiveTypes")).not.toBeInTheDocument();
@@ -916,13 +1041,14 @@ describe("pages/PluginsPage", () => {
       expect(screen.queryByRole("dialog", { name: "安装前预检" })).not.toBeInTheDocument();
     });
 
-    expect(screen.getByRole("button", { name: /Privacy Filter/ })).toBeInTheDocument();
+    const privacyCard = marketCard("official.privacy-filter");
+    expect(within(privacyCard).getByRole("button", { name: "安装" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Safety Detector/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Prompt Optimizer/ })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Sensitive Data Redactor/ })
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Privacy Filter/ }));
+    fireEvent.click(within(privacyCard).getByRole("button", { name: "安装" }));
     fireEvent.click(screen.getByRole("button", { name: "启用" }));
 
     await waitFor(() => {
