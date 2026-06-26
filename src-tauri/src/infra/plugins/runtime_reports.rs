@@ -6,6 +6,10 @@ use crate::shared::error::{db_err, AppResult};
 use crate::shared::time::now_unix_seconds;
 use rusqlite::{params, params_from_iter, types::Value};
 
+const DEFAULT_PLUGIN_RUNTIME_REPORT_RETENTION_DAYS: i64 = 30;
+const DEFAULT_PLUGIN_RUNTIME_REPORTS_PER_PLUGIN: usize = 5_000;
+const SECONDS_PER_DAY: i64 = 86_400;
+
 #[derive(Debug, Clone)]
 pub(crate) struct RecordPluginHookExecutionReportInput {
     pub(crate) plugin_id: String,
@@ -95,7 +99,80 @@ INSERT INTO plugin_hook_execution_reports(
     .map_err(|e| db_err!("failed to record plugin hook execution report: {e}"))?;
 
     let id = conn.last_insert_rowid();
-    get_hook_execution_report_by_id(conn, id)
+    let report = get_hook_execution_report_by_id(conn, id)?;
+    prune_after_insert_best_effort(conn, &report.plugin_id, now);
+    Ok(report)
+}
+
+pub(crate) fn prune_hook_execution_reports_for_plugin(
+    db: &db::Db,
+    plugin_id: &str,
+    max_reports: usize,
+) -> AppResult<usize> {
+    let conn = db.open_connection()?;
+    prune_hook_execution_reports_for_plugin_with_conn(&conn, plugin_id, max_reports)
+}
+
+fn prune_hook_execution_reports_for_plugin_with_conn(
+    conn: &rusqlite::Connection,
+    plugin_id: &str,
+    max_reports: usize,
+) -> AppResult<usize> {
+    let deleted = conn
+        .execute(
+            r#"
+DELETE FROM plugin_hook_execution_reports
+WHERE id IN (
+  SELECT id
+  FROM plugin_hook_execution_reports
+  WHERE plugin_id = ?1
+  ORDER BY created_at DESC, id DESC
+  LIMIT -1 OFFSET ?2
+)
+"#,
+            params![plugin_id, max_reports as i64],
+        )
+        .map_err(|e| db_err!("failed to prune plugin hook execution reports by cap: {e}"))?;
+    Ok(deleted)
+}
+
+pub(crate) fn prune_hook_execution_reports_before(
+    db: &db::Db,
+    cutoff_created_at: i64,
+) -> AppResult<usize> {
+    let conn = db.open_connection()?;
+    prune_hook_execution_reports_before_with_conn(&conn, cutoff_created_at)
+}
+
+fn prune_hook_execution_reports_before_with_conn(
+    conn: &rusqlite::Connection,
+    cutoff_created_at: i64,
+) -> AppResult<usize> {
+    let deleted = conn
+        .execute(
+            "DELETE FROM plugin_hook_execution_reports WHERE created_at < ?1",
+            params![cutoff_created_at],
+        )
+        .map_err(|e| db_err!("failed to prune old plugin hook execution reports: {e}"))?;
+    Ok(deleted)
+}
+
+fn prune_after_insert_best_effort(conn: &rusqlite::Connection, plugin_id: &str, now: i64) {
+    let cutoff = now - DEFAULT_PLUGIN_RUNTIME_REPORT_RETENTION_DAYS * SECONDS_PER_DAY;
+    if let Err(err) = prune_hook_execution_reports_before_with_conn(conn, cutoff) {
+        tracing::warn!(error = %err, "failed to prune old plugin hook execution reports");
+    }
+    if let Err(err) = prune_hook_execution_reports_for_plugin_with_conn(
+        conn,
+        plugin_id,
+        DEFAULT_PLUGIN_RUNTIME_REPORTS_PER_PLUGIN,
+    ) {
+        tracing::warn!(
+            plugin_id,
+            error = %err,
+            "failed to prune plugin hook execution reports by cap"
+        );
+    }
 }
 
 pub(crate) fn list_hook_execution_reports(
@@ -244,6 +321,75 @@ fn parse_json_value(raw: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn report_input(plugin_id: &str, trace_id: &str) -> RecordPluginHookExecutionReportInput {
+        RecordPluginHookExecutionReportInput {
+            plugin_id: plugin_id.to_string(),
+            trace_id: Some(trace_id.to_string()),
+            hook_name: "gateway.request.afterBodyRead".to_string(),
+            runtime_kind: "declarativeRules".to_string(),
+            status: "completed".to_string(),
+            started_at_ms: 1000,
+            duration_ms: 5,
+            failure_kind: None,
+            error_code: None,
+            failure_policy: Some("fail-open".to_string()),
+            circuit_state: Some("closed".to_string()),
+            context_budget_json: serde_json::json!({ "messages": 1 }),
+            output_budget_json: serde_json::json!({ "bytes": 1 }),
+            mutation_summary_json: serde_json::json!({ "changed": false }),
+            replayable: true,
+            replay_export_reason: None,
+        }
+    }
+
+    #[test]
+    fn repository_prunes_plugin_hook_execution_reports_by_plugin_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+
+        for index in 0..5 {
+            record_hook_execution_report(
+                &db,
+                report_input("community.cap", &format!("trace-{index}")),
+            )
+            .unwrap();
+        }
+
+        let deleted = prune_hook_execution_reports_for_plugin(&db, "community.cap", 3).unwrap();
+        let reports =
+            list_hook_execution_reports(&db, Some("community.cap"), None, None, 10).unwrap();
+
+        assert_eq!(deleted, 2);
+        assert_eq!(reports.len(), 3);
+        assert_eq!(reports[0].trace_id.as_deref(), Some("trace-4"));
+        assert_eq!(reports[2].trace_id.as_deref(), Some("trace-2"));
+    }
+
+    #[test]
+    fn repository_prunes_plugin_hook_execution_reports_before_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+
+        record_hook_execution_report(&db, report_input("community.age", "trace-old")).unwrap();
+        record_hook_execution_report(&db, report_input("community.age", "trace-new")).unwrap();
+
+        let conn = db.open_connection().unwrap();
+        conn.execute(
+            "UPDATE plugin_hook_execution_reports SET created_at = ?1 WHERE trace_id = ?2",
+            rusqlite::params![1_i64, "trace-old"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let deleted = prune_hook_execution_reports_before(&db, 2).unwrap();
+        let reports =
+            list_hook_execution_reports(&db, Some("community.age"), None, None, 10).unwrap();
+
+        assert_eq!(deleted, 1);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].trace_id.as_deref(), Some("trace-new"));
+    }
 
     #[test]
     fn repository_records_and_lists_plugin_hook_execution_reports() {
