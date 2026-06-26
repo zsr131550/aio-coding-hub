@@ -447,6 +447,77 @@ describe("pages/PluginsPage", () => {
     expect(screen.queryByText("签名已验证")).not.toBeInTheDocument();
   });
 
+  it("moves selection to the first available plugin when the selected plugin leaves the list", () => {
+    const firstDetail = detail({
+      summary: summary({
+        plugin_id: "community.first",
+        name: "First Plugin",
+      }),
+      manifest: {
+        ...detail().manifest,
+        id: "community.first",
+        name: "First Plugin",
+      },
+    });
+    const secondDetail = detail({
+      summary: summary({
+        plugin_id: "community.second",
+        name: "Second Plugin",
+      }),
+      manifest: {
+        ...detail().manifest,
+        id: "community.second",
+        name: "Second Plugin",
+      },
+    });
+
+    let pluginSummaries = [
+      summary({ plugin_id: "community.first", name: "First Plugin" }),
+      summary({ plugin_id: "community.second", name: "Second Plugin" }),
+    ];
+    vi.mocked(usePluginsListQuery).mockImplementation(
+      () =>
+        ({
+          data: pluginSummaries,
+          isLoading: false,
+          isFetching: false,
+          error: null,
+        }) as any
+    );
+    vi.mocked(usePluginQuery).mockImplementation((pluginId: string | null) => {
+      const selected = pluginId === "community.second" ? secondDetail : firstDetail;
+      return {
+        data: selected,
+        isLoading: false,
+        isFetching: false,
+        error: null,
+      } as any;
+    });
+
+    const client = createTestQueryClient();
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <PluginsPage />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    expect(screen.getAllByText("First Plugin").length).toBeGreaterThan(0);
+
+    pluginSummaries = [summary({ plugin_id: "community.second", name: "Second Plugin" })];
+    rerender(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <PluginsPage />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    expect(usePluginQuery).toHaveBeenLastCalledWith("community.second", {
+      enabled: true,
+    });
+  });
+
   it("renders runtime reports and exports replay fixtures", async () => {
     const { copyText } = await import("../../services/clipboard");
     const exportReplay = vi.fn().mockResolvedValue(replayFixture());

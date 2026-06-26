@@ -418,17 +418,28 @@ export function PluginsPage() {
   const uninstallMutation = usePluginUninstallMutation();
   const saveConfigMutation = usePluginSaveConfigMutation();
 
-  useEffect(() => {
-    if (!selectedPluginId && plugins.length > 0) {
-      setSelectedPluginId(plugins[0].plugin_id);
-    }
-  }, [plugins, selectedPluginId]);
-
   const selectedSummary = useMemo(
     () => plugins.find((plugin) => plugin.plugin_id === selectedPluginId) ?? null,
     [plugins, selectedPluginId]
   );
-  const detailQuery = usePluginQuery(selectedPluginId, { enabled: Boolean(selectedPluginId) });
+  const effectiveSelectedPluginId = selectedSummary?.plugin_id ?? null;
+  const detailQuery = usePluginQuery(effectiveSelectedPluginId, {
+    enabled: Boolean(effectiveSelectedPluginId),
+  });
+
+  useEffect(() => {
+    if (plugins.length === 0) {
+      if (selectedPluginId !== null) {
+        setSelectedPluginId(null);
+      }
+      return;
+    }
+
+    const selectedStillExists = plugins.some((plugin) => plugin.plugin_id === selectedPluginId);
+    if (!selectedStillExists) {
+      setSelectedPluginId(plugins[0].plugin_id);
+    }
+  }, [plugins, selectedPluginId]);
   const busy =
     previewInstallMutation.isPending ||
     previewUpdateMutation.isPending ||
@@ -591,15 +602,15 @@ export function PluginsPage() {
                 busy={busy}
                 onUpdate={handleUpdate}
                 onRollback={(version) => {
-                  if (!selectedPluginId) return;
+                  if (!effectiveSelectedPluginId) return;
                   runAction("回滚插件", () =>
-                    rollbackMutation.mutateAsync({ pluginId: selectedPluginId, version })
+                    rollbackMutation.mutateAsync({ pluginId: effectiveSelectedPluginId, version })
                   );
                 }}
                 onSaveConfig={(config) => {
-                  if (!selectedPluginId) return;
+                  if (!effectiveSelectedPluginId) return;
                   runAction("保存配置", () =>
-                    saveConfigMutation.mutateAsync({ pluginId: selectedPluginId, config })
+                    saveConfigMutation.mutateAsync({ pluginId: effectiveSelectedPluginId, config })
                   );
                 }}
                 onGrantPendingPermissions={(pluginId, permissions) => {
