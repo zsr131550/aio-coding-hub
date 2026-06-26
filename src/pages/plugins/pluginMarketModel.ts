@@ -108,14 +108,15 @@ export function buildFeaturedMarketCards(
   installed: readonly PluginSummary[],
   catalog: readonly PluginFeaturedCatalogItem[] = FEATURED_PLUGIN_CATALOG
 ): PluginMarketCardView[] {
-  const installedVersions = buildInstalledVersionMap(installed);
+  const installedPlugins = buildInstalledPluginMap(installed);
 
   return catalog.map((item) => {
-    const installedVersion = installedVersions.get(item.pluginId) ?? null;
+    const installedPlugin = installedPlugins.get(item.pluginId);
+    const installedVersion = installedPlugin?.current_version ?? null;
     const listing = item.listing ?? null;
     const state = item.listing
-      ? getListingState(item.listing, installedVersion)
-      : getFeaturedState(item.source, installedVersion);
+      ? getListingState(item.listing, Boolean(installedPlugin))
+      : getFeaturedState(item.source, Boolean(installedPlugin));
 
     return {
       pluginId: item.pluginId,
@@ -137,10 +138,11 @@ export function buildMarketListingCards(
   installed: readonly PluginSummary[],
   listings: readonly PluginMarketListing[]
 ): PluginMarketCardView[] {
-  const installedVersions = buildInstalledVersionMap(installed);
+  const installedPlugins = buildInstalledPluginMap(installed);
 
   return listings.map((listing) => {
-    const installedVersion = installedVersions.get(listing.pluginId) ?? null;
+    const installedPlugin = installedPlugins.get(listing.pluginId);
+    const installedVersion = installedPlugin?.current_version ?? null;
 
     return {
       pluginId: listing.pluginId,
@@ -149,7 +151,7 @@ export function buildMarketListingCards(
       category: "developer",
       latestVersion: listing.latestVersion,
       installedVersion,
-      ...getListingState(listing, installedVersion),
+      ...getListingState(listing, Boolean(installedPlugin)),
       riskLabel: formatRiskLabel(listing.riskLabels),
       trustLabel: getTrustLabel(listing, "market"),
       sourceLabel: SOURCE_LABELS.custom,
@@ -173,19 +175,19 @@ export function toMarketInstallInput(card: PluginMarketCardView): MarketInstallI
   };
 }
 
-function buildInstalledVersionMap(installed: readonly PluginSummary[]) {
-  const versions = new Map<string, string | null>();
+function buildInstalledPluginMap(installed: readonly PluginSummary[]) {
+  const plugins = new Map<string, PluginSummary>();
   for (const item of installed) {
-    versions.set(item.plugin_id, item.current_version);
+    plugins.set(item.plugin_id, item);
   }
-  return versions;
+  return plugins;
 }
 
 function getFeaturedState(
   source: PluginFeaturedCatalogItem["source"],
-  installedVersion: string | null
+  installed: boolean
 ): CardStateDetails {
-  if (installedVersion) {
+  if (installed) {
     return {
       state: "installed",
       action: "installed",
@@ -215,10 +217,7 @@ function getFeaturedState(
   };
 }
 
-function getListingState(
-  listing: PluginMarketListing,
-  installedVersion: string | null
-): CardStateDetails {
+function getListingState(listing: PluginMarketListing, installed: boolean): CardStateDetails {
   if (listing.revoked) {
     return {
       state: "revoked",
@@ -241,7 +240,7 @@ function getListingState(
     return MISSING_TRUST_DATA_STATE;
   }
 
-  if (installedVersion && listing.updateAvailable) {
+  if (installed && listing.updateAvailable) {
     return {
       state: "updateAvailable",
       action: "update",
@@ -250,7 +249,7 @@ function getListingState(
     };
   }
 
-  if (installedVersion) {
+  if (installed) {
     return {
       state: "installed",
       action: "installed",

@@ -114,6 +114,21 @@ describe("pluginMarketModel", () => {
     });
   });
 
+  it("marks installed plugins as installed even when the version is unavailable", () => {
+    const cards = buildFeaturedMarketCards(
+      [summary({ current_version: null })],
+      FEATURED_PLUGIN_CATALOG
+    );
+    const privacyFilter = cards.find((card) => card.pluginId === "official.privacy-filter");
+
+    expect(privacyFilter).toMatchObject({
+      installedVersion: null,
+      state: "installed",
+      action: "installed",
+      actionLabel: "已安装",
+    });
+  });
+
   it("maps parsed market listings to concise install states", () => {
     const cards = buildMarketListingCards(
       [],
