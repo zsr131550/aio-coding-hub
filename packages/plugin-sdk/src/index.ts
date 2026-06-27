@@ -421,7 +421,7 @@ export function validateManifest(manifest: PluginManifest): ValidationResult {
       return invalid("PLUGIN_UNKNOWN_PERMISSION", `unknown permission: ${permission}`);
     }
   }
-  const permissionSetError = validatePermissionSet(hooks, permissions);
+  const permissionSetError = validatePermissionSet(manifest);
   if (permissionSetError) return permissionSetError;
   const permissionScopeError = validatePermissionScope(hooks, permissions);
   if (permissionScopeError) return permissionScopeError;
@@ -472,12 +472,9 @@ function supportsPluginApiV1(value: string): boolean {
   return trimmed === "^1.0.0" || trimmed === "1.x.x" || trimmed === ">=1.0.0 <2.0.0";
 }
 
-function validatePermissionSet(
-  pluginHooks: readonly PluginHook[],
-  permissions: readonly PluginPermission[]
-): ValidationResult | null {
-  const set = new Set(permissions);
-  const hooks = new Set(pluginHooks.map((hook) => hook.name));
+function validatePermissionSet(manifest: PluginManifest): ValidationResult | null {
+  const set = new Set(manifest.permissions ?? []);
+  const hooks = new Set((manifest.hooks ?? []).map((hook) => hook.name));
 
   if (
     hooks.has("gateway.request.afterBodyRead") &&

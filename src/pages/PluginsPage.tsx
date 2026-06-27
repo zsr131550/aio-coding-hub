@@ -221,9 +221,10 @@ function PluginListRow({
 
 function PermissionList({ detail }: { detail: PluginDetail }) {
   const granted = new Set(detail.granted_permissions);
+  const permissions = detail.manifest.permissions ?? [];
   return (
     <div className="grid gap-2">
-      {detail.manifest.permissions.map((permission) => {
+      {permissions.map((permission) => {
         const ok = granted.has(permission);
         const copy = describePluginPermission(permission);
         return (
@@ -286,7 +287,9 @@ function PluginDetailPanel({
       ? `declarativeRules: ${detail.manifest.runtime.rules.join(", ")}`
       : detail.manifest.runtime.kind === "native"
         ? `native: ${detail.manifest.runtime.engine}`
-        : `wasm: ${detail.manifest.runtime.abiVersion}`;
+        : detail.manifest.runtime.kind === "wasm"
+          ? `wasm: ${detail.manifest.runtime.abiVersion}`
+          : `extensionHost: ${detail.manifest.runtime.language}`;
   const runtimeCopy = describePluginRuntime(detail.summary.runtime);
   const unsigned = isUnsigned(detail);
   const rollbackVersion = previousVersion(detail);
@@ -391,7 +394,7 @@ function PluginDetailPanel({
         </div>
 
         <div className="mt-3 grid gap-2">
-          {detail.manifest.hooks.map((hook) => (
+          {(detail.manifest.hooks ?? []).map((hook) => (
             <div key={hook.name} className="rounded-md border border-border px-3 py-2 text-sm">
               <div className="font-mono text-xs">{hook.name}</div>
               <div className="mt-1 text-xs text-muted-foreground">

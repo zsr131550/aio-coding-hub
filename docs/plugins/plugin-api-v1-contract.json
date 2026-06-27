@@ -251,7 +251,13 @@
       "contextFields": ["traceId", "log.message"]
     }
   },
-  "communityRuntimes": ["extensionHost", "declarativeRules"],
+  "extensionHostContract": {
+    "runtime": "extensionHost",
+    "language": "typescript",
+    "requiresMain": true,
+    "status": "mainline-contract"
+  },
+  "communityRuntimes": ["declarativeRules"],
   "policyGatedRuntimes": ["wasm"],
   "officialRuntimes": ["native:privacyFilter"]
 }

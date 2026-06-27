@@ -2373,6 +2373,7 @@ export type CodexConfigTomlValidationResult = {
 };
 export type CodexHomeMode = "user_home_default" | "follow_codex_home" | "custom";
 export type CodexSessionIdCompletionUpdate = { enableCodexSessionIdCompletion: boolean };
+export type CommandContribution = { command: string; title: string; category?: string | null };
 export type ConfigImportResult = {
   providers_imported: number;
   sort_modes_imported: number;
@@ -2547,6 +2548,7 @@ export type GatewayRectifierSettingsUpdate = {
   responseFixerMaxJsonDepth: number;
   responseFixerMaxFixSize: number;
 };
+export type GatewayRuleContribution = { id?: string | null; rules: string[]; hooks?: string[] };
 export type GatewayStatus = {
   running: boolean;
   port: number | null;
@@ -2604,6 +2606,40 @@ export type GeminiConfigState = {
   securityAuthSelectedType: string | null;
 };
 export type HomeUsagePeriod = "last7" | "last15" | "last30" | "month";
+export type HostRenderedBadgeTone = "neutral" | "success" | "warning" | "danger";
+export type HostRenderedField =
+  | {
+      type: "text";
+      key: string;
+      label: string;
+      placeholder?: string | null;
+      required?: boolean | null;
+    }
+  | {
+      type: "password";
+      key: string;
+      label: string;
+      placeholder?: string | null;
+      required?: boolean | null;
+    }
+  | {
+      type: "number";
+      key: string;
+      label: string;
+      min?: number | null;
+      max?: number | null;
+      step?: number | null;
+    }
+  | { type: "boolean"; key: string; label: string }
+  | { type: "select"; key: string; label: string; options: HostRenderedSelectOption[] }
+  | { type: "textarea"; key: string; label: string; rows?: number | null }
+  | { type: "info"; key: string; label: string; value: string }
+  | { type: "button"; key: string; label: string; command: string };
+export type HostRenderedSchema =
+  | { type: "section"; fields: HostRenderedField[] }
+  | { type: "panel"; fields: HostRenderedField[] }
+  | { type: "badge"; label: string; tone?: HostRenderedBadgeTone | null };
+export type HostRenderedSelectOption = { value: string; label: string };
 export type InstalledSkillSummary = {
   id: number;
   skill_key: string;
@@ -2736,6 +2772,15 @@ export type PluginCompatibilitySummary = {
   platforms: string[];
   blockingReasons: PluginLifecycleNotice[];
 };
+export type PluginContributes = {
+  providers?: ProviderContribution[];
+  protocols?: ProtocolContribution[];
+  protocolBridges?: ProtocolBridgeContribution[];
+  commands?: CommandContribution[];
+  gatewayHooks?: PluginHook[];
+  gatewayRules?: GatewayRuleContribution[];
+  ui?: Partial<{ [key in string]: UiContribution[] }>;
+};
 export type PluginDetail = {
   summary: PluginSummary;
   manifest: PluginManifest;
@@ -2834,8 +2879,12 @@ export type PluginManifest = {
   version: string;
   apiVersion: string;
   runtime: PluginRuntime;
-  hooks: PluginHook[];
-  permissions: string[];
+  hooks?: PluginHook[];
+  permissions?: string[];
+  main?: string | null;
+  activationEvents?: string[];
+  contributes?: PluginContributes | null;
+  capabilities?: string[];
   hostCompatibility: PluginHostCompatibility;
   entry?: string | null;
   configSchema?: JsonValue | null;
@@ -2942,6 +2991,7 @@ export type PluginReplayFixtureSource = {
 export type PluginRevokePermissionInput = { pluginId: string; permission: string };
 export type PluginRollbackInput = { pluginId: string; version: string };
 export type PluginRuntime =
+  | { kind: "extensionHost"; language: string }
   | { kind: "declarativeRules"; rules: string[] }
   | { kind: "native"; engine: string }
   | { kind: "wasm"; abiVersion: string; memoryLimitBytes?: number | null };
@@ -3027,6 +3077,14 @@ export type PromptSummary = {
   created_at: number;
   updated_at: number;
 };
+export type ProtocolBridgeContribution = {
+  bridgeType: string;
+  inboundProtocol: string;
+  outboundProtocol: string;
+  supportsStreaming?: boolean | null;
+};
+export type ProtocolContribution = { protocolId: string; direction: ProtocolDirection };
+export type ProtocolDirection = "inbound" | "outbound" | "both";
 export type ProviderAuthMode = "api_key" | "oauth";
 export type ProviderAvailabilityResult = {
   ok: boolean;
@@ -3039,6 +3097,12 @@ export type ProviderAvailabilityResult = {
   response_preview: string | null;
 };
 export type ProviderBaseUrlMode = "order" | "ping";
+export type ProviderContribution = {
+  providerType: string;
+  displayName: string;
+  targetCliKeys: TargetCliKey[];
+  extensionNamespace: string;
+};
 export type ProviderLimitUsageRow = {
   cli_key: string;
   provider_id: number;
@@ -3448,6 +3512,14 @@ export type SkillsPaths = { ssot_dir: string; repos_dir: string; cli_dir: string
 export type SortModeActiveRow = { cli_key: string; mode_id: number | null; updated_at: number };
 export type SortModeProviderRow = { provider_id: number; enabled: boolean };
 export type SortModeSummary = { id: number; name: string; created_at: number; updated_at: number };
+export type TargetCliKey = "claude" | "codex" | "gemini";
+export type UiContribution = {
+  id: string;
+  title?: string | null;
+  order?: number | null;
+  schema: HostRenderedSchema;
+  when?: string | null;
+};
 export type UsageDayDetailParams = {
   day: string;
   cliKey: string | null;
