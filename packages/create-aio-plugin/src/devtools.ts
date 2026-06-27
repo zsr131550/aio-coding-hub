@@ -489,6 +489,18 @@ export function doctorPluginFiles(files: ScaffoldFiles, options: DoctorOptions =
     });
   }
 
+  if (runtimeKind === "extensionHost" && typeof manifest.main === "string") {
+    if (!hasPluginFile(files, manifest.main)) {
+      diagnostics.push({
+        severity: "error",
+        code: "PLUGIN_MAIN_FILE_MISSING",
+        message: `extension host main file is missing: ${manifest.main}`,
+        path: manifest.main,
+        hint: "Build the extension host entry before packing the plugin.",
+      });
+    }
+  }
+
   if (options.strict) {
     diagnostics.push(...strictRuleDiagnostics(files, manifest));
   }
@@ -1142,6 +1154,9 @@ function manifestRuntimeKind(
   if (runtime?.kind === "wasm" && typeof runtime.abiVersion === "string") {
     return "wasm";
   }
+  if (runtime?.kind === "extensionHost" && runtime.language === "typescript") {
+    return "extensionHost";
+  }
   return null;
 }
 
@@ -1158,14 +1173,18 @@ function manifestShapeDiagnostics(manifest: Partial<PluginManifest>): PluginDiag
       });
     }
   }
+  const runtime = asRecord(manifest.runtime);
+  const isExtensionHost = runtime?.kind === "extensionHost";
   if (!Array.isArray(manifest.hooks)) {
-    diagnostics.push({
-      severity: "error",
-      code: "PLUGIN_INVALID_MANIFEST",
-      message: "hooks must be an array",
-      path: "plugin.json#/hooks",
-      hint: "Declare at least one Plugin API v1 hook.",
-    });
+    if (manifest.hooks !== undefined || !isExtensionHost) {
+      diagnostics.push({
+        severity: "error",
+        code: "PLUGIN_INVALID_MANIFEST",
+        message: "hooks must be an array",
+        path: "plugin.json#/hooks",
+        hint: "Declare hooks as Plugin API v1 hook objects.",
+      });
+    }
   } else {
     manifest.hooks.forEach((hook, index) => {
       const hookRecord = asRecord(hook);
@@ -1213,13 +1232,15 @@ function manifestShapeDiagnostics(manifest: Partial<PluginManifest>): PluginDiag
     });
   }
   if (!Array.isArray(manifest.permissions)) {
-    diagnostics.push({
-      severity: "error",
-      code: "PLUGIN_INVALID_MANIFEST",
-      message: "permissions must be an array",
-      path: "plugin.json#/permissions",
-      hint: "Declare Plugin API v1 permissions as strings.",
-    });
+    if (manifest.permissions !== undefined || !isExtensionHost) {
+      diagnostics.push({
+        severity: "error",
+        code: "PLUGIN_INVALID_MANIFEST",
+        message: "permissions must be an array",
+        path: "plugin.json#/permissions",
+        hint: "Declare Plugin API v1 permissions as strings.",
+      });
+    }
   }
   const compatibility = asRecord(manifest.hostCompatibility);
   if (!compatibility) {
@@ -1265,7 +1286,6 @@ function manifestShapeDiagnostics(manifest: Partial<PluginManifest>): PluginDiag
       hint: "Use a package-relative entry path.",
     });
   }
-  const runtime = asRecord(manifest.runtime);
   if (runtime?.kind === "wasm" && typeof runtime.abiVersion !== "string") {
     diagnostics.push({
       severity: "error",
@@ -1286,6 +1306,15 @@ function manifestShapeDiagnostics(manifest: Partial<PluginManifest>): PluginDiag
       message: "wasm memoryLimitBytes must be a number when present",
       path: "plugin.json#/runtime/memoryLimitBytes",
       hint: "Use a byte count number.",
+    });
+  }
+  if (runtime?.kind === "extensionHost" && runtime.language !== "typescript") {
+    diagnostics.push({
+      severity: "error",
+      code: "PLUGIN_INVALID_RUNTIME",
+      message: "extensionHost runtime requires typescript language",
+      path: "plugin.json#/runtime/language",
+      hint: 'Use runtime: { kind: "extensionHost", language: "typescript" }.',
     });
   }
   return diagnostics;
@@ -1311,12 +1340,21 @@ function runtimeShapeDiagnostic(manifest: Partial<PluginManifest>): PluginDiagno
       hint: 'Use runtime: { kind: "declarativeRules", rules: ["rules/main.json"] }.',
     };
   }
+  if (runtime.kind === "extensionHost") {
+    return {
+      severity: "error",
+      code: "PLUGIN_INVALID_RUNTIME",
+      message: "extensionHost runtime requires typescript language",
+      path: "plugin.json#/runtime",
+      hint: 'Use runtime: { kind: "extensionHost", language: "typescript" }.',
+    };
+  }
   return {
     severity: "error",
     code: "PLUGIN_INVALID_RUNTIME",
     message: "plugin runtime kind is not supported by create-aio-plugin doctor",
     path: "plugin.json#/runtime",
-    hint: "Use declarativeRules or wasm for community plugin packages.",
+    hint: "Use a supported Plugin API v1 runtime shape.",
   };
 }
 

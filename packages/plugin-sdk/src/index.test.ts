@@ -240,6 +240,30 @@ describe("validateManifest", () => {
     });
   });
 
+  test("rejects gatewayRules hooks with malformed hook lists", () => {
+    const nonArrayHookManifest = {
+      ...openRouterManifest,
+      contributes: {
+        gatewayRules: [{ rules: ["rules/main.json"], hooks: "gateway.request.afterBodyRead" }],
+      },
+    };
+    expect(validateManifest(nonArrayHookManifest as unknown as PluginManifest)).toMatchObject({
+      ok: false,
+      error: { code: "PLUGIN_INVALID_GATEWAY_RULE_CONTRIBUTION" },
+    });
+
+    const nonStringHookManifest = {
+      ...openRouterManifest,
+      contributes: {
+        gatewayRules: [{ rules: ["rules/main.json"], hooks: [123] }],
+      },
+    };
+    expect(validateManifest(nonStringHookManifest as unknown as PluginManifest)).toMatchObject({
+      ok: false,
+      error: { code: "PLUGIN_INVALID_GATEWAY_RULE_CONTRIBUTION" },
+    });
+  });
+
   it("rejects reserved hooks until the host wires them", () => {
     const result = validateManifest({
       ...manifest,

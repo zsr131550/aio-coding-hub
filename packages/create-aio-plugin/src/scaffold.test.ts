@@ -1272,6 +1272,87 @@ describe("create-aio-plugin scaffold", () => {
     );
   });
 
+  it("doctor accepts extension host manifests without legacy hooks and permissions", () => {
+    const files = {
+      "plugin.json": `${JSON.stringify(
+        {
+          id: "acme.openrouter",
+          name: "OpenRouter Provider",
+          version: "0.1.0",
+          apiVersion: "1.0.0",
+          main: "dist/extension.js",
+          runtime: { kind: "extensionHost", language: "typescript" },
+          activationEvents: ["onStartup"],
+          contributes: {
+            providers: [
+              {
+                providerType: "openrouter",
+                displayName: "OpenRouter",
+                targetCliKeys: ["claude"],
+                extensionNamespace: "openrouter",
+              },
+            ],
+          },
+          capabilities: ["provider.extensionValues"],
+          hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+        },
+        null,
+        2
+      )}\n`,
+      "dist/extension.js": "",
+    };
+
+    const result = doctorPluginFiles(files);
+
+    expect(result.ok).toBe(true);
+    expect(validatePluginFilesStrict(files).ok).toBe(true);
+    expect(result.manifest).toMatchObject({
+      id: "acme.openrouter",
+      runtime: "extensionHost",
+    });
+  });
+
+  it("doctor reports missing extension host main files", () => {
+    const files = {
+      "plugin.json": `${JSON.stringify(
+        {
+          id: "acme.openrouter",
+          name: "OpenRouter Provider",
+          version: "0.1.0",
+          apiVersion: "1.0.0",
+          main: "dist/extension.js",
+          runtime: { kind: "extensionHost", language: "typescript" },
+          activationEvents: ["onStartup"],
+          contributes: {
+            providers: [
+              {
+                providerType: "openrouter",
+                displayName: "OpenRouter",
+                targetCliKeys: ["claude"],
+                extensionNamespace: "openrouter",
+              },
+            ],
+          },
+          capabilities: ["provider.extensionValues"],
+          hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+        },
+        null,
+        2
+      )}\n`,
+    };
+
+    const result = doctorPluginFiles(files);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_MAIN_FILE_MISSING",
+        path: "dist/extension.js",
+      })
+    );
+  });
+
   it("doctor rejects malformed runtime shapes that SDK validation does not catch", () => {
     const files = createPluginScaffold({
       id: "acme.redactor",
