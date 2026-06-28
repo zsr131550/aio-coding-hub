@@ -966,101 +966,240 @@ fn diff_contributions(
         .into_iter()
         .filter_map(|name| match (before.get(&name), after.get(&name)) {
             (Some(previous), Some(next)) if previous != next => Some(PluginContributionChange {
-                name,
+                kind: next.kind.clone(),
+                name: next.name.clone(),
+                label: next.label.clone(),
                 change: "changed".to_string(),
-                before: Some(previous.clone()),
-                after: Some(next.clone()),
+                before: Some(previous.summary.clone()),
+                after: Some(next.summary.clone()),
             }),
             (Some(previous), None) => Some(PluginContributionChange {
-                name,
+                kind: previous.kind.clone(),
+                name: previous.name.clone(),
+                label: previous.label.clone(),
                 change: "removed".to_string(),
-                before: Some(previous.clone()),
+                before: Some(previous.summary.clone()),
                 after: None,
             }),
             (None, Some(next)) => Some(PluginContributionChange {
-                name,
+                kind: next.kind.clone(),
+                name: next.name.clone(),
+                label: next.label.clone(),
                 change: "added".to_string(),
                 before: None,
-                after: Some(next.clone()),
+                after: Some(next.summary.clone()),
             }),
             _ => None,
         })
         .collect()
 }
 
-fn contribution_signatures(manifest: &PluginManifest) -> BTreeMap<String, String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContributionSignature {
+    kind: String,
+    name: String,
+    label: Option<String>,
+    summary: String,
+    fingerprint: String,
+}
+
+fn contribution_signatures(manifest: &PluginManifest) -> BTreeMap<String, ContributionSignature> {
     let mut out = BTreeMap::new();
     let Some(contributes) = manifest.contributes.as_ref() else {
         for capability in &manifest.capabilities {
-            out.insert(capability.clone(), "capability".to_string());
+            insert_contribution_signature(
+                &mut out,
+                format!("capability:{capability}"),
+                ContributionSignature {
+                    kind: "capability".to_string(),
+                    name: capability.clone(),
+                    label: None,
+                    summary: "declared".to_string(),
+                    fingerprint: format!("capability:{capability}"),
+                },
+            );
         }
         return out;
     };
 
     for provider in &contributes.providers {
-        out.insert(
-            provider.provider_type.clone(),
-            contribution_signature("provider", provider),
+        let label = Some(provider.display_name.clone());
+        insert_contribution_signature(
+            &mut out,
+            format!("provider:{}", provider.provider_type),
+            ContributionSignature {
+                kind: "provider".to_string(),
+                name: provider.provider_type.clone(),
+                label,
+                summary: short_contribution_summary(format!(
+                    "{} ({})",
+                    provider.display_name, provider.provider_type
+                )),
+                fingerprint: contribution_fingerprint("provider", provider),
+            },
         );
     }
     for protocol in &contributes.protocols {
-        out.insert(
-            protocol.protocol_id.clone(),
-            contribution_signature("protocol", protocol),
+        let direction = format!("{:?}", protocol.direction);
+        insert_contribution_signature(
+            &mut out,
+            format!("protocol:{}", protocol.protocol_id),
+            ContributionSignature {
+                kind: "protocol".to_string(),
+                name: protocol.protocol_id.clone(),
+                label: Some(direction.clone()),
+                summary: short_contribution_summary(format!(
+                    "{} ({})",
+                    direction, protocol.protocol_id
+                )),
+                fingerprint: contribution_fingerprint("protocol", protocol),
+            },
         );
     }
     for bridge in &contributes.protocol_bridges {
-        out.insert(
-            bridge.bridge_type.clone(),
-            contribution_signature("protocolBridge", bridge),
+        let route = format!(
+            "{} -> {}",
+            bridge.inbound_protocol, bridge.outbound_protocol
+        );
+        insert_contribution_signature(
+            &mut out,
+            format!("protocolBridge:{}", bridge.bridge_type),
+            ContributionSignature {
+                kind: "protocolBridge".to_string(),
+                name: bridge.bridge_type.clone(),
+                label: Some(route.clone()),
+                summary: short_contribution_summary(format!("{} ({})", route, bridge.bridge_type)),
+                fingerprint: contribution_fingerprint("protocolBridge", bridge),
+            },
         );
     }
     for command in &contributes.commands {
-        out.insert(
-            command.command.clone(),
-            contribution_signature("command", command),
+        insert_contribution_signature(
+            &mut out,
+            format!("command:{}", command.command),
+            ContributionSignature {
+                kind: "command".to_string(),
+                name: command.command.clone(),
+                label: Some(command.title.clone()),
+                summary: short_contribution_summary(format!(
+                    "{} ({})",
+                    command.title, command.command
+                )),
+                fingerprint: contribution_fingerprint("command", command),
+            },
         );
     }
     for hook in &contributes.gateway_hooks {
-        out.insert(
-            hook.name.clone(),
-            contribution_signature("gatewayHook", hook),
+        insert_contribution_signature(
+            &mut out,
+            format!("gatewayHook:{}", hook.name),
+            ContributionSignature {
+                kind: "gatewayHook".to_string(),
+                name: hook.name.clone(),
+                label: None,
+                summary: short_contribution_summary(format!(
+                    "priority={}, failurePolicy={}",
+                    hook.priority,
+                    hook.failure_policy.as_deref().unwrap_or("-")
+                )),
+                fingerprint: contribution_fingerprint("gatewayHook", hook),
+            },
         );
     }
     for (index, rule) in contributes.gateway_rules.iter().enumerate() {
-        out.insert(
-            rule.id
-                .clone()
-                .unwrap_or_else(|| format!("gatewayRule.{index}")),
-            contribution_signature("gatewayRule", rule),
+        let rule_id = rule
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("gatewayRule.{index}"));
+        let rules = rule.rules.join(", ");
+        insert_contribution_signature(
+            &mut out,
+            format!("gatewayRule:{rule_id}"),
+            ContributionSignature {
+                kind: "gatewayRule".to_string(),
+                name: rule_id,
+                label: rule.rules.first().cloned(),
+                summary: short_contribution_summary(rules),
+                fingerprint: contribution_fingerprint("gatewayRule", rule),
+            },
         );
     }
 
-    let mut ui_by_slot = BTreeMap::<String, Vec<String>>::new();
     for (slot_id, contributions) in &contributes.ui {
         for contribution in contributions {
-            ui_by_slot
-                .entry(slot_id.clone())
-                .or_default()
-                .push(contribution_signature("ui", contribution));
+            let label = contribution
+                .title
+                .clone()
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| contribution.id.clone());
+            insert_contribution_signature(
+                &mut out,
+                format!("ui:{slot_id}:{}", contribution.id),
+                ContributionSignature {
+                    kind: "ui".to_string(),
+                    name: format!("{slot_id}/{}", contribution.id),
+                    label: Some(label.clone()),
+                    summary: short_contribution_summary(format!("{label} ({slot_id})")),
+                    fingerprint: contribution_fingerprint("ui", contribution),
+                },
+            );
         }
-    }
-    for (slot_id, mut contributions) in ui_by_slot {
-        contributions.sort();
-        out.insert(slot_id, format!("ui:{}", contributions.join("|")));
     }
 
     for capability in &manifest.capabilities {
-        out.insert(capability.clone(), "capability".to_string());
+        insert_contribution_signature(
+            &mut out,
+            format!("capability:{capability}"),
+            ContributionSignature {
+                kind: "capability".to_string(),
+                name: capability.clone(),
+                label: None,
+                summary: "declared".to_string(),
+                fingerprint: format!("capability:{capability}"),
+            },
+        );
     }
 
     out
 }
 
-fn contribution_signature<T: serde::Serialize>(kind: &str, value: &T) -> String {
+fn insert_contribution_signature(
+    out: &mut BTreeMap<String, ContributionSignature>,
+    key: String,
+    signature: ContributionSignature,
+) {
+    if !out.contains_key(&key) {
+        out.insert(key, signature);
+        return;
+    }
+
+    let mut index = 2;
+    loop {
+        let candidate = format!("{key}#{index}");
+        if !out.contains_key(&candidate) {
+            out.insert(candidate, signature);
+            return;
+        }
+        index += 1;
+    }
+}
+
+fn contribution_fingerprint<T: serde::Serialize>(kind: &str, value: &T) -> String {
     serde_json::to_string(value)
         .map(|json| format!("{kind}:{json}"))
         .unwrap_or_else(|_| kind.to_string())
+}
+
+fn short_contribution_summary(value: impl AsRef<str>) -> String {
+    let trimmed = value.as_ref().trim();
+    const MAX_CHARS: usize = 80;
+    if trimmed.chars().count() <= MAX_CHARS {
+        return trimmed.to_string();
+    }
+
+    let mut out = trimmed.chars().take(MAX_CHARS - 3).collect::<String>();
+    out.push_str("...");
+    out
 }
 
 fn reconcile_permissions_for_manifest(
@@ -3338,11 +3477,229 @@ DROP TABLE plugins;
         assert!(diff
             .contribution_changes
             .iter()
-            .any(|c| c.name == "logs.detail.tabs" && c.change == "removed"));
+            .any(|c| c.name == "logs.detail.tabs/logs.detail.tabs.panel" && c.change == "removed"));
+        assert!(diff.contribution_changes.iter().any(|c| {
+            c.name == "settings.sections/settings.sections.panel" && c.change == "added"
+        }));
+    }
+
+    #[test]
+    fn contribution_impact_update_diff_keeps_same_id_contribution_types_distinct() {
+        let ctx = plugin_test_context();
+        let current_manifest: PluginManifest = serde_json::from_value(extension_package_manifest(
+            "acme.collision",
+            "1.0.0",
+            serde_json::json!({
+                "providers": [{
+                    "providerType": "shared",
+                    "displayName": "Shared Provider",
+                    "targetCliKeys": ["codex"],
+                    "extensionNamespace": "shared"
+                }],
+                "commands": [{ "command": "shared", "title": "Shared Command" }]
+            }),
+        ))
+        .unwrap();
+        install_plugin_manifest(
+            &ctx.db,
+            current_manifest,
+            PluginInstallSource::Local,
+            None,
+            "0.62.0",
+        )
+        .unwrap();
+        let package = write_extension_package(
+            &ctx,
+            "acme.collision",
+            serde_json::json!({
+                "providers": [{
+                    "providerType": "shared",
+                    "displayName": "Shared Provider Updated",
+                    "targetCliKeys": ["codex"],
+                    "extensionNamespace": "shared"
+                }],
+                "commands": [{ "command": "shared", "title": "Shared Command Updated" }]
+            }),
+        );
+
+        let diff = preview_plugin_update_from_local_package(
+            &ctx.db,
+            &package,
+            &ctx.cache_dir,
+            "0.62.0",
+            LocalPackageInstallPolicy {
+                allow_unsigned: true,
+                developer_mode: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
         assert!(diff
             .contribution_changes
             .iter()
-            .any(|c| c.name == "settings.sections" && c.change == "added"));
+            .any(|c| { c.kind == "provider" && c.name == "shared" && c.change == "changed" }));
+        assert!(diff
+            .contribution_changes
+            .iter()
+            .any(|c| c.kind == "command" && c.name == "shared" && c.change == "changed"));
+    }
+
+    #[test]
+    fn contribution_impact_update_diff_reports_ui_contribution_item_replacement() {
+        let ctx = plugin_test_context();
+        let current_manifest: PluginManifest = serde_json::from_value(extension_package_manifest(
+            "acme.ui-items",
+            "1.0.0",
+            serde_json::json!({
+                "ui": {
+                    "settings.sections": [
+                        {
+                            "id": "removed-panel",
+                            "title": "Removed Panel",
+                            "schema": { "type": "section", "fields": [] }
+                        },
+                        {
+                            "id": "kept-panel",
+                            "title": "Kept Panel",
+                            "schema": { "type": "section", "fields": [] }
+                        }
+                    ]
+                }
+            }),
+        ))
+        .unwrap();
+        install_plugin_manifest(
+            &ctx.db,
+            current_manifest,
+            PluginInstallSource::Local,
+            None,
+            "0.62.0",
+        )
+        .unwrap();
+        let package = write_extension_package(
+            &ctx,
+            "acme.ui-items",
+            serde_json::json!({
+                "ui": {
+                    "settings.sections": [
+                        {
+                            "id": "kept-panel",
+                            "title": "Kept Panel",
+                            "schema": { "type": "section", "fields": [] }
+                        },
+                        {
+                            "id": "added-panel",
+                            "title": "Added Panel",
+                            "schema": { "type": "section", "fields": [] }
+                        }
+                    ]
+                }
+            }),
+        );
+
+        let diff = preview_plugin_update_from_local_package(
+            &ctx.db,
+            &package,
+            &ctx.cache_dir,
+            "0.62.0",
+            LocalPackageInstallPolicy {
+                allow_unsigned: true,
+                developer_mode: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(diff.contribution_changes.iter().any(|c| {
+            c.kind == "ui" && c.name == "settings.sections/removed-panel" && c.change == "removed"
+        }));
+        assert!(diff.contribution_changes.iter().any(|c| {
+            c.kind == "ui" && c.name == "settings.sections/added-panel" && c.change == "added"
+        }));
+        assert!(!diff
+            .contribution_changes
+            .iter()
+            .any(|c| c.name == "settings.sections" && c.change == "changed"));
+    }
+
+    #[test]
+    fn contribution_impact_update_diff_uses_short_user_facing_summaries() {
+        let ctx = plugin_test_context();
+        let current_manifest: PluginManifest = serde_json::from_value(extension_package_manifest(
+            "acme.summary",
+            "1.0.0",
+            serde_json::json!({
+                "ui": {
+                    "settings.sections": [{
+                        "id": "summary-panel",
+                        "title": "Summary Panel",
+                        "schema": {
+                            "type": "section",
+                            "fields": [
+                                { "type": "textarea", "key": "long", "label": "Long schema field" }
+                            ]
+                        }
+                    }]
+                }
+            }),
+        ))
+        .unwrap();
+        install_plugin_manifest(
+            &ctx.db,
+            current_manifest,
+            PluginInstallSource::Local,
+            None,
+            "0.62.0",
+        )
+        .unwrap();
+        let package = write_extension_package(
+            &ctx,
+            "acme.summary",
+            serde_json::json!({
+                "ui": {
+                    "settings.sections": [{
+                        "id": "summary-panel",
+                        "title": "Summary Panel Updated",
+                        "schema": {
+                            "type": "section",
+                            "fields": [
+                                { "type": "textarea", "key": "long", "label": "Long schema field" },
+                                { "type": "info", "key": "extra", "label": "Extra schema field", "value": "schema internals" }
+                            ]
+                        }
+                    }]
+                }
+            }),
+        );
+
+        let diff = preview_plugin_update_from_local_package(
+            &ctx.db,
+            &package,
+            &ctx.cache_dir,
+            "0.62.0",
+            LocalPackageInstallPolicy {
+                allow_unsigned: true,
+                developer_mode: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let change = diff
+            .contribution_changes
+            .iter()
+            .find(|c| c.kind == "ui" && c.name == "settings.sections/summary-panel")
+            .expect("ui contribution change");
+        assert_eq!(change.label.as_deref(), Some("Summary Panel Updated"));
+        let rendered = serde_json::to_string(change).unwrap();
+        assert!(!rendered.contains("\"schema\""));
+        assert!(!rendered.contains("fields"));
+        assert!(change
+            .before
+            .as_ref()
+            .is_some_and(|before| before.len() <= 80));
+        assert!(change.after.as_ref().is_some_and(|after| after.len() <= 80));
     }
 
     #[test]

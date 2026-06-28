@@ -41,6 +41,20 @@ function changeLabel(change: string) {
   return labels[change] ?? change;
 }
 
+function contributionKindLabel(kind: string) {
+  const labels: Record<string, string> = {
+    provider: "Provider",
+    protocol: "协议",
+    protocolBridge: "协议转译",
+    command: "命令",
+    gatewayHook: "网关 Hook",
+    gatewayRule: "网关规则",
+    ui: "页面区域",
+    capability: "能力",
+  };
+  return labels[kind] ?? kind;
+}
+
 function NoticeList({
   notices,
   variant = "warning",
@@ -157,22 +171,39 @@ function ContributionChanges({ changes }: { changes: readonly PluginContribution
 
   return (
     <div className="grid gap-2">
-      {changes.map((change) => (
-        <div
-          key={`${change.name}:${change.change}`}
-          className="rounded-md border border-border px-3 py-2 text-sm"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="break-all font-mono text-foreground">{change.name}</span>
-            <span className="rounded-md border border-border px-2 py-0.5 text-xs">
-              {changeLabel(change.change)}
-            </span>
+      {changes.map((change) => {
+        const title = change.label ?? change.name;
+        const summary =
+          change.before || change.after
+            ? `${change.before ?? "-"} -> ${change.after ?? "-"}`
+            : null;
+        return (
+          <div
+            key={`${change.kind}:${change.name}:${change.change}`}
+            className="rounded-md border border-border px-3 py-2 text-sm"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                    {contributionKindLabel(change.kind)}
+                  </span>
+                  <span className="break-words font-medium text-foreground">{title}</span>
+                </div>
+                <div className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                  {change.name}
+                </div>
+              </div>
+              <span className="rounded-md border border-border px-2 py-0.5 text-xs">
+                {changeLabel(change.change)}
+              </span>
+            </div>
+            {summary ? (
+              <div className="mt-1 break-words text-xs text-muted-foreground">{summary}</div>
+            ) : null}
           </div>
-          <div className="mt-1 break-words text-xs text-muted-foreground">
-            {change.before ?? "-"} -&gt; {change.after ?? "-"}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

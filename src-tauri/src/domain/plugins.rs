@@ -484,7 +484,9 @@ pub struct PluginPermissionLifecycleChange {
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginContributionChange {
+    pub kind: String,
     pub name: String,
+    pub label: Option<String>,
     pub change: String,
     pub before: Option<String>,
     pub after: Option<String>,

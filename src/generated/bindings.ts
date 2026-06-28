@@ -2845,7 +2845,9 @@ export type PluginContributes = {
   ui?: Partial<{ [key in string]: UiContribution[] }>;
 };
 export type PluginContributionChange = {
+  kind: string;
   name: string;
+  label: string | null;
   change: string;
   before: string | null;
   after: string | null;

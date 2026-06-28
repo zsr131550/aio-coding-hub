@@ -325,6 +325,13 @@ fn extension_main_relative_path(raw_main: &str) -> AppResult<PathBuf> {
             "extensionHost runtime requires main",
         ));
     }
+    if has_windows_drive_prefix(trimmed) || trimmed.starts_with("//") || trimmed.starts_with("\\\\")
+    {
+        return Err(AppError::new(
+            "PLUGIN_EXTENSION_MAIN_INVALID",
+            "extensionHost main must be a relative path inside the package",
+        ));
+    }
     let normalized = trimmed.replace('\\', "/");
     let path = Path::new(&normalized);
     if path.is_absolute() || normalized.starts_with('/') {
@@ -363,6 +370,11 @@ fn extension_main_relative_path(raw_main: &str) -> AppResult<PathBuf> {
         ));
     }
     Ok(out)
+}
+
+fn has_windows_drive_prefix(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn safe_zip_entry_path(raw_name: &str) -> AppResult<PathBuf> {
@@ -773,6 +785,44 @@ mod tests {
 
         assert_eq!(err.code(), "PLUGIN_EXTENSION_MAIN_INVALID");
         assert!(err.to_string().contains("relative path inside the package"));
+    }
+
+    #[test]
+    fn extension_main_validation_rejects_windows_drive_and_unc_paths() {
+        for (index, main) in [
+            "C:/dist/main.js",
+            "C:\\dist\\main.js",
+            "//server/share/main.js",
+            "\\\\server\\share\\main.js",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let package_path = dir.path().join(format!(
+                "extension-invalid-platform-path-{index}.aio-plugin"
+            ));
+            write_package(
+                &package_path,
+                &[(
+                    "plugin.json",
+                    extension_manifest_json(
+                        &format!("local.extension-invalid-platform-path-{index}"),
+                        Some(main),
+                    )
+                    .as_bytes(),
+                )],
+            );
+
+            let err = extract_plugin_package(
+                &package_path,
+                &dir.path().join("staging"),
+                PluginPackageLimits::default(),
+            )
+            .unwrap_err();
+
+            assert_eq!(err.code(), "PLUGIN_EXTENSION_MAIN_INVALID", "{main}");
+        }
     }
 
     #[test]

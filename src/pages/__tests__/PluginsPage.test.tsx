@@ -247,16 +247,20 @@ function updateDiff(overrides: Partial<PluginUpdateDiff> = {}): PluginUpdateDiff
     ],
     contributionChanges: [
       {
-        name: "logs.detail.tabs",
+        kind: "ui",
+        name: "logs.detail.tabs/log-panel",
+        label: "Log Panel",
         change: "removed",
-        before: "ui:logs.detail.tabs",
+        before: "Log Panel (logs.detail.tabs)",
         after: null,
       },
       {
-        name: "settings.sections",
+        kind: "ui",
+        name: "settings.sections/settings-panel",
+        label: "Settings Panel",
         change: "added",
         before: null,
-        after: "ui:settings.sections",
+        after: "Settings Panel (settings.sections)",
       },
     ],
     configVersionChange: "1 -> 2",
@@ -1595,8 +1599,12 @@ describe("pages/PluginsPage", () => {
     expect(within(updateDialog).getByText("gateway.response.beforeSend")).toBeInTheDocument();
     expect(within(updateDialog).getByText("新增，待授权")).toBeInTheDocument();
     expect(within(updateDialog).getByText("扩展范围变化")).toBeInTheDocument();
-    expect(within(updateDialog).getByText("logs.detail.tabs")).toBeInTheDocument();
-    expect(within(updateDialog).getByText("settings.sections")).toBeInTheDocument();
+    expect(within(updateDialog).getAllByText("页面区域")).toHaveLength(2);
+    expect(within(updateDialog).getByText("Log Panel")).toBeInTheDocument();
+    expect(within(updateDialog).getByText("Settings Panel")).toBeInTheDocument();
+    expect(within(updateDialog).getByText("logs.detail.tabs/log-panel")).toBeInTheDocument();
+    expect(within(updateDialog).getByText("settings.sections/settings-panel")).toBeInTheDocument();
+    expect(within(updateDialog).queryByText(/\\{.*schema/)).not.toBeInTheDocument();
     expect(within(updateDialog).getByText("隔离与撤销")).toBeInTheDocument();
     expect(within(updateDialog).getByText("Plugin revoked by market index")).toBeInTheDocument();
     expect(updateMutation.mutateAsync).not.toHaveBeenCalled();
