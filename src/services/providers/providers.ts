@@ -190,7 +190,7 @@ function toProviderUpsertPayload(input: ProviderUpsertInput): ProviderUpsertTran
     note: input.note ?? null,
     sourceProviderId,
     bridgeType: input.bridgeType ?? null,
-    extensionValues: input.extensionValues ?? [],
+    extensionValues: input.extensionValues ?? null,
   } satisfies Omit<GeneratedProviderUpsertInput, "streamIdleTimeoutSeconds">;
 
   if (Object.prototype.hasOwnProperty.call(input, "streamIdleTimeoutSeconds")) {

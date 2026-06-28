@@ -197,7 +197,7 @@ pub(crate) async fn provider_upsert(
                 source_provider_id,
                 bridge_type,
                 stream_idle_timeout_seconds,
-                extension_values: extension_values.unwrap_or_default(),
+                extension_values,
             },
         )?;
 
@@ -263,8 +263,9 @@ pub(crate) async fn provider_duplicate(
             None
         };
 
-        let duplicated = providers::upsert(
+        providers::duplicate(
             &db,
+            source.id,
             providers::ProviderUpsertParams {
                 provider_id: None,
                 cli_key: source.cli_key.clone(),
@@ -292,12 +293,9 @@ pub(crate) async fn provider_duplicate(
                 source_provider_id: source.source_provider_id,
                 bridge_type: source.bridge_type.clone(),
                 stream_idle_timeout_seconds: source.stream_idle_timeout_seconds,
-                extension_values: vec![],
+                extension_values: None,
             },
-        )?;
-        let copy_conn = db.open_connection()?;
-        providers::copy_extension_values(&copy_conn, source.id, duplicated.id)?;
-        providers::get_by_id(&copy_conn, duplicated.id)
+        )
     })
     .await
     .map_err(Into::into);

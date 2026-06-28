@@ -1,4 +1,4 @@
-use super::queries::{copy_extension_values, pool_order_set};
+use super::queries::pool_order_set;
 use super::*;
 use rusqlite::OptionalExtension;
 
@@ -437,7 +437,7 @@ fn default_provider_params(name: &str) -> ProviderUpsertParams {
         source_provider_id: None,
         bridge_type: None,
         stream_idle_timeout_seconds: None,
-        extension_values: vec![],
+        extension_values: None,
     }
 }
 
@@ -463,14 +463,14 @@ INSERT INTO plugins(
 }
 
 #[test]
-fn provider_upsert_saves_and_preserves_extension_values_by_namespace() {
+fn provider_upsert_replaces_extension_values_when_submitted() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let db_path = dir.path().join("provider_extension_values_preserve.db");
+    let db_path = dir.path().join("provider_extension_values_replace.db");
     let db = crate::db::init_for_tests(&db_path).expect("init db");
     seed_plugin(&db, "plugin.alpha");
 
     let mut params = default_provider_params("extension-values-preserve");
-    params.extension_values = vec![
+    params.extension_values = Some(vec![
         ProviderExtensionValuesInput {
             plugin_id: "plugin.alpha".to_string(),
             namespace: "first".to_string(),
@@ -481,28 +481,52 @@ fn provider_upsert_saves_and_preserves_extension_values_by_namespace() {
             namespace: "second".to_string(),
             values: serde_json::json!({ "threshold": 2 }),
         },
-    ];
+    ]);
 
     let saved = upsert(&db, params).expect("save provider extension values");
     assert_eq!(saved.extension_values.len(), 2);
 
-    let mut update = default_provider_params("extension-values-preserve-updated");
-    update.provider_id = Some(saved.id);
-    update.extension_values = vec![];
+    let mut preserve_update = default_provider_params("extension-values-preserve-updated");
+    preserve_update.provider_id = Some(saved.id);
+    preserve_update.extension_values = None;
 
-    let updated = upsert(&db, update).expect("update provider without extension values");
+    let preserved = upsert(&db, preserve_update).expect("update provider without extension values");
 
-    assert_eq!(updated.extension_values.len(), 2);
-    assert!(updated.extension_values.iter().any(|value| {
+    assert_eq!(preserved.extension_values.len(), 2);
+    assert!(preserved.extension_values.iter().any(|value| {
         value.plugin_id == "plugin.alpha"
             && value.namespace == "first"
             && value.values == serde_json::json!({ "enabled": true })
     }));
-    assert!(updated.extension_values.iter().any(|value| {
+    assert!(preserved.extension_values.iter().any(|value| {
         value.plugin_id == "plugin.alpha"
             && value.namespace == "second"
             && value.values == serde_json::json!({ "threshold": 2 })
     }));
+
+    let mut clear_update = default_provider_params("extension-values-clear");
+    clear_update.provider_id = Some(saved.id);
+    clear_update.extension_values = Some(vec![]);
+
+    let cleared = upsert(&db, clear_update).expect("clear provider extension values");
+    assert!(cleared.extension_values.is_empty());
+
+    let mut replace_update = default_provider_params("extension-values-one");
+    replace_update.provider_id = Some(saved.id);
+    replace_update.extension_values = Some(vec![ProviderExtensionValuesInput {
+        plugin_id: "plugin.alpha".to_string(),
+        namespace: "first".to_string(),
+        values: serde_json::json!({ "enabled": false }),
+    }]);
+
+    let replaced = upsert(&db, replace_update).expect("replace provider extension values");
+    assert_eq!(replaced.extension_values.len(), 1);
+    assert_eq!(replaced.extension_values[0].plugin_id, "plugin.alpha");
+    assert_eq!(replaced.extension_values[0].namespace, "first");
+    assert_eq!(
+        replaced.extension_values[0].values,
+        serde_json::json!({ "enabled": false })
+    );
 }
 
 #[test]
@@ -513,19 +537,20 @@ fn provider_duplicate_copies_extension_values() {
     seed_plugin(&db, "plugin.alpha");
 
     let mut source_params = default_provider_params("extension-values-source");
-    source_params.extension_values = vec![ProviderExtensionValuesInput {
+    source_params.extension_values = Some(vec![ProviderExtensionValuesInput {
         plugin_id: "plugin.alpha".to_string(),
         namespace: "routing".to_string(),
         values: serde_json::json!({ "mode": "sticky" }),
-    }];
+    }]);
     let source = upsert(&db, source_params).expect("save source provider");
 
     let source_summary = {
         let conn = db.open_connection().expect("open db connection");
         get_by_id(&conn, source.id).expect("get source provider")
     };
-    let target = upsert(
+    let duplicated = duplicate(
         &db,
+        source.id,
         ProviderUpsertParams {
             provider_id: None,
             cli_key: source_summary.cli_key.clone(),
@@ -550,15 +575,10 @@ fn provider_duplicate_copies_extension_values() {
             source_provider_id: source_summary.source_provider_id,
             bridge_type: source_summary.bridge_type.clone(),
             stream_idle_timeout_seconds: source_summary.stream_idle_timeout_seconds,
-            extension_values: vec![],
+            extension_values: None,
         },
     )
-    .expect("save duplicate provider shell");
-
-    let conn = db.open_connection().expect("open db connection");
-    copy_extension_values(&conn, source.id, target.id).expect("copy extension values");
-
-    let duplicated = get_by_id(&conn, target.id).expect("get duplicated provider");
+    .expect("duplicate provider");
 
     assert_eq!(duplicated.extension_values.len(), 1);
     assert_eq!(duplicated.extension_values[0].plugin_id, "plugin.alpha");
@@ -781,7 +801,7 @@ fn create_oauth_provider_for_cas_test(db: &crate::db::Db, name: &str) -> i64 {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
-            extension_values: vec![],
+            extension_values: None,
         },
     )
     .expect("create oauth provider")

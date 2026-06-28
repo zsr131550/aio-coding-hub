@@ -83,7 +83,7 @@ pub struct ProviderUpsertParams {
     pub source_provider_id: Option<i64>,
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
-    pub extension_values: Vec<ProviderExtensionValuesInput>,
+    pub extension_values: Option<Vec<ProviderExtensionValuesInput>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
