@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.6](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.5...aio-coding-hub-v0.60.6) (2026-06-29)
+
+
+### Bug Fixes
+
+* update dialog changelog links ([5aa2b92](https://github.com/FingerCaster/aio-coding-hub/commit/5aa2b92))
+
 ## [0.60.5](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.4...aio-coding-hub-v0.60.5) (2026-06-29)
 
 
