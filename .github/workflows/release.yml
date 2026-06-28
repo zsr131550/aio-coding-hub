@@ -77,6 +77,7 @@ jobs:
 
           if release_id="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId 2>/dev/null)"; then
             echo "Using existing release for $tag"
+            checkout_ref="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)"
           else
             version="${tag#aio-coding-hub-v}"
             notes_file="$(mktemp)"
@@ -103,12 +104,17 @@ jobs:
               --draft
 
             release_id="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)"
+            checkout_ref="$target"
+          fi
+
+          if git fetch --force origin "refs/tags/$tag:refs/tags/$tag" >/dev/null 2>&1; then
+            checkout_ref="$(git rev-parse "$tag^{}")"
           fi
 
           echo "release_created=true" >> "$GITHUB_OUTPUT"
           echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
           echo "id=$release_id" >> "$GITHUB_OUTPUT"
-          echo "checkout_ref=$target" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
 
       - name: Check release PR changelog range
         if: steps.release.outputs.prs_created == 'true'
