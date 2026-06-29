@@ -187,6 +187,24 @@ impl ExtensionHostInstance {
             .map_err(map_process_error)
     }
 
+    #[cfg(test)]
+    async fn execute_command_rpc_for_tests(
+        &mut self,
+        command: &str,
+        args: Value,
+    ) -> AppResult<Value> {
+        self.runtime
+            .call_method(
+                "commands.execute",
+                json!({
+                    "command": command,
+                    "args": args,
+                }),
+            )
+            .await
+            .map_err(map_process_error)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn is_running(&mut self) -> bool {
         self.runtime.is_running()
@@ -761,8 +779,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn extension_host_command_dispatch_requires_commands_execute_even_if_registry_is_mutated()
-    {
+    async fn extension_host_worker_rpc_rejects_registry_mutation_without_commands_execute() {
         let temp = tempfile::tempdir().expect("tempdir");
         write_extension_plugin_with_capabilities(
             temp.path(),
@@ -780,7 +797,7 @@ mod tests {
             .expect("start extension host");
 
         let err = host
-            .execute_command("acme.echo", json!({}))
+            .execute_command_rpc_for_tests("acme.echo", json!({}))
             .await
             .expect_err("missing commands capability should fail before command execution");
 
