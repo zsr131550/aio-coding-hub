@@ -23,6 +23,7 @@ export type TraceSession = {
   path: string;
   query: string | null;
   requested_model?: string | null;
+  special_settings_json?: string | null;
   claude_model_mapping?: ClaudeModelMapping | null;
   first_seen_ms: number;
   last_seen_ms: number;
@@ -85,6 +86,13 @@ function upsertAttempt(
 
 function hasClaudeModelMappingField(payload: GatewayRequestEvent): boolean {
   return Object.prototype.hasOwnProperty.call(payload, "claude_model_mapping");
+}
+
+function nextSpecialSettingsJson(
+  incoming: string | null | undefined,
+  existing: string | null | undefined
+) {
+  return incoming ?? existing ?? null;
 }
 
 function trimSummaryAttempts<T extends GatewayAttempt | GatewayAttemptEvent>(attempts: T[]): T[] {
@@ -155,12 +163,14 @@ export function ingestTraceStart(payload: GatewayRequestStartEvent) {
       path: payload.path,
       query: payload.query ?? null,
       requested_model: payload.requested_model ?? null,
+      special_settings_json: payload.special_settings_json ?? null,
       first_seen_ms: now,
       last_seen_ms: now,
       attempts: [],
     }),
     (existing, now) => {
       const nextRequestedModel = payload.requested_model ?? existing.requested_model ?? null;
+      const specialSettingsJson = payload.special_settings_json ?? null;
       const shouldReset = Boolean(existing.summary);
       return {
         ...existing,
@@ -170,6 +180,9 @@ export function ingestTraceStart(payload: GatewayRequestStartEvent) {
         path: payload.path,
         query: payload.query ?? null,
         requested_model: nextRequestedModel,
+        special_settings_json: shouldReset
+          ? specialSettingsJson
+          : nextSpecialSettingsJson(specialSettingsJson, existing.special_settings_json),
         claude_model_mapping: shouldReset ? null : (existing.claude_model_mapping ?? null),
         last_seen_ms: now,
         ...(shouldReset ? { first_seen_ms: now, attempts: [], summary: undefined } : {}),
@@ -191,6 +204,7 @@ export function ingestTraceAttempt(payload: GatewayAttemptEvent) {
       path: payload.path,
       query: payload.query ?? null,
       requested_model: payload.requested_model ?? null,
+      special_settings_json: payload.special_settings_json ?? null,
       claude_model_mapping: normalizeClaudeModelMapping(payload.claude_model_mapping),
       first_seen_ms: now,
       last_seen_ms: now,
@@ -198,6 +212,10 @@ export function ingestTraceAttempt(payload: GatewayAttemptEvent) {
     }),
     (existing, now) => {
       const nextRequestedModel = payload.requested_model ?? existing.requested_model ?? null;
+      const nextSpecialSettings = nextSpecialSettingsJson(
+        payload.special_settings_json,
+        existing.special_settings_json
+      );
       const nextClaudeModelMapping =
         normalizeClaudeModelMapping(payload.claude_model_mapping) ??
         existing.claude_model_mapping ??
@@ -210,6 +228,7 @@ export function ingestTraceAttempt(payload: GatewayAttemptEvent) {
         path: payload.path,
         query: payload.query ?? null,
         requested_model: nextRequestedModel,
+        special_settings_json: nextSpecialSettings,
         claude_model_mapping: nextClaudeModelMapping,
         last_seen_ms: now,
         attempts: upsertAttempt(existing.attempts, payload),
@@ -232,6 +251,7 @@ export function ingestTraceRequest(payload: GatewayRequestEvent) {
       path: summary.path,
       query: summary.query ?? null,
       requested_model: summary.requested_model ?? null,
+      special_settings_json: summary.special_settings_json ?? null,
       claude_model_mapping: normalizeClaudeModelMapping(summary.claude_model_mapping),
       first_seen_ms: now,
       last_seen_ms: now,
@@ -240,6 +260,10 @@ export function ingestTraceRequest(payload: GatewayRequestEvent) {
     }),
     (existing, now) => {
       const nextRequestedModel = summary.requested_model ?? existing.requested_model ?? null;
+      const nextSpecialSettings = nextSpecialSettingsJson(
+        summary.special_settings_json,
+        existing.special_settings_json
+      );
       const normalizedClaudeModelMapping = normalizeClaudeModelMapping(
         summary.claude_model_mapping
       );
@@ -254,6 +278,7 @@ export function ingestTraceRequest(payload: GatewayRequestEvent) {
         path: summary.path,
         query: summary.query ?? null,
         requested_model: nextRequestedModel,
+        special_settings_json: nextSpecialSettings,
         claude_model_mapping: nextClaudeModelMapping,
         last_seen_ms: now,
         summary,

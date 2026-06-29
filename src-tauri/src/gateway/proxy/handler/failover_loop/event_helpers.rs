@@ -2,6 +2,7 @@
 
 use super::context::{AttemptCtx, CommonCtx, ProviderCtx};
 use crate::gateway::events::{emit_attempt_event, GatewayAttemptEvent};
+use crate::gateway::response_fixer;
 
 #[derive(Clone, Copy)]
 pub(super) struct AttemptCircuitFields {
@@ -49,6 +50,7 @@ pub(super) async fn emit_attempt_event_and_log<R: tauri::Runtime>(
         path: ctx.forwarded_path.clone(),
         query: ctx.query.clone(),
         requested_model: ctx.requested_model.clone(),
+        special_settings_json: response_fixer::special_settings_json(ctx.special_settings),
         attempt_index,
         provider_id,
         session_reuse,

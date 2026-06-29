@@ -74,6 +74,7 @@ fn respond_warmup_intercept<R: tauri::Runtime>(
             ctx.forwarded_path.clone(),
             ctx.query.clone(),
             ctx.requested_model.clone(),
+            Some(special_settings_json.clone()),
             ctx.created_at,
         );
     }

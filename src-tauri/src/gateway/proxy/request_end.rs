@@ -817,6 +817,7 @@ impl RequestLogEnqueueArgs {
             self.path.clone(),
             self.query.clone(),
             self.requested_model.clone(),
+            self.special_settings_json.clone(),
             self.status,
             error_category,
             self.error_code,

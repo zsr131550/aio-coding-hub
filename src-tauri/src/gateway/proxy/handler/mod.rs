@@ -232,6 +232,7 @@ where
             ctx.forwarded_path.clone(),
             ctx.query.clone(),
             ctx.requested_model.clone(),
+            response_fixer::special_settings_json(&ctx.special_settings),
             ctx.created_at,
         );
     }

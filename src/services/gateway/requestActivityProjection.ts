@@ -73,6 +73,8 @@ function mergeTraceWithRequestLog(
       ...trace,
       session_id: trace.session_id ?? requestLog.session_id ?? null,
       requested_model: trace.requested_model ?? requestLog.requested_model ?? null,
+      special_settings_json:
+        trace.special_settings_json ?? requestLog.special_settings_json ?? null,
       claude_model_mapping: claudeModelMapping,
       last_seen_ms: Math.max(trace.last_seen_ms, requestLogTsMs),
     };
@@ -111,6 +113,7 @@ function mergeTraceWithRequestLog(
     ...trace,
     session_id: trace.session_id ?? requestLog.session_id ?? null,
     requested_model: trace.requested_model ?? requestLog.requested_model ?? null,
+    special_settings_json: trace.special_settings_json ?? requestLog.special_settings_json ?? null,
     claude_model_mapping: claudeModelMapping,
     summary: mergedSummary,
     last_seen_ms: Math.max(trace.last_seen_ms, requestLogTsMs),

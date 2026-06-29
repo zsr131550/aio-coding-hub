@@ -294,6 +294,48 @@ describe("components/home/RealtimeTraceCards", () => {
     vi.useRealTimers();
   });
 
+  it("renders live Codex reasoning effort from request special settings before completion", () => {
+    vi.useFakeTimers();
+    const baseTime = 1_700_000_000_000;
+    vi.setSystemTime(baseTime);
+
+    render(
+      <RealtimeTraceCards
+        folderLookupBySessionKey={new Map()}
+        cards={cards([
+          traceBase({
+            cli_key: "codex",
+            path: "/v1/responses",
+            requested_model: "gpt-5.5",
+            special_settings_json: JSON.stringify([
+              { type: "codex_reasoning_effort", source: "request", effort: "high" },
+            ]),
+            first_seen_ms: baseTime - 1000,
+            last_seen_ms: baseTime - 1000,
+            summary: undefined,
+          }),
+          traceBase({
+            trace_id: "t-default-effort",
+            cli_key: "codex",
+            path: "/v1/responses",
+            requested_model: "gpt-5.5",
+            first_seen_ms: baseTime - 1000,
+            last_seen_ms: baseTime - 1000,
+            summary: undefined,
+          }),
+        ])}
+        nowMs={baseTime}
+        formatUnixSeconds={(ts) => String(ts)}
+        showCustomTooltip={false}
+      />
+    );
+
+    expect(screen.getByTitle("Codex / gpt-5.5-high")).toBeInTheDocument();
+    expect(screen.getByTitle("Codex / gpt-5.5-medium")).toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
   it("shows dual TTFB only when realtime attempts indicate a reasoning-guard retry", () => {
     vi.useFakeTimers();
     const baseTime = 1_700_000_000_000;

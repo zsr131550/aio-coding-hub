@@ -173,6 +173,36 @@ describe("services/gateway/requestActivityProjection", () => {
     });
   });
 
+  it("backfills realtime card special settings from persisted request log settings", () => {
+    const specialSettingsJson = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "high" },
+    ]);
+
+    const projection = buildRequestActivityProjection({
+      requestLogs: [
+        log({
+          trace_id: "codex-pending",
+          cli_key: "codex",
+          requested_model: "gpt-5.5",
+          special_settings_json: specialSettingsJson,
+        }),
+      ],
+      traces: [
+        trace({
+          trace_id: "codex-pending",
+          cli_key: "codex",
+          requested_model: "gpt-5.5",
+          special_settings_json: null,
+        }),
+      ],
+      nowMs: 1_700_000_000_000,
+      realtimeCardLimit: 5,
+      realtimeCandidateLimit: 20,
+    });
+
+    expect(projection.realtimeCards[0]?.trace.special_settings_json).toBe(specialSettingsJson);
+  });
+
   it("keeps live trace model mapping ahead of persisted request log settings", () => {
     const projection = buildRequestActivityProjection({
       requestLogs: [

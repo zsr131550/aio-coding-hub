@@ -433,6 +433,9 @@ fn emit_started_event<R: tauri::Runtime>(
                 path: input.forwarded_path.clone(),
                 query: input.query.clone(),
                 requested_model: input.requested_model.clone(),
+                special_settings_json: crate::gateway::response_fixer::special_settings_json(
+                    &input.special_settings,
+                ),
                 attempt_index,
                 provider_id: prepared.provider_id,
                 session_reuse: prepared.session_reuse,

@@ -26,6 +26,7 @@ export type GatewayRequestEvent = {
   path: string;
   query: string | null;
   requested_model?: string | null;
+  special_settings_json?: string | null;
   status: number | null;
   error_category: string | null;
   error_code: string | null;
@@ -51,6 +52,7 @@ export type GatewayRequestStartEvent = {
   path: string;
   query: string | null;
   requested_model?: string | null;
+  special_settings_json?: string | null;
   ts: number;
 };
 
@@ -71,6 +73,7 @@ export type GatewayAttemptEvent = {
   path: string;
   query: string | null;
   requested_model?: string | null;
+  special_settings_json?: string | null;
   attempt_index: number;
   provider_id: number;
   session_reuse?: boolean | null;
@@ -320,6 +323,7 @@ function normalizeGatewayRequestStartEvent(payload: unknown): GatewayRequestStar
     !isString(payload.path) ||
     !isNullableString(payload.query) ||
     !isNullableString(payload.requested_model) ||
+    !isNullableStringWithin(payload.special_settings_json, EVENT_QUERY_MAX_LENGTH) ||
     !isNumber(payload.ts)
   ) {
     return null;
@@ -333,6 +337,8 @@ function normalizeGatewayRequestStartEvent(payload: unknown): GatewayRequestStar
     path: truncateString(payload.path, EVENT_PATH_MAX_LENGTH),
     query: truncateNullableString(payload.query, EVENT_QUERY_MAX_LENGTH) ?? null,
     requested_model: truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH),
+    special_settings_json:
+      truncateNullableString(payload.special_settings_json, EVENT_QUERY_MAX_LENGTH) ?? null,
     ts: payload.ts,
   };
 }
@@ -382,6 +388,7 @@ function normalizeGatewayAttemptEvent(payload: unknown): GatewayAttemptEvent | n
     !isString(payload.path) ||
     !isNullableString(payload.query) ||
     !isNullableString(payload.requested_model) ||
+    !isNullableStringWithin(payload.special_settings_json, EVENT_QUERY_MAX_LENGTH) ||
     !isNumber(payload.attempt_index) ||
     !isNumber(payload.provider_id) ||
     !isNullableBoolean(payload.session_reuse) ||
@@ -408,6 +415,8 @@ function normalizeGatewayAttemptEvent(payload: unknown): GatewayAttemptEvent | n
     path: truncateString(payload.path, EVENT_PATH_MAX_LENGTH),
     query: truncateNullableString(payload.query, EVENT_QUERY_MAX_LENGTH) ?? null,
     requested_model: truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH),
+    special_settings_json:
+      truncateNullableString(payload.special_settings_json, EVENT_QUERY_MAX_LENGTH) ?? null,
     attempt_index: payload.attempt_index,
     provider_id: payload.provider_id,
     session_reuse: payload.session_reuse,
@@ -450,6 +459,7 @@ function normalizeGatewayRequestEvent(payload: unknown): GatewayRequestEvent | n
     isString(payload.path) &&
     isNullableString(payload.query) &&
     isNullableString(payload.requested_model) &&
+    isNullableStringWithin(payload.special_settings_json, EVENT_QUERY_MAX_LENGTH) &&
     isNullableNumber(payload.status) &&
     isNullableString(payload.error_category) &&
     isNullableString(payload.error_code) &&
@@ -474,6 +484,8 @@ function normalizeGatewayRequestEvent(payload: unknown): GatewayRequestEvent | n
       path: truncateString(payload.path, EVENT_PATH_MAX_LENGTH),
       query: truncateNullableString(payload.query, EVENT_QUERY_MAX_LENGTH) ?? null,
       requested_model: truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH),
+      special_settings_json:
+        truncateNullableString(payload.special_settings_json, EVENT_QUERY_MAX_LENGTH) ?? null,
       status: payload.status ?? null,
       error_category:
         truncateNullableString(payload.error_category, EVENT_SHORT_TEXT_MAX_LENGTH) ?? null,

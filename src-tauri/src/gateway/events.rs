@@ -113,6 +113,7 @@ struct GatewayRequestEvent {
     path: String,
     query: Option<String>,
     requested_model: Option<String>,
+    special_settings_json: Option<String>,
     status: Option<u16>,
     error_category: Option<&'static str>,
     error_code: Option<&'static str>,
@@ -139,6 +140,7 @@ struct GatewayRequestStartEvent {
     path: String,
     query: Option<String>,
     requested_model: Option<String>,
+    special_settings_json: Option<String>,
     ts: i64,
 }
 
@@ -161,6 +163,7 @@ pub(super) struct GatewayAttemptEvent {
     pub(super) path: String,
     pub(super) query: Option<String>,
     pub(super) requested_model: Option<String>,
+    pub(super) special_settings_json: Option<String>,
     pub(super) attempt_index: u32,
     pub(super) provider_id: i64,
     pub(super) session_reuse: Option<bool>,
@@ -333,6 +336,7 @@ fn bound_request_event(mut payload: GatewayRequestEvent) -> GatewayRequestEvent 
     payload.path = truncate_chars(payload.path, EVENT_PATH_MAX_CHARS);
     truncate_optional_chars(&mut payload.query, EVENT_QUERY_MAX_CHARS);
     truncate_optional_chars(&mut payload.requested_model, EVENT_SHORT_TEXT_MAX_CHARS);
+    truncate_optional_chars(&mut payload.special_settings_json, EVENT_QUERY_MAX_CHARS);
     payload.attempts = trim_request_event_attempts(payload.attempts);
     payload.claude_model_mapping =
         bound_optional_claude_model_mapping(payload.claude_model_mapping);
@@ -344,6 +348,7 @@ fn bound_request_start_event(mut payload: GatewayRequestStartEvent) -> GatewayRe
     payload.path = truncate_chars(payload.path, EVENT_PATH_MAX_CHARS);
     truncate_optional_chars(&mut payload.query, EVENT_QUERY_MAX_CHARS);
     truncate_optional_chars(&mut payload.requested_model, EVENT_SHORT_TEXT_MAX_CHARS);
+    truncate_optional_chars(&mut payload.special_settings_json, EVENT_QUERY_MAX_CHARS);
     payload
 }
 
@@ -357,6 +362,7 @@ fn bound_attempt_event(mut payload: GatewayAttemptEvent) -> GatewayAttemptEvent 
     payload.path = truncate_chars(payload.path, EVENT_PATH_MAX_CHARS);
     truncate_optional_chars(&mut payload.query, EVENT_QUERY_MAX_CHARS);
     truncate_optional_chars(&mut payload.requested_model, EVENT_SHORT_TEXT_MAX_CHARS);
+    truncate_optional_chars(&mut payload.special_settings_json, EVENT_QUERY_MAX_CHARS);
     payload.provider_name = truncate_chars(payload.provider_name, EVENT_SHORT_TEXT_MAX_CHARS);
     payload.base_url = truncate_chars(payload.base_url, EVENT_URL_MAX_CHARS);
     payload.outcome = truncate_chars(payload.outcome, EVENT_STATE_MAX_CHARS);
@@ -387,6 +393,7 @@ pub(super) fn emit_request_event<R: tauri::Runtime>(
     path: String,
     query: Option<String>,
     requested_model: Option<String>,
+    special_settings_json: Option<String>,
     status: Option<u16>,
     error_category: Option<&'static str>,
     error_code: Option<&'static str>,
@@ -420,6 +427,7 @@ pub(super) fn emit_request_event<R: tauri::Runtime>(
         path,
         query,
         requested_model,
+        special_settings_json,
         status,
         error_category,
         error_code,
@@ -454,6 +462,7 @@ pub(super) fn emit_request_start_event<R: tauri::Runtime>(
     path: String,
     query: Option<String>,
     requested_model: Option<String>,
+    special_settings_json: Option<String>,
     ts: i64,
 ) {
     emit_request_signal(
@@ -478,6 +487,7 @@ pub(super) fn emit_request_start_event<R: tauri::Runtime>(
         path,
         query,
         requested_model,
+        special_settings_json,
         ts,
     };
     gated_emit(
@@ -742,6 +752,7 @@ mod tests {
             path: repeated_ascii(EVENT_PATH_MAX_CHARS + 1),
             query: Some(repeated_ascii(EVENT_QUERY_MAX_CHARS + 1)),
             requested_model: Some(repeated_ascii(EVENT_SHORT_TEXT_MAX_CHARS + 1)),
+            special_settings_json: Some(repeated_ascii(EVENT_QUERY_MAX_CHARS + 1)),
             attempt_index: 1,
             provider_id: 7,
             session_reuse: Some(false),
@@ -785,6 +796,10 @@ mod tests {
             EVENT_SHORT_TEXT_MAX_CHARS
         );
         assert_eq!(ascii_len(&bounded.base_url), EVENT_URL_MAX_CHARS);
+        assert_eq!(
+            ascii_len(bounded.special_settings_json.as_deref().unwrap_or_default()),
+            EVENT_QUERY_MAX_CHARS
+        );
         assert_eq!(ascii_len(&bounded.outcome), EVENT_STATE_MAX_CHARS);
         let mapping = bounded.claude_model_mapping.expect("mapping retained");
         assert_eq!(
@@ -812,6 +827,7 @@ mod tests {
             path: "/v1/messages".to_string(),
             query: None,
             requested_model: Some("claude-sonnet".to_string()),
+            special_settings_json: None,
             attempt_index: 1,
             provider_id: 7,
             session_reuse: Some(false),

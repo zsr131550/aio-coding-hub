@@ -190,8 +190,7 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
         const modelText = formatRequestLogModelText(
           trace.cli_key,
           trace.requested_model,
-          // Live traces do not carry request special settings, so Codex effort here is model-only.
-          null,
+          trace.special_settings_json ?? trace.summary?.special_settings_json ?? null,
           trace.claude_model_mapping
         );
         const cliLabel = cliShortLabel(trace.cli_key);

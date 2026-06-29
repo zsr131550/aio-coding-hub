@@ -203,6 +203,71 @@ describe("services/gateway/traceStore", () => {
     vi.useRealTimers();
   });
 
+  it("keeps request special settings from start events across attempt and completion updates", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceStart, ingestTraceAttempt, ingestTraceRequest, useTraceStore } =
+      await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+    const startSettings = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "high" },
+    ]);
+
+    act(() => {
+      ingestTraceStart({
+        trace_id: "t-effort",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        special_settings_json: startSettings,
+        ts: 0,
+      });
+    });
+    expect(result.current.traces[0]?.special_settings_json).toBe(startSettings);
+
+    act(() => {
+      ingestTraceAttempt({
+        trace_id: "t-effort",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        attempt_index: 1,
+        provider_id: 1,
+        provider_name: "P1",
+        base_url: "https://p1",
+        outcome: "started",
+        status: null,
+        attempt_started_ms: 0,
+        attempt_duration_ms: 0,
+      });
+    });
+    expect(result.current.traces[0]?.special_settings_json).toBe(startSettings);
+
+    act(() => {
+      ingestTraceRequest({
+        trace_id: "t-effort",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        status: 200,
+        error_category: null,
+        error_code: null,
+        duration_ms: 50,
+        attempts: [],
+      });
+    });
+    expect(result.current.traces[0]?.special_settings_json).toBe(startSettings);
+
+    vi.useRealTimers();
+  });
+
   it("stores Claude model mapping from attempts and lets completion override it", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
