@@ -7,6 +7,8 @@ import {
   useRequestLogsListAllQuery,
 } from "../../query/requestLogs";
 import { subscribeGatewayEvent } from "../../services/gateway/gatewayEventBus";
+import { requestLogGetByTraceId } from "../../services/gateway/requestLogs";
+import { reconcileTraceFromRequestLog } from "../../services/gateway/traceStore";
 import { useDocumentVisibility } from "../useDocumentVisibility";
 import { useWindowForeground } from "../useWindowForeground";
 
@@ -17,6 +19,14 @@ vi.mock("../../query/requestLogs", () => ({
 
 vi.mock("../../services/gateway/gatewayEventBus", () => ({
   subscribeGatewayEvent: vi.fn(),
+}));
+
+vi.mock("../../services/gateway/requestLogs", () => ({
+  requestLogGetByTraceId: vi.fn(),
+}));
+
+vi.mock("../../services/gateway/traceStore", () => ({
+  reconcileTraceFromRequestLog: vi.fn(),
 }));
 
 vi.mock("../useDocumentVisibility", () => ({
@@ -36,6 +46,8 @@ describe("hooks/useRequestLogsFeed", () => {
       mutateAsync: vi.fn().mockResolvedValue(null),
       isPending: false,
     } as any);
+    vi.mocked(requestLogGetByTraceId).mockResolvedValue({ trace_id: "t-1" } as any);
+    vi.mocked(reconcileTraceFromRequestLog).mockReturnValue(true);
     vi.mocked(subscribeGatewayEvent).mockReturnValue({
       ready: Promise.resolve(),
       unsubscribe: vi.fn(),
@@ -137,7 +149,141 @@ describe("hooks/useRequestLogsFeed", () => {
     });
 
     expect(incrementalRefresh).toHaveBeenCalledTimes(1);
+    expect(requestLogGetByTraceId).toHaveBeenCalledTimes(1);
     expect(requestRefetch).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("reconciles complete signals by trace id while hidden without refreshing the visible list", async () => {
+    vi.useFakeTimers();
+    vi.mocked(useDocumentVisibility).mockReturnValue(false);
+    const incrementalRefresh = vi.fn().mockResolvedValue(null);
+    const terminalLog = {
+      trace_id: "t-hidden",
+      status: 200,
+      error_code: null,
+    };
+    let eventHandler:
+      | ((payload: {
+          trace_id: string;
+          cli_key: string;
+          phase: "start" | "complete";
+          ts: number;
+        }) => void)
+      | null = null;
+
+    vi.mocked(requestLogGetByTraceId).mockResolvedValue(terminalLog as any);
+    vi.mocked(reconcileTraceFromRequestLog).mockReturnValue(true);
+    vi.mocked(useRequestLogsListAllQuery).mockReturnValue({
+      data: [{ id: 1 }],
+      isLoading: false,
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useRequestLogsIncrementalRefreshMutation).mockReturnValue({
+      mutateAsync: incrementalRefresh,
+      isPending: false,
+    } as any);
+    vi.mocked(subscribeGatewayEvent).mockImplementation((event: string, handler: any) => {
+      expect(event).toBe(gatewayEventNames.requestSignal);
+      eventHandler = handler;
+      return {
+        ready: Promise.resolve(),
+        unsubscribe: vi.fn(),
+      };
+    });
+
+    renderHook(() =>
+      useRequestLogsFeed({
+        limit: 10,
+        liveUpdatesEnabled: true,
+        liveUpdateIntervalMs: 400,
+      })
+    );
+
+    act(() => {
+      eventHandler?.({ trace_id: "t-hidden", cli_key: "codex", phase: "complete", ts: 2 });
+    });
+
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+      await Promise.resolve();
+    });
+
+    expect(incrementalRefresh).not.toHaveBeenCalled();
+    expect(requestLogGetByTraceId).toHaveBeenCalledWith("t-hidden");
+    expect(reconcileTraceFromRequestLog).toHaveBeenCalledWith(terminalLog);
+    vi.useRealTimers();
+  });
+
+  it("keeps retrying trace reconciliation until a terminal request log is available", async () => {
+    vi.useFakeTimers();
+    const incrementalRefresh = vi.fn().mockResolvedValue(null);
+    const terminalLog = {
+      trace_id: "t-delayed",
+      status: 200,
+      error_code: null,
+    };
+    let eventHandler:
+      | ((payload: {
+          trace_id: string;
+          cli_key: string;
+          phase: "start" | "complete";
+          ts: number;
+        }) => void)
+      | null = null;
+
+    vi.mocked(requestLogGetByTraceId)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(terminalLog as any);
+    vi.mocked(reconcileTraceFromRequestLog).mockReturnValueOnce(false).mockReturnValueOnce(true);
+    vi.mocked(useRequestLogsListAllQuery).mockReturnValue({
+      data: [{ id: 1 }],
+      isLoading: false,
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useRequestLogsIncrementalRefreshMutation).mockReturnValue({
+      mutateAsync: incrementalRefresh,
+      isPending: false,
+    } as any);
+    vi.mocked(subscribeGatewayEvent).mockImplementation((event: string, handler: any) => {
+      expect(event).toBe(gatewayEventNames.requestSignal);
+      eventHandler = handler;
+      return {
+        ready: Promise.resolve(),
+        unsubscribe: vi.fn(),
+      };
+    });
+
+    renderHook(() =>
+      useRequestLogsFeed({
+        limit: 10,
+        liveUpdatesEnabled: true,
+        liveUpdateIntervalMs: 400,
+      })
+    );
+
+    act(() => {
+      eventHandler?.({ trace_id: "t-delayed", cli_key: "codex", phase: "complete", ts: 2 });
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+      await Promise.resolve();
+    });
+
+    expect(requestLogGetByTraceId).toHaveBeenCalledTimes(1);
+    expect(reconcileTraceFromRequestLog).toHaveBeenCalledWith(null);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+      await Promise.resolve();
+    });
+
+    expect(requestLogGetByTraceId).toHaveBeenCalledTimes(2);
+    expect(reconcileTraceFromRequestLog).toHaveBeenLastCalledWith(terminalLog);
+    expect(incrementalRefresh).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 
@@ -275,7 +421,7 @@ describe("hooks/useRequestLogsFeed", () => {
     expect(requestRefetch).toHaveBeenCalledTimes(1);
   });
 
-  it("pauses live subscription when the document is hidden even if live updates are enabled", () => {
+  it("keeps signal subscription while hidden but pauses visible list refresh state", () => {
     vi.mocked(useDocumentVisibility).mockReturnValue(false);
     vi.mocked(useRequestLogsListAllQuery).mockReturnValue({
       data: null,
@@ -293,7 +439,10 @@ describe("hooks/useRequestLogsFeed", () => {
       })
     );
 
-    expect(subscribeGatewayEvent).not.toHaveBeenCalled();
+    expect(subscribeGatewayEvent).toHaveBeenCalledWith(
+      gatewayEventNames.requestSignal,
+      expect.any(Function)
+    );
     expect(result.current.requestLogsRefreshing).toBe(false);
     expect(result.current.requestLogsAvailable).toBe(false);
   });

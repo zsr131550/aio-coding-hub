@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { createRequestLogSummary } from "../requestLogFixtures";
 
 async function importFreshTraceStore() {
   vi.resetModules();
@@ -777,6 +778,141 @@ describe("services/gateway/traceStore", () => {
     expect(result.current.traces[0]?.trace_id).toBe("long-running-trace");
     expect(result.current.traces[0]?.summary).toBeDefined();
     expect(result.current.traces[0]?.summary?.status).toBe(200);
+
+    vi.useRealTimers();
+  });
+
+  it("reconciles a long-running trace from a terminal persisted request log", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceStart, reconcileTraceFromRequestLog, useTraceStore } =
+      await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+
+    act(() => {
+      ingestTraceStart({
+        trace_id: "reconciled-trace",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        ts: 0,
+      });
+    });
+
+    vi.setSystemTime(83 * 60 * 1000);
+
+    act(() => {
+      const reconciled = reconcileTraceFromRequestLog(
+        createRequestLogSummary({
+          trace_id: "reconciled-trace",
+          cli_key: "codex",
+          status: 200,
+          error_code: null,
+          duration_ms: 83 * 60 * 1000,
+          created_at_ms: 83 * 60 * 1000,
+        })
+      );
+      expect(reconciled).toBe(true);
+    });
+
+    expect(result.current.traces).toHaveLength(1);
+    expect(result.current.traces[0]?.summary?.status).toBe(200);
+    expect(result.current.traces[0]?.summary?.duration_ms).toBe(83 * 60 * 1000);
+
+    vi.useRealTimers();
+  });
+
+  it("does not reconcile a trace from a pending persisted request log", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceStart, reconcileTraceFromRequestLog, useTraceStore } =
+      await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+
+    act(() => {
+      ingestTraceStart({
+        trace_id: "still-running",
+        cli_key: "claude",
+        method: "POST",
+        path: "/v1/messages",
+        query: null,
+        ts: 0,
+      });
+    });
+
+    act(() => {
+      const reconciled = reconcileTraceFromRequestLog(
+        createRequestLogSummary({
+          trace_id: "still-running",
+          status: null,
+          error_code: null,
+        })
+      );
+      expect(reconciled).toBe(false);
+    });
+
+    expect(result.current.traces[0]?.summary).toBeUndefined();
+
+    vi.useRealTimers();
+  });
+
+  it("lets persisted terminal request logs correct an existing realtime summary", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceRequest, reconcileTraceFromRequestLog, useTraceStore } =
+      await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+
+    act(() => {
+      ingestTraceRequest({
+        trace_id: "corrected-summary",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        status: 200,
+        error_category: null,
+        error_code: null,
+        duration_ms: 10,
+        ttfb_ms: 5,
+        attempts: [],
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      });
+    });
+
+    act(() => {
+      const reconciled = reconcileTraceFromRequestLog(
+        createRequestLogSummary({
+          trace_id: "corrected-summary",
+          cli_key: "codex",
+          status: 502,
+          error_code: "GW_UPSTREAM_ERROR",
+          duration_ms: 2_000,
+          ttfb_ms: 100,
+          input_tokens: 10,
+          output_tokens: 20,
+          total_tokens: 30,
+        })
+      );
+      expect(reconciled).toBe(true);
+    });
+
+    expect(result.current.traces[0]?.summary).toMatchObject({
+      status: 502,
+      error_code: "GW_UPSTREAM_ERROR",
+      duration_ms: 2_000,
+      ttfb_ms: 100,
+      input_tokens: 10,
+      output_tokens: 20,
+      total_tokens: 30,
+    });
 
     vi.useRealTimers();
   });

@@ -7,6 +7,9 @@ import type {
   GatewayRequestEvent,
   GatewayRequestStartEvent,
 } from "./gatewayEvents";
+import { isPersistedRequestLogInProgress } from "./requestLogState";
+import type { RequestLogTraceMergeSource } from "./traceRequestLogMerge";
+import { mergeTraceWithRequestLog } from "./traceRequestLogMerge";
 import { MAX_ATTEMPTS_PER_TRACE } from "./traceLimits";
 
 export type TraceSummary = GatewayRequestEvent & {
@@ -285,6 +288,25 @@ export function ingestTraceRequest(payload: GatewayRequestEvent) {
       };
     }
   );
+}
+
+export function reconcileTraceFromRequestLog(
+  requestLog: RequestLogTraceMergeSource | null | undefined
+) {
+  if (!requestLog?.trace_id || isPersistedRequestLogInProgress(requestLog)) return false;
+
+  const traceId = requestLog.trace_id;
+  const idx = findTraceIndex(traceId);
+  if (idx === -1) return false;
+
+  const existing = state.traces[idx];
+  const updated = mergeTraceWithRequestLog(existing, requestLog);
+  if (updated === existing) return false;
+
+  const nextTraces = state.traces.slice();
+  nextTraces[idx] = updated;
+  setState({ traces: nextTraces });
+  return true;
 }
 
 export function subscribeTraceStore(listener: Listener) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { gatewayEventNames } from "../constants/gatewayEvents";
 import {
   useRequestLogsIncrementalRefreshMutation,
@@ -8,9 +8,13 @@ import { logToConsole } from "../services/consoleLog";
 import { subscribeGatewayEvent } from "../services/gateway/gatewayEventBus";
 import { normalizeGatewayRequestSignalEvent } from "../services/gateway/gatewayEvents";
 import { isRequestSignalComplete } from "../services/gateway/requestLogState";
+import { requestLogGetByTraceId } from "../services/gateway/requestLogs";
+import { reconcileTraceFromRequestLog } from "../services/gateway/traceStore";
 import { useCoalescedAsyncRefresh } from "./useCoalescedAsyncRefresh";
 import { useDocumentVisibility } from "./useDocumentVisibility";
 import { useWindowForeground } from "./useWindowForeground";
+
+const TRACE_RECONCILIATION_MAX_DELAY_MS = 30_000;
 
 type UseRequestLogsFeedOptions = {
   limit: number;
@@ -27,6 +31,11 @@ function resolveSignalRefreshWindowMs(input: number | false | undefined) {
   return Math.max(200, Math.min(2_000, Math.trunc(input)));
 }
 
+function resolveTraceReconciliationRetryDelayMs(baseDelayMs: number, attempt: number) {
+  const multiplier = 2 ** Math.min(Math.max(0, attempt), 6);
+  return Math.min(TRACE_RECONCILIATION_MAX_DELAY_MS, baseDelayMs * multiplier);
+}
+
 export function useRequestLogsFeed({
   limit,
   enabled = true,
@@ -39,7 +48,13 @@ export function useRequestLogsFeed({
   const requestLogsQuery = useRequestLogsListAllQuery(limit, { enabled });
   const incrementalRefreshMutation = useRequestLogsIncrementalRefreshMutation(limit);
   const liveRefreshEnabled = enabled && liveUpdatesEnabled && foregroundActive;
+  const signalSubscriptionEnabled = enabled && liveUpdatesEnabled;
   const liveRefreshWindowMs = resolveSignalRefreshWindowMs(liveUpdateIntervalMs);
+  const pendingTraceReconciliationIdsRef = useRef(new Set<string>());
+  const traceReconciliationAttemptsRef = useRef(new Map<string, number>());
+  const traceReconciliationTimerRef = useRef<number | null>(null);
+  const traceReconciliationInFlightRef = useRef(false);
+  const scheduleTraceReconciliationRef = useRef<(delayMs?: number) => void>(() => {});
   const { schedule: scheduleLiveRefresh } = useCoalescedAsyncRefresh<void, unknown>({
     enabled: liveRefreshEnabled,
     delayMs: liveRefreshWindowMs,
@@ -49,6 +64,79 @@ export function useRequestLogsFeed({
       return null;
     },
   });
+  const clearTraceReconciliationTimer = useCallback(() => {
+    if (traceReconciliationTimerRef.current == null) return;
+    window.clearTimeout(traceReconciliationTimerRef.current);
+    traceReconciliationTimerRef.current = null;
+  }, []);
+
+  const runTraceReconciliation = useCallback(async () => {
+    if (!signalSubscriptionEnabled || traceReconciliationInFlightRef.current) {
+      return;
+    }
+
+    const traceIds = Array.from(pendingTraceReconciliationIdsRef.current);
+    if (traceIds.length === 0) {
+      return;
+    }
+
+    pendingTraceReconciliationIdsRef.current.clear();
+    traceReconciliationInFlightRef.current = true;
+    let nextDelayMs = liveRefreshWindowMs;
+
+    await Promise.all(
+      traceIds.map(async (traceId) => {
+        try {
+          const requestLog = await requestLogGetByTraceId(traceId);
+          const reconciled = reconcileTraceFromRequestLog(requestLog);
+          if (reconciled) {
+            traceReconciliationAttemptsRef.current.delete(traceId);
+            return;
+          }
+
+          const nextAttempt = (traceReconciliationAttemptsRef.current.get(traceId) ?? 0) + 1;
+          traceReconciliationAttemptsRef.current.set(traceId, nextAttempt);
+          pendingTraceReconciliationIdsRef.current.add(traceId);
+          nextDelayMs = Math.max(
+            nextDelayMs,
+            resolveTraceReconciliationRetryDelayMs(liveRefreshWindowMs, nextAttempt)
+          );
+        } catch (error) {
+          const nextAttempt = (traceReconciliationAttemptsRef.current.get(traceId) ?? 0) + 1;
+          traceReconciliationAttemptsRef.current.set(traceId, nextAttempt);
+          pendingTraceReconciliationIdsRef.current.add(traceId);
+          nextDelayMs = Math.max(
+            nextDelayMs,
+            resolveTraceReconciliationRetryDelayMs(liveRefreshWindowMs, nextAttempt)
+          );
+          logToConsole("warn", "按追踪 ID 校准实时请求状态失败", {
+            trace_id: traceId,
+            error: String(error),
+          });
+        }
+      })
+    );
+
+    traceReconciliationInFlightRef.current = false;
+    if (pendingTraceReconciliationIdsRef.current.size > 0) {
+      scheduleTraceReconciliationRef.current(nextDelayMs);
+    }
+  }, [liveRefreshWindowMs, signalSubscriptionEnabled]);
+
+  const scheduleTraceReconciliation = useCallback(
+    (delayMs = liveRefreshWindowMs) => {
+      if (!signalSubscriptionEnabled || traceReconciliationTimerRef.current != null) {
+        return;
+      }
+
+      traceReconciliationTimerRef.current = window.setTimeout(() => {
+        traceReconciliationTimerRef.current = null;
+        void runTraceReconciliation();
+      }, delayMs);
+    },
+    [liveRefreshWindowMs, runTraceReconciliation, signalSubscriptionEnabled]
+  );
+  scheduleTraceReconciliationRef.current = scheduleTraceReconciliation;
 
   const refreshRequestLogs = useCallback(() => {
     return requestLogsQuery.refetch();
@@ -74,7 +162,7 @@ export function useRequestLogsFeed({
   });
 
   useEffect(() => {
-    if (!liveRefreshEnabled) {
+    if (!signalSubscriptionEnabled) {
       return;
     }
 
@@ -89,7 +177,11 @@ export function useRequestLogsFeed({
         return;
       }
 
-      scheduleLiveRefresh();
+      if (foregroundActive) {
+        scheduleLiveRefresh();
+      }
+      pendingTraceReconciliationIdsRef.current.add(requestSignal.trace_id);
+      scheduleTraceReconciliation();
     });
 
     void Promise.allSettled([requestSignalSub.ready]).then((results) => {
@@ -114,7 +206,30 @@ export function useRequestLogsFeed({
       cancelled = true;
       requestSignalSub.unsubscribe();
     };
-  }, [liveRefreshEnabled, scheduleLiveRefresh]);
+  }, [
+    foregroundActive,
+    scheduleLiveRefresh,
+    scheduleTraceReconciliation,
+    signalSubscriptionEnabled,
+  ]);
+
+  useEffect(() => {
+    if (signalSubscriptionEnabled) {
+      return;
+    }
+
+    clearTraceReconciliationTimer();
+    pendingTraceReconciliationIdsRef.current.clear();
+    traceReconciliationAttemptsRef.current.clear();
+    traceReconciliationInFlightRef.current = false;
+  }, [clearTraceReconciliationTimer, signalSubscriptionEnabled]);
+
+  useEffect(() => {
+    return () => {
+      clearTraceReconciliationTimer();
+      traceReconciliationInFlightRef.current = false;
+    };
+  }, [clearTraceReconciliationTimer]);
 
   const requestLogs = useMemo(() => requestLogsQuery.data ?? [], [requestLogsQuery.data]);
   const requestLogsLoading = requestLogsQuery.isLoading;

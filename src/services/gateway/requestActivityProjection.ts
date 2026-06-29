@@ -1,6 +1,6 @@
 import { isPersistedRequestLogInProgress, requestLogCreatedAtMs } from "./requestLogState";
 import type { RequestLogSummary } from "./requestLogs";
-import { resolveClaudeModelMappingFromSpecialSettings } from "./requestLogSpecialSettings";
+import { mergeTraceWithRequestLog } from "./traceRequestLogMerge";
 import type { TraceSession } from "./traceStore";
 
 export const REALTIME_TRACE_EXIT_START_MS = 600;
@@ -52,72 +52,6 @@ export function sortRequestLogsForActivity(a: RequestLogSummary, b: RequestLogSu
 export function shouldKeepProjectedRealtimeTraceVisible(trace: TraceSession, nowMs: number) {
   if (!trace.summary) return true;
   return Math.max(0, nowMs - trace.last_seen_ms) < REALTIME_TRACE_EXIT_TOTAL_MS;
-}
-
-function mergeTraceWithRequestLog(
-  trace: TraceSession,
-  requestLog: RequestLogSummary | undefined
-): TraceSession {
-  if (!requestLog) return trace;
-
-  const requestLogInProgress = isPersistedRequestLogInProgress(requestLog);
-  const requestLogTsMs = requestLogCreatedAtMs(requestLog);
-  const claudeModelMapping =
-    trace.claude_model_mapping ??
-    resolveClaudeModelMappingFromSpecialSettings(
-      requestLog.special_settings_json,
-      requestLog.final_provider_id
-    );
-  if (!trace.summary && requestLogInProgress) {
-    return {
-      ...trace,
-      session_id: trace.session_id ?? requestLog.session_id ?? null,
-      requested_model: trace.requested_model ?? requestLog.requested_model ?? null,
-      special_settings_json:
-        trace.special_settings_json ?? requestLog.special_settings_json ?? null,
-      claude_model_mapping: claudeModelMapping,
-      last_seen_ms: Math.max(trace.last_seen_ms, requestLogTsMs),
-    };
-  }
-
-  const summary = trace.summary;
-  const mergedSummary: NonNullable<TraceSession["summary"]> = {
-    trace_id: trace.trace_id,
-    cli_key: trace.cli_key,
-    method: trace.method,
-    path: trace.path,
-    query: trace.query,
-    status: summary?.status ?? requestLog.status ?? null,
-    error_category: summary?.error_category ?? null,
-    error_code: summary?.error_code ?? requestLog.error_code ?? null,
-    duration_ms: summary?.duration_ms ?? requestLog.duration_ms ?? 0,
-    ttfb_ms: summary?.ttfb_ms ?? requestLog.ttfb_ms ?? null,
-    visible_ttfb_ms: summary?.visible_ttfb_ms ?? requestLog.visible_ttfb_ms ?? null,
-    attempts: summary?.attempts ?? [],
-    input_tokens: summary?.input_tokens ?? requestLog.input_tokens ?? null,
-    output_tokens: summary?.output_tokens ?? requestLog.output_tokens ?? null,
-    total_tokens: summary?.total_tokens ?? requestLog.total_tokens ?? null,
-    cache_read_input_tokens:
-      summary?.cache_read_input_tokens ?? requestLog.cache_read_input_tokens ?? null,
-    cache_creation_input_tokens:
-      summary?.cache_creation_input_tokens ?? requestLog.cache_creation_input_tokens ?? null,
-    cache_creation_5m_input_tokens:
-      summary?.cache_creation_5m_input_tokens ?? requestLog.cache_creation_5m_input_tokens ?? null,
-    cache_creation_1h_input_tokens:
-      summary?.cache_creation_1h_input_tokens ?? requestLog.cache_creation_1h_input_tokens ?? null,
-    cost_usd: summary?.cost_usd ?? requestLog.cost_usd ?? null,
-    cost_multiplier: summary?.cost_multiplier ?? requestLog.cost_multiplier ?? null,
-  };
-
-  return {
-    ...trace,
-    session_id: trace.session_id ?? requestLog.session_id ?? null,
-    requested_model: trace.requested_model ?? requestLog.requested_model ?? null,
-    special_settings_json: trace.special_settings_json ?? requestLog.special_settings_json ?? null,
-    claude_model_mapping: claudeModelMapping,
-    summary: mergedSummary,
-    last_seen_ms: Math.max(trace.last_seen_ms, requestLogTsMs),
-  };
 }
 
 export function buildRequestActivityProjection({
