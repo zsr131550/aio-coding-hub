@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.7](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.6...aio-coding-hub-v0.60.7) (2026-06-29)
+
+
+### Bug Fixes
+
+* **home:** show live codex reasoning effort ([42d03fa](https://github.com/FingerCaster/aio-coding-hub/commit/42d03fa))
+
 ## [0.60.6](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.5...aio-coding-hub-v0.60.6) (2026-06-29)
 
 
