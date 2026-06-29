@@ -34,7 +34,7 @@ Scaffold and pack flow create Extension Host packages with `main`, `runtime.kind
 
 0.62.2 still keeps Plugin API v1 externally stable. 安装预检、更新 diff、rollback availability、quarantine reason 和 trust summary 都是宿主解释现有安装/更新规则的 lifecycle layer，不是新的 manifest schema，也不是插件可调用的新 API。
 
-安装或更新前，宿主会把 `hostCompatibility`、runtime support、capabilities、contributions、checksum/signature 和 package source 组合成 preview/diff 给用户确认。确认后，真实 install/update 仍会重新执行完整校验；preview/diff 不能作为跳过兼容性、签名或权限策略的依据。
+安装或更新前，宿主会把 `hostCompatibility`、runtime support、capabilities、contributions、checksum/signature 和 package source 组合成 preview/diff 给用户确认。确认后，真实 install/update 仍会重新执行完整校验；preview/diff 不能作为跳过兼容性、签名或 capability/contribution policy 的依据。
 
 兼容性判断仍以这些字段为准：
 
@@ -44,6 +44,6 @@ Scaffold and pack flow create Extension Host packages with `main`, `runtime.kind
 - runtime 必须是 Extension Host 或 host-owned official built-in。
 - contribution 必须有对应 capability。
 
-Quarantined 和 incompatible 插件不能启用。更新新增的 capabilities 会进入 pending，不会静默继承授权。
+Quarantined 和 incompatible 插件不能启用。更新新增的 capabilities 会进入 pending，不会静默继承用户确认。
 
 0.62.2 也不开放 browser-like plugin container。Linux、macOS、Windows 上的插件仍运行在宿主支持的 Extension Host 中；第三方插件不能把 AIO Coding Hub 内部变成浏览器或 WebView 插件容器。

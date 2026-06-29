@@ -216,23 +216,28 @@ if (contract) {
   }
   const capabilityDependencies =
     requireObject(`${contractPath}.capabilityDependencies`, contract.capabilityDependencies) ?? {};
-  for (const [contribution, requiredCapabilities] of Object.entries({
+  const expectedCapabilityDependencies = {
     commands: ["commands.execute"],
     providers: ["provider.extensionValues"],
+    "ui.providers.editor.sections": ["provider.extensionValues"],
+    "ui.providers.editor.fields": ["provider.extensionValues"],
+    "ui.buttonCommandFields": ["commands.execute"],
     gatewayHooks: ["gateway.hooks"],
     protocolBridges: ["protocol.bridge"],
-  })) {
-    const actual = requireArray(
-      `${contractPath}.capabilityDependencies.${contribution}`,
-      capabilityDependencies[contribution]
-    );
-    for (const capability of requiredCapabilities) {
-      if (!actual.includes(capability)) {
-        failures.push(
-          `${contractPath}.capabilityDependencies.${contribution} must include ${capability}`
-        );
-      }
+  };
+  for (const key of Object.keys(capabilityDependencies)) {
+    if (!Object.prototype.hasOwnProperty.call(expectedCapabilityDependencies, key)) {
+      failures.push(`${contractPath}.capabilityDependencies must not include ${key}`);
     }
+  }
+  for (const [contribution, requiredCapabilities] of Object.entries(
+    expectedCapabilityDependencies
+  )) {
+    requireArrayEquals(
+      `${contractPath}.capabilityDependencies.${contribution}`,
+      capabilityDependencies[contribution],
+      requiredCapabilities
+    );
   }
 
   const matrix = requireObject(`${contractPath}.hookMatrix`, contract.hookMatrix) ?? {};
@@ -320,6 +325,16 @@ if (contract) {
       capabilityDependencyBody,
       [
         "requireCapability",
+        '"commands.execute"',
+        "commands contribution",
+        '"provider.extensionValues"',
+        "provider contribution",
+        '"providers.editor.sections"',
+        "providers.editor.sections UI contribution",
+        '"providers.editor.fields"',
+        "providers.editor.fields UI contribution",
+        "uiHasButtonCommand",
+        "UI command field",
         '"gateway.hooks"',
         "gatewayHooks contribution",
         '"protocol.bridge"',
@@ -414,6 +429,9 @@ if (contract) {
       "crate::gateway::plugins::contract::is_reserved_hook",
       "crate::gateway::plugins::contract::is_reserved_permission",
       "crate::gateway::plugins::contract::hook_contract",
+      "providers.editor.sections",
+      "providers.editor.fields",
+      "UI command field",
     ],
     "contract metadata call-through"
   );

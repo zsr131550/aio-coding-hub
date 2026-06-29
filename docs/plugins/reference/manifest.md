@@ -52,15 +52,16 @@ Capability dependency table：
 | `providers` | `provider.extensionValues` |
 | `ui.providers.editor.sections` | `provider.extensionValues` |
 | `ui.providers.editor.fields` | `provider.extensionValues` |
-| `ui.providers.card.badges` | `provider.extensionValues` |
-| `ui.providers.card.actions` | `provider.extensionValues` |
+| UI button fields in host-rendered sections/panels | `commands.execute` |
 | `gatewayHooks` | `gateway.hooks` |
 | `protocolBridges` | `protocol.bridge` |
+
+`providers.card.badges` 和 `providers.card.actions` 是已命名 UI slots，但当前 SDK/Rust validation 不为它们强制 `provider.extensionValues` dependency。
 
 `hostCompatibility` 必须包含 `app` 和 `pluginApi`；`platforms` 可以限制支持的操作系统。
 
 `configSchema` 可以包含标准 JSON Schema 展示字段和 AIO `x-aio-ui` 元数据。详见 [Config Schema](./config-schema.md)。
 
-plugin API v1 的 active hooks 见 [Hooks](./hooks.md)。Reserved hooks 和 reserved permissions 只是为未来兼容命名保留；在宿主真正实现前，manifest 校验会拒绝它们。
+plugin API v1 的 active hooks 见 [Hooks](./hooks.md)。Reserved hooks 会在宿主真正实现前被 manifest 校验拒绝。Reserved permissions 只作为内部/legacy runtime history 的 host-mediated label 保留，不是 public Extension Host manifest 字段。
 
 旧的 declarative rules、WASM、process 和第三方 native manifest 属于 unsupported pre-release legacy runtime。它们的旧字段会被当前公开校验拒绝，迁移说明见 [Legacy Declarative Rules](./declarative-rules.md) 和 [运行时说明](../runtime/README.md)。

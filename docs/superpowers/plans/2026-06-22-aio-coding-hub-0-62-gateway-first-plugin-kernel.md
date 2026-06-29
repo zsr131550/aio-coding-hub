@@ -600,7 +600,7 @@ node scripts/check-plugin-api-contract.selftest.mjs
 pnpm check:plugin-api-contract
 pnpm --filter @aio-coding-hub/plugin-sdk test
 pnpm --filter @aio-coding-hub/plugin-sdk typecheck
-pnpm create-aio-plugin:test
+pnpm --filter create-aio-plugin test
 pnpm typecheck
 git diff --check
 ```

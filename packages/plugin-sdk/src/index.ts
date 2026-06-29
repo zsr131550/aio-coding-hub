@@ -692,6 +692,13 @@ function validateCapabilityDependencies(
     );
     if (error) return error;
   }
+  if ((contributes.ui?.["providers.editor.fields"]?.length ?? 0) > 0) {
+    const error = requireCapability(
+      "provider.extensionValues",
+      "providers.editor.fields UI contribution"
+    );
+    if (error) return error;
+  }
   if (uiHasButtonCommand(contributes.ui)) {
     const error = requireCapability("commands.execute", "UI command field");
     if (error) return error;

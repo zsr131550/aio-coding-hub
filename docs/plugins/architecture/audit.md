@@ -21,7 +21,7 @@ Declarative rules、WASM、process 和第三方 native 属于 unsupported pre-re
 AIO Coding Hub 采用同样形态：
 
 - `plugin.json` 声明 ID、`main`、Extension Host runtime、contributions、capabilities、config schema 和 host compatibility。
-- Hooks 是明确的 gateway/log extension points，带有 bounded timeouts 和 permission-trimmed contexts。
+- Hooks 是明确的 gateway/log extension points，带有 bounded timeouts 和 host-trimmed contexts。
 - 社区代码执行不会进入 Rust main process 和 WebView。
 - `official.privacy-filter` 是 host-owned built-in。第三方包不能声明 host-native engines。
 
@@ -41,7 +41,7 @@ AIO Coding Hub 采用同样形态：
 
 1. Extension Host：使用 `main` 加载打包后的 JavaScript 输出，通过 `contributes.gatewayHooks`、`protocolBridges`、`commands`、provider UI sections 和 capability dependency table 接入宿主。
 
-Gateway hooks 必须使用 `contributes.gatewayHooks` 与 `api.gateway.registerHook`。Protocol bridge 必须使用 `protocolBridges` 与 `protocol.bridge` capability。Provider extension values 和 provider UI sections 必须使用 `provider.extensionValues` capability。
+Gateway hooks 必须使用 `contributes.gatewayHooks` 与 `api.gateway.registerHook`。Protocol bridge 必须使用 `protocolBridges` 与 `protocol.bridge` capability。Provider extension values 和 provider UI sections/fields 必须使用 `provider.extensionValues` capability。
 
 不要开放第三方 native 插件，除非先补齐独立 signed binary policy、ABI stability story、crash isolation model、upgrade story 和 platform-specific security review。
 
@@ -83,7 +83,7 @@ Bundled official plugin：
 
 在把 plugin API v1 标记为 stable 前：
 
-- 确认 hook names、capability names 和 permission names 已足够稳定，可以进入 semantic versioning。
+- 确认 hook names、capability names 和 host-mediated label names 已足够稳定，可以进入 semantic versioning。
 - 把 official examples 保留为文档中的 community patterns，而不是 bundled host plugins。
 - 增加 plugin hook overhead 和 Privacy Filter 在大型但允许 payload 上 redaction latency 的 benchmarks。
 - 增加 telemetry-safe counters，记录 plugin timeouts、skips 和 quarantines，但不记录 sensitive payloads。

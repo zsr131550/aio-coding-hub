@@ -9,9 +9,9 @@
 - 对 package bytes 计算 `sha256`。
 - 使用 `publish-check` 输出 release metadata。
 - 通过可信 index 发布时，用 Ed25519 签名 release metadata。
-- 对新增权限、runtime/hook/config 变化和 breaking update 写清升级与 rollback 说明。
+- 对新增 capabilities、runtime/hook/config 变化和 breaking update 写清升级与 rollback 说明。
 
-当前实现支持本地/离线包导入、受约束的远程 `.aio-plugin` 下载、checksum/signature verification、更新时的 permission delta 检查、已撤销插件 quarantine，以及 rollback snapshots。
+当前实现支持本地/离线包导入、受约束的远程 `.aio-plugin` 下载、checksum/signature verification、更新时的 capability/contribution diff、已撤销插件 quarantine，以及 rollback snapshots。
 
 ## 0.62.2 生命周期行为
 
@@ -19,9 +19,9 @@
 
 ### 安装预检
 
-用户从 Plugins 页面导入本地 `.aio-plugin` 时，宿主会先读取包并展示安装预检。预检会说明插件身份、来源、runtime、hooks、permissions、兼容性、checksum/signature、已有安装覆盖关系、warnings 和 blocking reasons。
+用户从 Plugins 页面导入本地 `.aio-plugin` 时，宿主会先读取包并展示安装预检。预检会说明插件身份、来源、runtime、contributions、capabilities、host-mediated risk labels、兼容性、checksum/signature、已有安装覆盖关系、warnings 和 blocking reasons。
 
-预检通过不等于安装已经完成。用户确认后，真实安装仍会重新执行包解压安全检查、manifest 校验、checksum/signature verification、host compatibility、runtime policy 和权限策略。发布者应该把预检视为“给用户解释将要发生什么”，而不是绕过安装校验的入口。
+预检通过不等于安装已经完成。用户确认后，真实安装仍会重新执行包解压安全检查、manifest 校验、checksum/signature verification、host compatibility、runtime policy 和 capability/contribution policy。发布者应该把预检视为“给用户解释将要发生什么”，而不是绕过安装校验的入口。
 
 ### 更新差异
 
@@ -30,12 +30,12 @@
 - version direction。
 - runtime change。
 - hook added/removed/changed。
-- permission unchanged granted、unchanged pending、added pending、removed。
+- capability unchanged granted、unchanged pending、added pending、removed。
 - `configVersion` change。
 - compatibility 和 trust change。
 - 当前版本是否可回滚。
 
-新增权限必须进入 pending。发布者可以在 release notes 中提前说明新增权限的原因，但宿主不会因为插件升级而静默授权新权限。
+新增 capability 必须进入 pending。发布者可以在 release notes 中提前说明新增 capability 的原因，但宿主不会因为插件升级而静默授予新 capability。
 
 ### 回滚与隔离
 
@@ -55,11 +55,11 @@
 
 ## publish-check
 
-`pnpm create-aio-plugin publish-check <plugin-dir>` 会读取插件目录，复用打包/校验路径计算 package metadata，并输出适合放进市场索引的字段，例如 plugin id、version、checksum、signature 状态、runtime、hooks、permissions 和 compatibility summary。
+`pnpm --filter create-aio-plugin exec create-aio-plugin publish-check <plugin-dir>` 会读取插件目录，复用打包/校验路径计算 package metadata，并输出适合放进市场索引的字段，例如 plugin id、version、checksum、signature 状态、runtime、contributions、capabilities、risk labels 和 compatibility summary。
 
 示例模板可以运行 publish-check，例如 `example:prompt-helper`、`example:redactor` 和 `example:response-guard` 生成的目录都应能输出发布 metadata。这个 metadata 只说明包具备发布前检查信息；它不代表示例已经被上传、签名、加入默认 market index，或变成默认可安装市场包。
 
-`publish-check` 不写 `.aio-plugin` artifact，不替代 `pack`、`sign` 或 `verify`。它的职责是让发布者在提交市场索引前看到宿主安装时会关心的 metadata。真实安装仍由宿主重新下载包、校验 checksum、校验 signature、判断 compatibility、应用 permission policy，并处理 revoked / incompatible install blocks。
+`publish-check` 不写 `.aio-plugin` artifact，不替代 `pack`、`sign` 或 `verify`。它的职责是让发布者在提交市场索引前看到宿主安装时会关心的 metadata。真实安装仍由宿主重新下载包、校验 checksum、校验 signature、判断 compatibility、应用 capability/contribution policy，并处理 revoked / incompatible install blocks。
 
 ## Market Index
 
@@ -78,7 +78,7 @@
 
 自定义 market index 属于高级来源。高级来源可以加载临时 URL 或粘贴 JSON，但它只是发布者和高级用户入口；真实安装仍由宿主重新执行 checksum、signature、compatibility、runtime policy 和 revoked checks。
 
-market index URL 只用于定位索引来源。trusted public key 用于校验 release signature；它不能扩大插件权限，也不能绕过 host compatibility、runtime policy、checksum、permission grant 或 quarantine 规则。
+market index URL 只用于定位索引来源。trusted public key 用于校验 release signature；它不能扩大插件 capabilities，也不能绕过 host compatibility、runtime policy、checksum、capability grant 或 quarantine 规则。
 
 ## Trust And Install Blocks
 

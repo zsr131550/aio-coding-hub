@@ -65,8 +65,7 @@
     "providers": ["provider.extensionValues"],
     "ui.providers.editor.sections": ["provider.extensionValues"],
     "ui.providers.editor.fields": ["provider.extensionValues"],
-    "ui.providers.card.badges": ["provider.extensionValues"],
-    "ui.providers.card.actions": ["provider.extensionValues"],
+    "ui.buttonCommandFields": ["commands.execute"],
     "gatewayHooks": ["gateway.hooks"],
     "protocolBridges": ["protocol.bridge"]
   },

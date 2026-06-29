@@ -448,6 +448,33 @@ describe("validateManifest", () => {
           ...openRouterManifest,
           contributes: {
             ui: {
+              "providers.editor.fields": [
+                {
+                  id: "openrouter-models",
+                  schema: {
+                    type: "section",
+                    fields: [
+                      {
+                        type: "select",
+                        key: "model",
+                        label: "Model",
+                        options: [{ value: "auto", label: "Auto" }],
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+          capabilities: [],
+        },
+        message: "providers.editor.fields UI contribution requires provider.extensionValues",
+      },
+      {
+        manifest: {
+          ...openRouterManifest,
+          contributes: {
+            ui: {
               "settings.sections": [
                 {
                   id: "openrouter-refresh",

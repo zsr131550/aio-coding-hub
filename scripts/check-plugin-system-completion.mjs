@@ -64,7 +64,7 @@ for (const phrase of [
   "pnpm check:plugin-system-docs",
   "pnpm check:generated-bindings",
   "pnpm plugin-sdk:typecheck",
-  "pnpm create-aio-plugin:test",
+  "pnpm --filter create-aio-plugin test",
   "pnpm test:e2e",
 ]) {
   if (!ci.includes(phrase)) {

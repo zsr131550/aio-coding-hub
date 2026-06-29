@@ -10,7 +10,7 @@
 
 用户可以在 Plugins 页面通过官方插件安装入口安装它。
 
-Plugins 页面也会展示 `examples/prompt-helper`、`examples/redactor` 和 `examples/response-guard` 作为社区示例方向。它们不是 bundled official plugin，也不会绕过宿主的安装、权限、兼容性或签名校验。
+Plugins 页面也会展示 `examples/prompt-helper`、`examples/redactor` 和 `examples/response-guard` 作为社区示例方向。它们不是 bundled official plugin，也不会绕过宿主的安装、capability/contribution、兼容性或签名校验。
 
 `examples/prompt-helper`、`examples/redactor` 和 `examples/response-guard` 现在由 `create-aio-plugin` 作为开发模板生成。它们帮助作者学习 Plugin API v1 和 devtools 闭环，但不是宿主内置插件，也不是默认可安装市场包。
 
@@ -32,7 +32,7 @@ Hooks：
 - `gateway.request.beforeSend`
 - `log.beforePersist`
 
-Permissions：
+Internal host-mediated labels for the official runtime：
 
 - `request.body.read`
 - `request.body.write`
@@ -66,10 +66,10 @@ Official privacy filter rules are loaded under a 1 MiB host byte budget。社区
 - 一个 Codex/OpenAI Responses input fixture。
 - 一个 local replay command。
 - 一个 package command。
-- 精确列出它请求的 permissions。
+- 精确列出它依赖的 capabilities，以及官方 runtime 使用的内部 context/mutation labels。
 - 简短说明哪些行为是 intentionally unsupported。
 - 能被宿主导出的 trace replay fixture 覆盖至少一个正常路径和一个边界路径。
-- 能通过 `create-aio-plugin publish-check` 生成市场发布 metadata。
+- 能通过 `pnpm --filter create-aio-plugin exec create-aio-plugin publish-check` 生成市场发布 metadata。
 
 社区示例应使用 Extension Host。Gateway 行为通过 `contributes.gatewayHooks` 和 `api.gateway.registerHook` 表达；旧运行时只用于迁移说明。
 

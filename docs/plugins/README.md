@@ -8,7 +8,7 @@
 
 - [插件开发总指南](./developer-guide.md)：唯一主线入口，从创建 Extension Host 插件到本地回放、配置表单、打包和发布。
 - [Privacy Filter 示例](./examples/privacy-filter.md)：查看官方 host-owned built-in 插件如何说明隐私过滤边界。
-- [插件 API 参考](./reference/README.md)：查 `plugin.json`、hooks、permissions、config schema、SDK 和发布规则。
+- [插件 API 参考](./reference/README.md)：查 `plugin.json`、hooks、capabilities、host-mediated context labels、config schema、SDK 和发布规则。
 
 ## 按目标查找
 
@@ -19,7 +19,7 @@
 | 处理 Claude/Codex 请求结构 | [插件开发总指南：Hooks 与请求形态](./developer-guide.md#hooks-与请求形态) |
 | 查 hook 触发时机 | [Hooks](./reference/hooks.md) |
 | 查 capability 与贡献点依赖 | [Manifest](./reference/manifest.md) |
-| 查权限和风险等级 | [Permissions](./reference/permissions.md) |
+| 查 context/mutation label 风险等级 | [Permissions](./reference/permissions.md) |
 | 迁移旧规则插件 | [Legacy Declarative Rules 迁移说明](./reference/declarative-rules.md) |
 | 打包发布 `.aio-plugin` | [Publishing](./reference/publishing.md) |
 | 理解旧运行时为什么不开放 | [运行时说明](./runtime/README.md) |
@@ -48,6 +48,6 @@
 
 - Extension Host 是唯一 community runtime。
 - 第三方插件代码不在 Rust 主进程或 Tauri WebView 中执行。
-- Manifest 校验只接受已激活 hooks、permissions 和 capability 组合；保留项仅用于未来兼容命名。
+- Manifest 校验只接受 Extension Host runtime、已激活 hooks、contributions 和 capability 组合；reserved permissions 只作为内部/legacy host-mediated labels 保留。
 - 当前只有 `official.privacy-filter` 是宿主内置官方隐私过滤插件。社区同类能力应实现为 Extension Host 插件。
 - Declarative rules、WASM、process 和第三方 native 运行时只作为 unsupported pre-release legacy runtime 迁移说明出现，不是当前推荐路径。

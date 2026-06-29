@@ -388,11 +388,11 @@ function promptHelperExampleTemplate(id: string, name: string): ScaffoldFiles {
       id,
       "Adds a concise implementation instruction to Claude and Codex/OpenAI request shapes.",
       [
-        "pnpm create-aio-plugin validate --strict .",
-        "pnpm create-aio-plugin replay --explain . fixtures/claude-request.json gateway.request.afterBodyRead",
-        "pnpm create-aio-plugin replay --explain . fixtures/codex-request.json gateway.request.afterBodyRead",
-        "pnpm create-aio-plugin pack .",
-        "pnpm create-aio-plugin publish-check .",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin validate --strict .",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain . fixtures/claude-request.json gateway.request.afterBodyRead",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain . fixtures/codex-request.json gateway.request.afterBodyRead",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin pack .",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin publish-check .",
       ]
     ),
   };
@@ -475,12 +475,12 @@ function redactorExampleTemplate(id: string, name: string): ScaffoldFiles {
       id,
       "Redacts token-like values and email addresses from request bodies and persisted logs.",
       [
-        "pnpm create-aio-plugin validate --strict .",
-        "pnpm create-aio-plugin replay --explain . fixtures/request-hit.json gateway.request.beforeSend",
-        "pnpm create-aio-plugin replay --explain . fixtures/request-miss.json gateway.request.beforeSend",
-        "pnpm create-aio-plugin replay --explain . fixtures/log-redact.json log.beforePersist",
-        "pnpm create-aio-plugin pack .",
-        "pnpm create-aio-plugin publish-check .",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin validate --strict .",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain . fixtures/request-hit.json gateway.request.beforeSend",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain . fixtures/request-miss.json gateway.request.beforeSend",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain . fixtures/log-redact.json log.beforePersist",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin pack .",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin publish-check .",
       ]
     ),
   };
@@ -537,11 +537,11 @@ function responseGuardExampleTemplate(id: string, name: string): ScaffoldFiles {
       id,
       "Marks risky non-streaming response text for review before the client receives it.",
       [
-        "pnpm create-aio-plugin validate --strict .",
-        "pnpm create-aio-plugin replay --explain . fixtures/response-warn.json gateway.response.after",
-        "pnpm create-aio-plugin replay --explain . fixtures/response-pass.json gateway.response.after",
-        "pnpm create-aio-plugin pack .",
-        "pnpm create-aio-plugin publish-check .",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin validate --strict .",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain . fixtures/response-warn.json gateway.response.after",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain . fixtures/response-pass.json gateway.response.after",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin pack .",
+        "pnpm --filter create-aio-plugin exec create-aio-plugin publish-check .",
       ]
     ),
   };
@@ -644,9 +644,9 @@ In `docs/plugins/developer-guide.md`, update the 10-minute quick start section a
 也可以直接从完整示例模板开始：
 
 ```bash
-pnpm create-aio-plugin acme.prompt-helper example:prompt-helper
-pnpm create-aio-plugin acme.redactor example:redactor
-pnpm create-aio-plugin acme.response-guard example:response-guard
+pnpm --filter create-aio-plugin exec create-aio-plugin acme.prompt-helper example:prompt-helper
+pnpm --filter create-aio-plugin exec create-aio-plugin acme.redactor example:redactor
+pnpm --filter create-aio-plugin exec create-aio-plugin acme.response-guard example:response-guard
 ```
 
 示例是开发模板，不是默认可安装市场包。它们用于学习 manifest、rules、fixtures、`validate --strict`、`replay --explain`、`pack` 和 `publish-check` 的完整路径；Plugins 页面里的同名精选卡片仍保持示例状态，不会绕过宿主安装校验。
@@ -658,8 +658,8 @@ In the replay command section, add one example command:
 例如 prompt-helper 示例可以直接回放 Claude 和 Codex fixtures：
 
 ```bash
-pnpm create-aio-plugin replay --explain ./acme.prompt-helper ./acme.prompt-helper/fixtures/claude-request.json gateway.request.afterBodyRead
-pnpm create-aio-plugin replay --explain ./acme.prompt-helper ./acme.prompt-helper/fixtures/codex-request.json gateway.request.afterBodyRead
+pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain ./acme.prompt-helper ./acme.prompt-helper/fixtures/claude-request.json gateway.request.afterBodyRead
+pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain ./acme.prompt-helper ./acme.prompt-helper/fixtures/codex-request.json gateway.request.afterBodyRead
 ```
 ````
 

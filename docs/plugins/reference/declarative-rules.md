@@ -65,9 +65,9 @@ module.exports.activate = function(api) {
 迁移后使用同一套开发闭环：
 
 ```bash
-pnpm create-aio-plugin validate --strict ./acme.redactor
-pnpm create-aio-plugin replay --explain ./acme.redactor ./fixtures/claude-request.json gateway.request.afterBodyRead
-pnpm create-aio-plugin pack ./acme.redactor
+pnpm --filter create-aio-plugin exec create-aio-plugin validate --strict ./acme.redactor
+pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain ./acme.redactor ./fixtures/claude-request.json gateway.request.afterBodyRead
+pnpm --filter create-aio-plugin exec create-aio-plugin pack ./acme.redactor
 ```
 
 如果旧包无法启用，优先查看 `PLUGIN_UNSUPPORTED_RUNTIME`、`PLUGIN_INVALID_MANIFEST` 或 `PLUGIN_INVALID_CONTRIBUTION`。这些错误表示包仍包含 pre-release legacy runtime 字段，需要按上面的 Extension Host 形态迁移。

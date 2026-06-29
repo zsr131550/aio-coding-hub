@@ -1,6 +1,6 @@
 # 插件 SDK
 
-`@aio-coding-hub/plugin-sdk` 提供 Extension Host 插件 manifest、hooks、permissions、capabilities 和 validation helpers 的共享 TypeScript 契约。
+`@aio-coding-hub/plugin-sdk` 提供 Extension Host 插件 manifest、hooks、capabilities、host-mediated context/mutation labels 和 validation helpers 的共享 TypeScript 契约。
 
 SDK 面向这些场景：
 
@@ -43,13 +43,15 @@ TypeScript SDK 导出：
 - `permissionRisk(permission)`
 - `validateManifest(manifest)`
 
+`PluginPermission` 和 `permissionRisk` 保留给 hook context/mutation label 风险展示、audit 和 legacy official runtime history。Extension Host manifest 不能声明 top-level `permissions`；`validateManifest` 会拒绝该字段。
+
 `create-aio-plugin` 使用 SDK 做 manifest validation，并针对真实插件目录提供本地开发命令：
 
 ```bash
-pnpm create-aio-plugin doctor ./acme.redactor
-pnpm create-aio-plugin validate --strict ./acme.redactor
-pnpm create-aio-plugin replay --explain ./acme.redactor ./fixtures/request.json gateway.request.afterBodyRead
-pnpm create-aio-plugin pack ./acme.redactor
+pnpm --filter create-aio-plugin exec create-aio-plugin doctor ./acme.redactor
+pnpm --filter create-aio-plugin exec create-aio-plugin validate --strict ./acme.redactor
+pnpm --filter create-aio-plugin exec create-aio-plugin replay --explain ./acme.redactor ./fixtures/request.json gateway.request.afterBodyRead
+pnpm --filter create-aio-plugin exec create-aio-plugin pack ./acme.redactor
 ```
 
 开发工具的诊断对象使用稳定 shape，便于 CLI、GUI 和测试共享：
@@ -131,9 +133,12 @@ module.exports.activate = function(api) {
 | --- | --- |
 | `commands` | `commands.execute` |
 | `providers` | `provider.extensionValues` |
-| provider UI sections / fields / badges / actions | `provider.extensionValues` |
+| provider UI sections / fields | `provider.extensionValues` |
+| UI button fields in host-rendered sections/panels | `commands.execute` |
 | `gatewayHooks` | `gateway.hooks` |
 | `protocolBridges` | `protocol.bridge` |
+
+`providers.card.badges` 和 `providers.card.actions` 当前不是 capability dependency trigger。
 
 ## SDK 边界
 
@@ -156,7 +161,7 @@ const result = {
 - manifest compatibility checks。
 - capability grants。
 - hook context trimming。
-- mutation permission enforcement。
+- mutation envelope enforcement。
 - runtime timeout 和 failure policy handling。
 - package checksum/signature verification。
 
@@ -165,4 +170,4 @@ const result = {
 - `apiVersion` 应与插件 API 主版本保持一致。
 - 插件包版本使用 SemVer。
 - 如果 SDK 只添加向后兼容的类型，插件 API 主版本可以不变。
-- Breaking hook、permission、runtime 或 manifest changes 需要新的插件 API 主版本。
+- Breaking hook、host-mediated label、runtime 或 manifest changes 需要新的插件 API 主版本。

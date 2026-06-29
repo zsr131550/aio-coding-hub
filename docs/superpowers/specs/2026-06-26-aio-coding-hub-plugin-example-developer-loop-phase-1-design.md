@@ -67,9 +67,9 @@
 固定 CLI 入口：
 
 ```bash
-pnpm create-aio-plugin acme.prompt-helper example:prompt-helper
-pnpm create-aio-plugin acme.redactor example:redactor
-pnpm create-aio-plugin acme.response-guard example:response-guard
+pnpm --filter create-aio-plugin exec create-aio-plugin acme.prompt-helper example:prompt-helper
+pnpm --filter create-aio-plugin exec create-aio-plugin acme.redactor example:redactor
+pnpm --filter create-aio-plugin exec create-aio-plugin acme.response-guard example:response-guard
 ```
 
 本阶段不新增 `create-aio-plugin example ...` 子命令，避免同时维护两套入口。现有 `create-aio-plugin <publisher.plugin-name> [template]` 命令继续作为唯一 scaffold 入口。

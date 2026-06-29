@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,12 @@ function withContractDefaults(value) {
       extensionHost: {
         language: "typescript",
         requiresMain: true,
+        mainOutput: "bundled JavaScript or CommonJS file",
+        allowedMainExtensions: [".js", ".cjs"],
+        lifecycle: {
+          hookTimeoutMs: 150,
+          dispose: "host-managed",
+        },
         status: "mainline-contract",
       },
       ...(value.runtimes ?? {}),
@@ -25,11 +31,17 @@ function withContractDefaults(value) {
       runtime: "extensionHost",
       language: "typescript",
       requiresMain: true,
+      entryField: "main",
+      mainOutput: "dist/extension.js",
+      supportedSourceLanguages: ["typescript", "javascript"],
+      lifecycle: {
+        gatewayRegistration: "api.gateway.registerHook",
+      },
       status: "mainline-contract",
       ...(value.extensionHostContract ?? {}),
     },
     capabilities: mergeUnique(
-      ["gateway.hooks", "protocol.bridge", "commands.execute"],
+      ["gateway.hooks", "protocol.bridge", "commands.execute", "provider.extensionValues"],
       value.capabilities
     ),
     contributionPoints: mergeUnique(
@@ -72,6 +84,32 @@ function writePassingDevtools(root) {
   );
 }
 
+function writePassingManifestDocs(root) {
+  writeFileSync(
+    join(root, "docs/plugin-manifest-v1.md"),
+    [
+      "| `gateway.request.afterBodyRead` | phase | mutation | 150 ms | fail-open | host mediated |",
+      "| `gateway.request.beforeSend` | phase | mutation | 150 ms | fail-open | host mediated |",
+      "| `gateway.response.chunk` | phase | mutation | 150 ms | fail-open | host mediated |",
+      "gateway.response.headers",
+      "request.meta.read request.header.read request.header.readSensitive",
+      "request.body.read request.body.write stream.inspect stream.modify network.fetch",
+    ].join("\n")
+  );
+  writeFileSync(
+    join(root, "docs/plugins/reference/hooks.md"),
+    "gateway.request.afterBodyRead gateway.request.beforeSend gateway.response.chunk gateway.response.headers"
+  );
+  writeFileSync(
+    join(root, "docs/plugins/reference/permissions.md"),
+    "request.meta.read request.header.read request.header.readSensitive request.body.read request.body.write stream.inspect stream.modify network.fetch"
+  );
+  writeFileSync(
+    join(root, "docs/plugins/reference/manifest.md"),
+    "declarativeRules wasm native privacyFilter"
+  );
+}
+
 function writePassingScaffold(root) {
   writeFileSync(
     join(root, "packages/plugin-sdk/src/index.ts"),
@@ -104,10 +142,10 @@ function writePassingScaffold(root) {
       "requestBody responseBody streamChunk logMessage headers",
       'export type ExtensionRuntime = { kind: "extensionHost"; language: "typescript" };',
       "export type PluginRuntime = ExtensionRuntime;",
-      'export type PluginCapability = "gateway.hooks" | "protocol.bridge" | "commands.execute";',
+      'export type PluginCapability = "gateway.hooks" | "protocol.bridge" | "commands.execute" | "provider.extensionValues";',
       "export type GatewayHookContribution = { name: string };",
       "export type ProtocolBridgeContribution = { bridgeType: string };",
-      "type PluginContributes = { gatewayHooks?: GatewayHookContribution[]; protocolBridges?: ProtocolBridgeContribution[] };",
+      "type PluginContributes = { commands?: unknown[]; providers?: unknown[]; gatewayHooks?: GatewayHookContribution[]; protocolBridges?: ProtocolBridgeContribution[]; ui?: Record<string, unknown[]> };",
       [
         "export type ActiveGatewayHookName =",
         "'gateway.request.afterBodyRead' |",
@@ -133,6 +171,14 @@ function writePassingScaffold(root) {
       "}",
       "function validateCapabilityDependencies(contributes: PluginContributes, capabilities: PluginCapability[]) {",
       "  const requireCapability = (capability: PluginCapability, reason: string) => capabilities.includes(capability) ? null : `${reason} requires ${capability}`;",
+      "  if ((contributes.commands?.length ?? 0) > 0) {",
+      '    const error = requireCapability("commands.execute", "commands contribution");',
+      "    if (error) return error;",
+      "  }",
+      "  if ((contributes.providers?.length ?? 0) > 0) {",
+      '    const error = requireCapability("provider.extensionValues", "provider contribution");',
+      "    if (error) return error;",
+      "  }",
       "  if ((contributes.gatewayHooks?.length ?? 0) > 0) {",
       '    const error = requireCapability("gateway.hooks", "gatewayHooks contribution");',
       "    if (error) return error;",
@@ -141,8 +187,21 @@ function writePassingScaffold(root) {
       '    const error = requireCapability("protocol.bridge", "protocolBridges contribution");',
       "    if (error) return error;",
       "  }",
+      '  if ((contributes.ui?.["providers.editor.sections"]?.length ?? 0) > 0) {',
+      '    const error = requireCapability("provider.extensionValues", "providers.editor.sections UI contribution");',
+      "    if (error) return error;",
+      "  }",
+      '  if ((contributes.ui?.["providers.editor.fields"]?.length ?? 0) > 0) {',
+      '    const error = requireCapability("provider.extensionValues", "providers.editor.fields UI contribution");',
+      "    if (error) return error;",
+      "  }",
+      "  if (uiHasButtonCommand(contributes.ui)) {",
+      '    const error = requireCapability("commands.execute", "UI command field");',
+      "    if (error) return error;",
+      "  }",
       "  return null;",
       "}",
+      "function uiHasButtonCommand(ui: unknown) { return String(ui).includes('button'); }",
     ].join("\n")
   );
   writeFileSync(
@@ -160,18 +219,60 @@ function writePassingScaffold(root) {
   writeFileSync(
     join(root, "src-tauri/src/gateway/plugins/contract.rs"),
     [
-      "gateway.request.afterBodyRead gateway.request.beforeSend gateway.response.headers",
-      "request.body.read request.body.write network.fetch",
+      [
+        "gateway.request.afterBodyRead",
+        "gateway.request.beforeSend",
+        "gateway.response.chunk",
+        "gateway.response.after",
+        "gateway.error",
+        "log.beforePersist",
+        "gateway.response.headers",
+      ].join(" "),
+      [
+        "request.meta.read",
+        "request.header.read",
+        "request.header.readSensitive",
+        "request.header.write",
+        "request.body.read",
+        "request.body.write",
+        "response.header.read",
+        "response.header.write",
+        "response.body.read",
+        "response.body.write",
+        "stream.inspect",
+        "stream.modify",
+        "log.redact",
+        "network.fetch",
+      ].join(" "),
     ].join("\n")
   );
   writeFileSync(
     join(root, "src-tauri/src/domain/plugins.rs"),
     [
-      "declarativeRules wasm native privacyFilter",
+      "extensionHost declarativeRules wasm native privacyFilter",
       "crate::gateway::plugins::contract::is_active_hook",
       "crate::gateway::plugins::contract::is_reserved_hook",
       "crate::gateway::plugins::contract::is_reserved_permission",
       "crate::gateway::plugins::contract::hook_contract",
+      [
+        "request.meta.read",
+        "request.header.read",
+        "request.header.readSensitive",
+        "request.header.write",
+        "request.body.read",
+        "request.body.write",
+        "response.header.read",
+        "response.header.write",
+        "response.body.read",
+        "response.body.write",
+        "stream.inspect",
+        "stream.modify",
+        "log.redact",
+        "network.fetch",
+      ].join(" "),
+      "providers.editor.sections UI contribution requires provider.extensionValues",
+      "providers.editor.fields UI contribution requires provider.extensionValues",
+      "UI command field requires commands.execute",
       "pub fn is_active_gateway_hook(hook: &str) -> bool {",
       '  hook == "gateway.request.afterBodyRead" || hook == "gateway.request.beforeSend"',
       "}",
@@ -209,7 +310,160 @@ function writePassingScaffold(root) {
     join(root, "packages/plugin-wasm-sdk/src/lib.rs"),
     'request_body #[serde(rename_all = "camelCase")]'
   );
+  writePassingManifestDocs(root);
   writePassingDevtools(root);
+}
+
+const extensionHostDependencyBaselineRoot = makeRoot("extension-host-dependency-baseline");
+writeJson(extensionHostDependencyBaselineRoot, "docs/plugins/plugin-api-v1-contract.json", {
+  apiVersion: "1.0.0",
+  defaultHookTimeoutMs: 150,
+  defaultFailurePolicy: "fail-open",
+  activeHooks: [
+    "gateway.request.afterBodyRead",
+    "gateway.request.beforeSend",
+    "gateway.response.chunk",
+  ],
+  reservedHooks: ["gateway.response.headers"],
+  activeMutationFields: ["requestBody", "streamChunk"],
+  configSchemaTypes: ["object"],
+  activePermissions: [
+    "request.meta.read",
+    "request.header.read",
+    "request.header.readSensitive",
+    "request.body.read",
+    "request.body.write",
+    "stream.inspect",
+    "stream.modify",
+  ],
+  reservedPermissions: ["network.fetch"],
+  capabilityDependencies: {
+    commands: ["commands.execute"],
+    providers: ["provider.extensionValues"],
+    "ui.providers.editor.sections": ["provider.extensionValues"],
+    "ui.providers.editor.fields": ["provider.extensionValues"],
+    "ui.buttonCommandFields": ["commands.execute"],
+    gatewayHooks: ["gateway.hooks"],
+    protocolBridges: ["protocol.bridge"],
+  },
+  hookMatrix: {
+    "gateway.request.afterBodyRead": {
+      phase: "after request body read and before upstream provider send",
+      kind: "request",
+      status: "active",
+      defaultFailurePolicy: "fail-open",
+      timeoutMs: 150,
+      reservedHeaderPolicy: "block-gateway-owned",
+      readPermissions: [
+        "request.meta.read",
+        "request.header.read",
+        "request.header.readSensitive",
+        "request.body.read",
+      ],
+      writePermissions: ["request.body.write"],
+      permissionDependencies: { "request.body.write": ["request.body.read"] },
+      mutationFields: ["requestBody"],
+      contextFields: ["traceId", "request.body"],
+    },
+    "gateway.request.beforeSend": {
+      phase: "after provider resolution and before upstream provider send",
+      kind: "request",
+      status: "active",
+      defaultFailurePolicy: "fail-open",
+      timeoutMs: 150,
+      reservedHeaderPolicy: "block-gateway-owned",
+      readPermissions: ["request.body.read"],
+      writePermissions: ["request.body.write"],
+      permissionDependencies: {},
+      mutationFields: ["requestBody"],
+      contextFields: ["traceId", "request.body"],
+    },
+    "gateway.response.chunk": {
+      phase: "for each bounded streaming response chunk",
+      kind: "stream",
+      status: "active",
+      defaultFailurePolicy: "fail-open",
+      timeoutMs: 150,
+      reservedHeaderPolicy: "block-gateway-owned",
+      readPermissions: ["stream.inspect"],
+      writePermissions: ["stream.modify"],
+      permissionDependencies: { "stream.modify": ["stream.inspect"] },
+      mutationFields: ["streamChunk"],
+      contextFields: ["traceId", "stream.chunk"],
+    },
+  },
+  communityRuntimes: ["extensionHost"],
+  unsupportedLegacyRuntimes: ["declarativeRules", "wasm", "process", "native"],
+  officialRuntimes: ["native:privacyFilter"],
+});
+writePassingScaffold(extensionHostDependencyBaselineRoot);
+
+const extensionHostDependencyBaselineResult = runCheck(extensionHostDependencyBaselineRoot);
+if (extensionHostDependencyBaselineResult.status !== 0) {
+  throw new Error(
+    `expected Extension Host dependency baseline to pass, got status ${extensionHostDependencyBaselineResult.status}\n${extensionHostDependencyBaselineResult.stderr}`
+  );
+}
+
+const capabilityDependencyDriftRoot = makeRoot("capability-dependency-drift");
+writeJson(capabilityDependencyDriftRoot, "docs/plugins/plugin-api-v1-contract.json", {
+  apiVersion: "1.0.0",
+  defaultHookTimeoutMs: 150,
+  defaultFailurePolicy: "fail-open",
+  activeHooks: [
+    "gateway.request.afterBodyRead",
+    "gateway.request.beforeSend",
+    "gateway.response.chunk",
+  ],
+  reservedHooks: ["gateway.response.headers"],
+  activeMutationFields: ["requestBody", "streamChunk"],
+  configSchemaTypes: ["object"],
+  activePermissions: [
+    "request.meta.read",
+    "request.header.read",
+    "request.header.readSensitive",
+    "request.body.read",
+    "request.body.write",
+    "stream.inspect",
+    "stream.modify",
+  ],
+  reservedPermissions: ["network.fetch"],
+  capabilityDependencies: {
+    commands: ["commands.execute"],
+    providers: ["provider.extensionValues"],
+    "ui.providers.editor.sections": ["provider.extensionValues"],
+    "ui.providers.card.badges": ["provider.extensionValues"],
+    "ui.providers.card.actions": ["provider.extensionValues"],
+    gatewayHooks: ["gateway.hooks"],
+    protocolBridges: ["protocol.bridge"],
+  },
+  hookMatrix: extensionHostDependencyBaselineResult.status === 0
+    ? JSON.parse(
+        readFileSync(
+          join(extensionHostDependencyBaselineRoot, "docs/plugins/plugin-api-v1-contract.json"),
+          "utf8"
+        )
+      ).hookMatrix
+    : {},
+  communityRuntimes: ["extensionHost"],
+  unsupportedLegacyRuntimes: ["declarativeRules", "wasm", "process", "native"],
+  officialRuntimes: ["native:privacyFilter"],
+});
+writePassingScaffold(capabilityDependencyDriftRoot);
+
+const capabilityDependencyDriftResult = runCheck(capabilityDependencyDriftRoot);
+if (
+  capabilityDependencyDriftResult.status === 0 ||
+  !capabilityDependencyDriftResult.stderr.includes(
+    "capabilityDependencies.ui.providers.editor.fields"
+  ) ||
+  !capabilityDependencyDriftResult.stderr.includes("capabilityDependencies.ui.buttonCommandFields") ||
+  !capabilityDependencyDriftResult.stderr.includes("ui.providers.card.badges") ||
+  !capabilityDependencyDriftResult.stderr.includes("ui.providers.card.actions")
+) {
+  throw new Error(
+    `expected capability dependency drift failure, got status ${capabilityDependencyDriftResult.status}\n${capabilityDependencyDriftResult.stderr}`
+  );
 }
 
 const reservedHookRoot = makeRoot("reserved-hook");
