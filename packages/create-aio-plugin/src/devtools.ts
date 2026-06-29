@@ -66,7 +66,7 @@ export type PublishCheckResult = {
   manifestId: string;
   name: string;
   version: string;
-  runtime: PluginManifest["runtime"]["kind"];
+  runtime: string;
   capabilities: string[];
   hooks: string[];
   hostCompatibility: PluginManifest["hostCompatibility"];
@@ -76,6 +76,8 @@ export type PublishCheckResult = {
 type DoctorOptions = {
   strict?: boolean;
 };
+
+type NormalizedPackagePathResult = { ok: true; path: string } | { ok: false; message: string };
 
 const SUPPORTED_TEMPLATES: readonly ScaffoldTemplate[] = [
   "command",
@@ -87,7 +89,8 @@ const SUPPORTED_TEMPLATES: readonly ScaffoldTemplate[] = [
 const UNSUPPORTED_PUBLIC_TEMPLATES = new Set(["wasm", "process", "native"]);
 const USAGE = [
   "Usage:",
-  "  create-aio-plugin <publisher.plugin-name> [command|example:prompt-helper|example:redactor|example:response-guard]",
+  "  create-aio-plugin <publisher.plugin-name> [command|rule|example:prompt-helper|example:redactor|example:response-guard]",
+  "  rule is a legacy alias for command and generates an Extension Host command template.",
   "  create-aio-plugin doctor <plugin-dir>",
   "  create-aio-plugin validate [--strict] <plugin-dir>",
   "  create-aio-plugin replay [--explain] <plugin-dir> <fixture.json> <hook>",
@@ -239,7 +242,7 @@ export function runCreateAioPluginCli(args: string[], cwd: string, io: CliIo = c
   const templateArg = firstArg ?? "command";
   if (UNSUPPORTED_PUBLIC_TEMPLATES.has(templateArg)) {
     io.error(
-      `PLUGIN_TEMPLATE_UNSUPPORTED: ${templateArg} templates are not supported. Use the Extension Host command template or an Extension Host example.`
+      `PLUGIN_TEMPLATE_UNSUPPORTED: ${templateArg} templates are not supported. Use command, the legacy rule alias, or an Extension Host example.`
     );
     return 1;
   }
@@ -321,7 +324,10 @@ export function doctorPluginDirectory(root: string, options: DoctorOptions = {})
   return doctorPluginFiles(readPluginDirectory(root), options);
 }
 
-export function doctorPluginFiles(files: ScaffoldFiles, _options: DoctorOptions = {}): DoctorResult {
+export function doctorPluginFiles(
+  files: ScaffoldFiles,
+  _options: DoctorOptions = {}
+): DoctorResult {
   const diagnostics: PluginDiagnostic[] = [];
   const manifestText = files["plugin.json"];
 
@@ -379,12 +385,21 @@ export function doctorPluginFiles(files: ScaffoldFiles, _options: DoctorOptions 
   }
 
   if (isExtensionHostManifest(manifest) && typeof manifest.main === "string") {
-    if (!hasPluginFile(files, manifest.main)) {
+    const mainPath = normalizeExtensionMainPath(manifest.main);
+    if (!mainPath.ok) {
+      diagnostics.push({
+        severity: "error",
+        code: "PLUGIN_INVALID_MAIN",
+        message: mainPath.message,
+        path: "plugin.json#/main",
+        hint: 'Use a relative JavaScript entry point such as "dist/extension.js".',
+      });
+    } else if (!hasPluginFile(files, mainPath.path)) {
       diagnostics.push({
         severity: "error",
         code: "PLUGIN_MAIN_FILE_MISSING",
-        message: `extension host main file is missing: ${manifest.main}`,
-        path: manifest.main,
+        message: `extension host main file is missing: ${mainPath.path}`,
+        path: mainPath.path,
         hint: "Build or include dist/extension.js before packing the plugin.",
       });
     }
@@ -501,7 +516,10 @@ export function publishCheckPluginBytes(
 ): PublishCheckResult {
   const manifest = parseManifestText(input.manifest);
   const validation = safelyValidateManifest(manifest);
-  const entryNames = storedZipEntryNames(bytes);
+  const zipEntries = storedZipEntryNames(bytes);
+  const entryNames = zipEntries.names;
+  const mainPath =
+    typeof manifest.main === "string" ? normalizeExtensionMainPath(manifest.main) : null;
   const checksum = sha256(bytes);
   const checksumVerified = checksum === input.checksum;
   const signatureVerified =
@@ -510,10 +528,11 @@ export function publishCheckPluginBytes(
       : false;
   const unsigned = !input.signature || !input.publicKey;
   const hasPackageShape =
+    zipEntries.ok &&
     entryNames.has("plugin.json") &&
-    typeof manifest.main === "string" &&
-    manifest.main.length > 0 &&
-    entryNames.has(manifest.main);
+    mainPath != null &&
+    mainPath.ok &&
+    entryNames.has(mainPath.path);
 
   return {
     ok: validation.ok && hasPackageShape && checksumVerified && (unsigned || signatureVerified),
@@ -525,7 +544,7 @@ export function publishCheckPluginBytes(
     manifestId: typeof manifest.id === "string" ? manifest.id : "",
     name: typeof manifest.name === "string" ? manifest.name : "",
     version: typeof manifest.version === "string" ? manifest.version : "",
-    runtime: "extensionHost",
+    runtime: manifestRuntimeMetadataKind(manifest),
     capabilities: Array.isArray(manifest.capabilities) ? [...manifest.capabilities] : [],
     hooks: manifest.contributes?.gatewayHooks?.map((hook) => hook.name) ?? [],
     hostCompatibility: manifest.hostCompatibility ?? { app: "", pluginApi: "" },
@@ -555,7 +574,80 @@ function hasErrorDiagnostics(diagnostics: readonly PluginDiagnostic[]): boolean 
 }
 
 function hasPluginFile(files: ScaffoldFiles, path: string): boolean {
-  return Object.prototype.hasOwnProperty.call(files, path);
+  for (const filePath of Object.keys(files)) {
+    const normalized = normalizePackagePath(filePath, "plugin package entry path");
+    if (normalized.ok && normalized.path === path) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeExtensionMainPath(rawPath: string): NormalizedPackagePathResult {
+  const normalized = normalizePackagePath(rawPath);
+  if (!normalized.ok) return normalized;
+  if (!/\.c?js$/.test(normalized.path)) {
+    return {
+      ok: false,
+      message: "extensionHost main must point to a .js or .cjs file inside the package",
+    };
+  }
+  return normalized;
+}
+
+function normalizePackagePath(
+  rawPath: string,
+  label = "extensionHost main"
+): NormalizedPackagePathResult {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    return {
+      ok: false,
+      message:
+        label === "extensionHost main"
+          ? "extensionHost runtime requires main"
+          : `${label} is required`,
+    };
+  }
+  if (hasWindowsDrivePrefix(trimmed) || trimmed.startsWith("/") || trimmed.startsWith("\\")) {
+    return {
+      ok: false,
+      message: `${label} must be a relative path inside the package`,
+    };
+  }
+  if (trimmed.includes("//") || trimmed.includes("\\\\")) {
+    return {
+      ok: false,
+      message: `${label} must not contain repeated path separators`,
+    };
+  }
+
+  const normalized = trimmed.replace(/\\/g, "/");
+  const segments: string[] = [];
+  for (const segment of normalized.split("/")) {
+    if (segment === ".") continue;
+    if (segment === "" || segment === "..") {
+      return {
+        ok: false,
+        message: `${label} must be a relative path inside the package`,
+      };
+    }
+    segments.push(segment);
+  }
+  if (segments.length === 0) {
+    return {
+      ok: false,
+      message:
+        label === "extensionHost main"
+          ? "extensionHost runtime requires main"
+          : `${label} is required`,
+    };
+  }
+  return { ok: true, path: segments.join("/") };
+}
+
+function hasWindowsDrivePrefix(value: string): boolean {
+  return /^[A-Za-z]:/.test(value);
 }
 
 function unsupportedLegacyRuntimeDiagnostic(
@@ -571,7 +663,7 @@ function unsupportedLegacyRuntimeDiagnostic(
     code: "PLUGIN_UNSUPPORTED_LEGACY_RUNTIME",
     message: `runtime ${kind} is no longer supported for community plugins; use Extension Host with main: "dist/extension.js".`,
     path: "plugin.json#/runtime",
-    hint: 'Set runtime to { "kind": "extensionHost", "language": "typescript" } and move hook behavior into contributes.gatewayHooks.',
+    hint: 'Set runtime to { "kind": "extensionHost", "language": "typescript" }, add capabilities: ["gateway.hooks"], and move hook behavior into contributes.gatewayHooks.',
   };
 }
 
@@ -582,6 +674,11 @@ function manifestRuntimeKind(
   return runtime?.kind === "extensionHost" && runtime.language === "typescript"
     ? "extensionHost"
     : null;
+}
+
+function manifestRuntimeMetadataKind(manifest: Partial<PluginManifest>): string {
+  const runtime = asRecord(manifest.runtime);
+  return typeof runtime?.kind === "string" && runtime.kind.trim() !== "" ? runtime.kind : "unknown";
 }
 
 function isExtensionHostManifest(manifest: Partial<PluginManifest>): manifest is PluginManifest {
@@ -694,8 +791,9 @@ function sha256(bytes: Uint8Array): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-function storedZipEntryNames(bytes: Uint8Array): Set<string> {
+function storedZipEntryNames(bytes: Uint8Array): { names: Set<string>; ok: boolean } {
   const names = new Set<string>();
+  let ok = true;
   let offset = 0;
   while (offset + 30 <= bytes.length) {
     const signature = readU32(bytes, offset);
@@ -705,10 +803,18 @@ function storedZipEntryNames(bytes: Uint8Array): Set<string> {
     const extraLength = readU16(bytes, offset + 28);
     const nameStart = offset + 30;
     const dataStart = nameStart + nameLength + extraLength;
-    names.add(new TextDecoder().decode(bytes.subarray(nameStart, nameStart + nameLength)));
+    const normalizedName = normalizePackagePath(
+      new TextDecoder().decode(bytes.subarray(nameStart, nameStart + nameLength)),
+      "plugin package entry path"
+    );
+    if (normalizedName.ok) {
+      names.add(normalizedName.path);
+    } else {
+      ok = false;
+    }
     offset = dataStart + compressedSize;
   }
-  return names;
+  return { names, ok };
 }
 
 function createStoredZipBytes(entries: readonly (readonly [string, Uint8Array])[]): Uint8Array {
@@ -717,7 +823,11 @@ function createStoredZipBytes(entries: readonly (readonly [string, Uint8Array])[
   let offset = 0;
 
   for (const [path, data] of entries) {
-    const name = new TextEncoder().encode(path.replace(/\\/g, "/"));
+    const normalizedPath = normalizePackagePath(path, "plugin package entry path");
+    if (!normalizedPath.ok) {
+      throw new Error(`PLUGIN_INVALID_PACKAGE_PATH: ${normalizedPath.message}`);
+    }
+    const name = new TextEncoder().encode(normalizedPath.path);
     const crc = crc32(data);
     const localHeader = concatBytes([
       u32(0x04034b50),

@@ -4,7 +4,39 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 function writeJson(root, path, value) {
-  writeFileSync(join(root, path), JSON.stringify(value, null, 2));
+  const output =
+    path === "docs/plugins/plugin-api-v1-contract.json" ? withContractDefaults(value) : value;
+  writeFileSync(join(root, path), JSON.stringify(output, null, 2));
+}
+
+function withContractDefaults(value) {
+  const mergeUnique = (left, right) => [...new Set([...(left ?? []), ...(right ?? [])])];
+  return {
+    ...value,
+    runtimes: {
+      extensionHost: {
+        language: "typescript",
+        requiresMain: true,
+        status: "mainline-contract",
+      },
+      ...(value.runtimes ?? {}),
+    },
+    extensionHostContract: {
+      runtime: "extensionHost",
+      language: "typescript",
+      requiresMain: true,
+      status: "mainline-contract",
+      ...(value.extensionHostContract ?? {}),
+    },
+    capabilities: mergeUnique(
+      ["gateway.hooks", "protocol.bridge", "commands.execute"],
+      value.capabilities
+    ),
+    contributionPoints: mergeUnique(
+      ["gatewayHooks", "protocolBridges", "commands"],
+      value.contributionPoints
+    ),
+  };
 }
 
 function makeRoot(name) {
@@ -32,27 +64,10 @@ function writePassingDevtools(root) {
   writeFileSync(
     join(root, "packages/create-aio-plugin/src/devtools.ts"),
     [
-      [
-        "gateway.request.afterBodyRead",
-        "gateway.request.beforeSend",
-        "gateway.response.chunk",
-        "gateway.response.after",
-        "gateway.error",
-        "log.beforePersist",
-      ].join(" "),
-      [
-        "request.body.read",
-        "request.body.write",
-        "response.body.read",
-        "response.body.write",
-        "stream.inspect",
-        "stream.modify",
-        "log.redact",
-      ].join(" "),
-      "requestBody responseBody streamChunk logMessage headers",
-      "declarativeRules wasm",
-      "PLUGIN_RULE_PERMISSION_MISMATCH PLUGIN_REPLAY_UNSUPPORTED_RUNTIME PLUGIN_WASM_POLICY_GATED",
-      "validatePluginFilesStrict replayHookExplain doctorPluginFiles",
+      "doctorPluginFiles validatePluginFilesStrict packPluginBytes publishCheckPluginBytes",
+      "normalizeExtensionMainPath storedZipEntryNames",
+      "dist/extension.js gateway.hooks contributes.gatewayHooks",
+      "PLUGIN_INVALID_MAIN PLUGIN_UNSUPPORTED_LEGACY_RUNTIME PLUGIN_REPLAY_UNSUPPORTED",
     ].join("\n")
   );
 }
@@ -87,7 +102,12 @@ function writePassingScaffold(root) {
         "network.fetch",
       ].join(" "),
       "requestBody responseBody streamChunk logMessage headers",
-      "declarativeRules wasm",
+      'export type ExtensionRuntime = { kind: "extensionHost"; language: "typescript" };',
+      "export type PluginRuntime = ExtensionRuntime;",
+      'export type PluginCapability = "gateway.hooks" | "protocol.bridge" | "commands.execute";',
+      "export type GatewayHookContribution = { name: string };",
+      "export type ProtocolBridgeContribution = { bridgeType: string };",
+      "type PluginContributes = { gatewayHooks?: GatewayHookContribution[]; protocolBridges?: ProtocolBridgeContribution[] };",
       [
         "export type ActiveGatewayHookName =",
         "'gateway.request.afterBodyRead' |",
@@ -111,13 +131,30 @@ function writePassingScaffold(root) {
       "  if (hooks.has('gateway.response.chunk') && set.has('stream.modify') && !set.has('stream.inspect')) return 'stream.modify requires stream.inspect';",
       "  return null;",
       "}",
+      "function validateCapabilityDependencies(contributes: PluginContributes, capabilities: PluginCapability[]) {",
+      "  const requireCapability = (capability: PluginCapability, reason: string) => capabilities.includes(capability) ? null : `${reason} requires ${capability}`;",
+      "  if ((contributes.gatewayHooks?.length ?? 0) > 0) {",
+      '    const error = requireCapability("gateway.hooks", "gatewayHooks contribution");',
+      "    if (error) return error;",
+      "  }",
+      "  if ((contributes.protocolBridges?.length ?? 0) > 0) {",
+      '    const error = requireCapability("protocol.bridge", "protocolBridges contribution");',
+      "    if (error) return error;",
+      "  }",
+      "  return null;",
+      "}",
     ].join("\n")
   );
   writeFileSync(
     join(root, "packages/create-aio-plugin/src/scaffold.ts"),
     [
-      "declarativeRules wasm gateway.request.afterBodyRead gateway.request.beforeSend",
-      "request.body.read request.body.write",
+      'main: "dist/extension.js"',
+      'runtime: { kind: "extensionHost", language: "typescript" }',
+      'hostCompatibility: { app: ">=0.60.0 <1.0.0", pluginApi: "^1.0.0" }',
+      'capabilities: ["gateway.hooks"]',
+      "contributes gatewayHooks:",
+      "api.gateway.registerHook",
+      'capabilities = ["commands.execute"]',
     ].join("\n")
   );
   writeFileSync(
@@ -399,14 +436,14 @@ writeJson(missingDevtoolsMetadataRoot, "docs/plugins/plugin-api-v1-contract.json
 writePassingScaffold(missingDevtoolsMetadataRoot);
 writeFileSync(
   join(missingDevtoolsMetadataRoot, "packages/create-aio-plugin/src/devtools.ts"),
-  "declarativeRules validatePluginFilesStrict replayHookExplain doctorPluginFiles"
+  "validatePluginFilesStrict doctorPluginFiles"
 );
 
 const missingDevtoolsMetadataResult = runCheck(missingDevtoolsMetadataRoot);
 if (
   missingDevtoolsMetadataResult.status === 0 ||
   !missingDevtoolsMetadataResult.stderr.includes("packages/create-aio-plugin/src/devtools.ts") ||
-  !missingDevtoolsMetadataResult.stderr.includes("requestBody")
+  !missingDevtoolsMetadataResult.stderr.includes("PLUGIN_INVALID_MAIN")
 ) {
   throw new Error(
     `expected devtools metadata failure, got status ${missingDevtoolsMetadataResult.status}\n${missingDevtoolsMetadataResult.stderr}`
@@ -483,12 +520,9 @@ writeFileSync(
 writeFileSync(
   join(partialDevtoolsMetadataRoot, "packages/create-aio-plugin/src/devtools.ts"),
   [
-    "gateway.request.afterBodyRead",
-    "request.body.read",
-    "requestBody",
-    "declarativeRules wasm",
-    "PLUGIN_RULE_PERMISSION_MISMATCH PLUGIN_REPLAY_UNSUPPORTED_RUNTIME PLUGIN_WASM_POLICY_GATED",
-    "validatePluginFilesStrict replayHookExplain doctorPluginFiles",
+    "doctorPluginFiles validatePluginFilesStrict",
+    "dist/extension.js gateway.hooks contributes.gatewayHooks",
+    "PLUGIN_UNSUPPORTED_LEGACY_RUNTIME PLUGIN_REPLAY_UNSUPPORTED",
   ].join("\n")
 );
 
@@ -496,10 +530,10 @@ const partialDevtoolsMetadataResult = runCheck(partialDevtoolsMetadataRoot);
 if (
   partialDevtoolsMetadataResult.status === 0 ||
   !partialDevtoolsMetadataResult.stderr.includes(
-    "packages/create-aio-plugin/src/devtools.ts is missing developer tool active permission request.meta.read"
+    "packages/create-aio-plugin/src/devtools.ts is missing Extension Host developer tool package shape packPluginBytes"
   ) ||
   !partialDevtoolsMetadataResult.stderr.includes(
-    "packages/create-aio-plugin/src/devtools.ts is missing developer tool mutation field headers"
+    "packages/create-aio-plugin/src/devtools.ts is missing Extension Host developer tool package shape PLUGIN_INVALID_MAIN"
   )
 ) {
   throw new Error(
@@ -579,11 +613,13 @@ const globalPermissionDependencyResult = runCheck(globalPermissionDependencyRoot
 if (
   globalPermissionDependencyResult.status === 0 ||
   !globalPermissionDependencyResult.stderr.includes(
-    "packages/plugin-sdk/src/index.ts validatePermissionSet must accept PluginManifest"
+    "packages/plugin-sdk/src/index.ts is missing Extension Host SDK contract export type ExtensionRuntime"
   ) ||
-  !globalPermissionDependencyResult.stderr.includes("gateway.request.afterBodyRead")
+  !globalPermissionDependencyResult.stderr.includes(
+    "packages/plugin-sdk/src/index.ts is missing validateCapabilityDependencies body"
+  )
 ) {
   throw new Error(
-    `expected hook-aware permission dependency failure, got status ${globalPermissionDependencyResult.status}\n${globalPermissionDependencyResult.stderr}`
+    `expected capability dependency failure, got status ${globalPermissionDependencyResult.status}\n${globalPermissionDependencyResult.stderr}`
   );
 }

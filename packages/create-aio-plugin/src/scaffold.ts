@@ -229,7 +229,7 @@ function baseManifest(id: string, name: string, description: string): PluginMani
     main: "dist/extension.js",
     runtime: { kind: "extensionHost", language: "typescript" },
     capabilities: [],
-    hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+    hostCompatibility: { app: ">=0.60.0 <1.0.0", pluginApi: "^1.0.0" },
     description,
   };
 }

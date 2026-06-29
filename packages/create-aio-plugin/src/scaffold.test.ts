@@ -48,7 +48,7 @@ describe("create-aio-plugin scaffold", () => {
         ],
       },
       capabilities: ["commands.execute"],
-      hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+      hostCompatibility: { app: ">=0.60.0 <1.0.0", pluginApi: "^1.0.0" },
     });
     expect(manifest).not.toHaveProperty("hooks");
     expect(manifest).not.toHaveProperty("permissions");
@@ -75,6 +75,20 @@ describe("create-aio-plugin scaffold", () => {
       'api.commands.registerCommand("acme.legacy.hello"'
     );
     expectNoGeneratedLegacyFields(files);
+  });
+
+  it("documents the legacy rule template as a command alias in CLI usage", () => {
+    const output: string[] = [];
+
+    expect(
+      runCreateAioPluginCli([], process.cwd(), {
+        log: (line) => output.push(line),
+        error: (line) => output.push(line),
+      })
+    ).toBe(1);
+
+    expect(output[0]).toContain("rule");
+    expect(output[0]).toContain("legacy alias for command");
   });
 
   it("rejects wasm as a public CLI template", () => {
@@ -196,6 +210,33 @@ describe("create-aio-plugin scaffold", () => {
     });
   });
 
+  it("publish-check reports runtime metadata from invalid manifests", () => {
+    const files = createPluginScaffold({
+      id: "acme.metadata",
+      name: "Metadata",
+      template: "command",
+    });
+    const packed = packPlugin(files);
+
+    const wasmRuntime = publishCheckPluginBytes(packed.bytes, {
+      checksum: packed.checksum,
+      manifest: JSON.stringify({
+        ...validExtensionManifest(),
+        runtime: { kind: "wasm", abiVersion: "1.0.0" },
+      }),
+    });
+    const missingRuntime = publishCheckPluginBytes(packed.bytes, {
+      checksum: packed.checksum,
+      manifest: JSON.stringify({
+        ...validExtensionManifest(),
+        runtime: undefined,
+      }),
+    });
+
+    expect(wasmRuntime).toMatchObject({ ok: false, runtime: "wasm" });
+    expect(missingRuntime).toMatchObject({ ok: false, runtime: "unknown" });
+  });
+
   it("signs and verifies package bytes through the CLI helper", () => {
     const keyPair = generateSigningKeyPair();
     const signedOutput: string[] = [];
@@ -305,6 +346,57 @@ describe("create-aio-plugin scaffold", () => {
 
     expect(() => packPlugin(files)).toThrow(/PLUGIN_MAIN_FILE_MISSING/);
   });
+
+  it("normalizes dot-prefixed extension host main paths for doctor, pack, and publish-check", () => {
+    const files = createPluginScaffold({
+      id: "acme.normalized",
+      name: "Normalized",
+      template: "command",
+    });
+    const manifest = readManifest(files);
+    manifest.main = "./dist/extension.js";
+    writeManifest(files, manifest);
+
+    expect(doctorPluginFiles(files).ok).toBe(true);
+
+    const packed = packPlugin(files);
+    const result = publishCheckPluginBytes(packed.bytes, {
+      checksum: packed.checksum,
+      manifest: files["plugin.json"] ?? "",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      manifestId: "acme.normalized",
+      runtime: "extensionHost",
+    });
+  });
+
+  it.each(["dist/extension.txt", "../extension.js"] as const)(
+    "rejects unsafe or non-JavaScript extension host main path %s",
+    (main) => {
+      const files = createPluginScaffold({
+        id: "acme.invalid-main",
+        name: "Invalid Main",
+        template: "command",
+      });
+      const manifest = readManifest(files);
+      manifest.main = main;
+      writeManifest(files, manifest);
+      files[main] = "module.exports.activate = function() {};\n";
+
+      const doctorResult = doctorPluginFiles(files);
+
+      expect(doctorResult.ok).toBe(false);
+      expect(doctorResult.diagnostics).toContainEqual(
+        expect.objectContaining({
+          severity: "error",
+          code: "PLUGIN_INVALID_MAIN",
+        })
+      );
+      expect(() => packPlugin(files)).toThrow(/PLUGIN_INVALID_MAIN/);
+    }
+  );
 
   it("validate command reads plugin.json from a real plugin directory", () => {
     const root = mkdtempSync(join(tmpdir(), "aio-plugin-"));
@@ -555,7 +647,7 @@ describe("create-aio-plugin example templates", () => {
         main: "dist/extension.js",
         runtime: { kind: "extensionHost", language: "typescript" },
         capabilities: ["gateway.hooks"],
-        hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+        hostCompatibility: { app: ">=0.60.0 <1.0.0", pluginApi: "^1.0.0" },
       });
       expect(manifest.contributes.gatewayHooks.map((hook: { name: string }) => hook.name)).toEqual(
         hooks
@@ -687,6 +779,10 @@ function readManifest(files: Record<string, string>): Record<string, any> {
   return JSON.parse(files["plugin.json"] ?? "{}") as Record<string, any>;
 }
 
+function writeManifest(files: Record<string, string>, manifest: Record<string, any>): void {
+  files["plugin.json"] = `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
 function writeScaffold(root: string, files: Record<string, string>): void {
   for (const [path, content] of Object.entries(files)) {
     const fullPath = join(root, path);
@@ -705,7 +801,7 @@ function validExtensionManifest() {
     runtime: { kind: "extensionHost", language: "typescript" },
     activationEvents: ["onStartup"],
     capabilities: [],
-    hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+    hostCompatibility: { app: ">=0.60.0 <1.0.0", pluginApi: "^1.0.0" },
   };
 }
 

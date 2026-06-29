@@ -83,67 +83,6 @@ function functionBody(text, functionName) {
   return null;
 }
 
-function dependencyEntries(contract, matrix) {
-  const entries = [];
-  for (const hook of contract.activeHooks ?? []) {
-    const hookContract = matrix?.[hook];
-    if (hookContract == null || typeof hookContract !== "object" || Array.isArray(hookContract)) {
-      continue;
-    }
-    const dependencies = hookContract.permissionDependencies;
-    if (dependencies == null || typeof dependencies !== "object" || Array.isArray(dependencies)) {
-      continue;
-    }
-    for (const [permission, requiredPermissions] of Object.entries(dependencies)) {
-      if (!Array.isArray(requiredPermissions)) continue;
-      for (const requiredPermission of requiredPermissions) {
-        entries.push({ hook, permission, requiredPermission });
-      }
-    }
-  }
-  return entries;
-}
-
-function requireSdkPermissionDependencyContract(path, text, contract, matrix) {
-  if (!/validatePermissionSet\s*\(\s*manifest\s*:\s*PluginManifest\b/.test(text)) {
-    failures.push(`${path} validatePermissionSet must accept PluginManifest`);
-  }
-  if (!/validatePermissionSet\s*\(\s*manifest\s*\)/.test(text)) {
-    failures.push(`${path} validateManifest must pass manifest to validatePermissionSet`);
-  }
-
-  const body = functionBody(text, "validatePermissionSet");
-  if (body == null) {
-    failures.push(`${path} is missing validatePermissionSet body`);
-    return;
-  }
-  requireIncludes(
-    path,
-    body,
-    ["manifest.permissions", "manifest.hooks"],
-    "hook-aware permission validation"
-  );
-
-  for (const { hook, permission, requiredPermission } of dependencyEntries(contract, matrix)) {
-    const hookGuard = new RegExp(`hooks\\.has\\(\\s*["']${escapeRegex(hook)}["']\\s*\\)`, "g");
-    let guarded = false;
-    let match = hookGuard.exec(body);
-    while (match) {
-      const window = body.slice(match.index, match.index + 700);
-      if (window.includes(permission) && window.includes(requiredPermission)) {
-        guarded = true;
-        break;
-      }
-      match = hookGuard.exec(body);
-    }
-    if (!guarded) {
-      failures.push(
-        `${path} validatePermissionSet must guard ${permission} requires ${requiredPermission} behind ${hook}`
-      );
-    }
-  }
-}
-
 function requireObject(path, value) {
   if (value == null || typeof value !== "object" || Array.isArray(value)) {
     failures.push(`${path} must be an object`);
@@ -176,22 +115,58 @@ function requireOneOf(path, value, allowed) {
   }
 }
 
-function runtimeTokens(contract) {
-  return [...contract.communityRuntimes, ...contract.policyGatedRuntimes];
-}
-
 function officialRuntimeTokens(contract) {
   return contract.officialRuntimes.flatMap((runtime) => runtime.split(":"));
-}
-
-function snakeCase(value) {
-  return value.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`);
 }
 
 const contractPath = "docs/plugins/plugin-api-v1-contract.json";
 const contract = readJson(contractPath);
 
 if (contract) {
+  const runtimes = requireObject(`${contractPath}.runtimes`, contract.runtimes) ?? {};
+  const extensionHostRuntime = requireObject(
+    `${contractPath}.runtimes.extensionHost`,
+    runtimes.extensionHost
+  );
+  if (extensionHostRuntime) {
+    if (extensionHostRuntime.language !== "typescript") {
+      failures.push(`${contractPath}.runtimes.extensionHost.language must be typescript`);
+    }
+    if (extensionHostRuntime.requiresMain !== true) {
+      failures.push(`${contractPath}.runtimes.extensionHost.requiresMain must be true`);
+    }
+  }
+  const extensionHostContract = requireObject(
+    `${contractPath}.extensionHostContract`,
+    contract.extensionHostContract
+  );
+  if (extensionHostContract) {
+    if (extensionHostContract.runtime !== "extensionHost") {
+      failures.push(`${contractPath}.extensionHostContract.runtime must be extensionHost`);
+    }
+    if (extensionHostContract.language !== "typescript") {
+      failures.push(`${contractPath}.extensionHostContract.language must be typescript`);
+    }
+    if (extensionHostContract.requiresMain !== true) {
+      failures.push(`${contractPath}.extensionHostContract.requiresMain must be true`);
+    }
+  }
+  const capabilities = requireArray(`${contractPath}.capabilities`, contract.capabilities);
+  for (const capability of ["gateway.hooks", "protocol.bridge", "commands.execute"]) {
+    if (!capabilities.includes(capability)) {
+      failures.push(`${contractPath}.capabilities must include ${capability}`);
+    }
+  }
+  const contributionPoints = requireArray(
+    `${contractPath}.contributionPoints`,
+    contract.contributionPoints
+  );
+  for (const contribution of ["gatewayHooks", "protocolBridges", "commands"]) {
+    if (!contributionPoints.includes(contribution)) {
+      failures.push(`${contractPath}.contributionPoints must include ${contribution}`);
+    }
+  }
+
   const matrix = requireObject(`${contractPath}.hookMatrix`, contract.hookMatrix) ?? {};
   for (const hook of contract.activeHooks ?? []) {
     const entry = requireObject(`hookMatrix.${hook}`, matrix[hook]);
@@ -248,86 +223,80 @@ if (contract) {
   }
 
   const sdk = readText("packages/plugin-sdk/src/index.ts");
-  requireIncludes("packages/plugin-sdk/src/index.ts", sdk, contract.activeHooks, "active hook");
-  requireIncludes("packages/plugin-sdk/src/index.ts", sdk, contract.reservedHooks, "reserved hook");
   requireIncludes(
     "packages/plugin-sdk/src/index.ts",
     sdk,
-    contract.activePermissions,
-    "active permission"
+    [
+      "export type ExtensionRuntime",
+      'kind: "extensionHost"',
+      "export type PluginRuntime = ExtensionRuntime",
+      "export type PluginCapability",
+      '"gateway.hooks"',
+      '"protocol.bridge"',
+      "export type GatewayHookContribution",
+      "export type ProtocolBridgeContribution",
+      "gatewayHooks?: GatewayHookContribution[]",
+      "protocolBridges?: ProtocolBridgeContribution[]",
+      "validateCapabilityDependencies",
+    ],
+    "Extension Host SDK contract"
   );
-  requireIncludes(
-    "packages/plugin-sdk/src/index.ts",
-    sdk,
-    contract.reservedPermissions,
-    "reserved permission"
-  );
-  requireIncludes("packages/plugin-sdk/src/index.ts", sdk, runtimeTokens(contract), "runtime");
-  requireIncludes(
-    "packages/plugin-sdk/src/index.ts",
-    sdk,
-    contract.activeMutationFields ?? [],
-    "active mutation field"
-  );
-  requireSdkPermissionDependencyContract("packages/plugin-sdk/src/index.ts", sdk, contract, matrix);
+  const capabilityDependencyBody = functionBody(sdk, "validateCapabilityDependencies");
+  if (capabilityDependencyBody == null) {
+    failures.push(
+      "packages/plugin-sdk/src/index.ts is missing validateCapabilityDependencies body"
+    );
+  } else {
+    requireIncludes(
+      "packages/plugin-sdk/src/index.ts",
+      capabilityDependencyBody,
+      [
+        "requireCapability",
+        '"gateway.hooks"',
+        "gatewayHooks contribution",
+        '"protocol.bridge"',
+        "protocolBridges contribution",
+      ],
+      "capability dependency validation"
+    );
+  }
 
   const scaffold = readText("packages/create-aio-plugin/src/scaffold.ts");
   requireIncludes(
     "packages/create-aio-plugin/src/scaffold.ts",
     scaffold,
-    contract.communityRuntimes,
-    "community runtime"
-  );
-  requireIncludes(
-    "packages/create-aio-plugin/src/scaffold.ts",
-    scaffold,
-    contract.policyGatedRuntimes,
-    "policy-gated runtime"
-  );
-  requireIncludes(
-    "packages/create-aio-plugin/src/scaffold.ts",
-    scaffold,
-    ["gateway.request.afterBodyRead", "request.body.read", "request.body.write"],
-    "default scaffold contract token"
+    [
+      'main: "dist/extension.js"',
+      'runtime: { kind: "extensionHost", language: "typescript" }',
+      'hostCompatibility: { app: ">=0.60.0 <1.0.0", pluginApi: "^1.0.0" }',
+      'capabilities: ["gateway.hooks"]',
+      "contributes",
+      "gatewayHooks:",
+      "api.gateway.registerHook",
+      'capabilities = ["commands.execute"]',
+    ],
+    "Extension Host scaffold package shape"
   );
 
   const devtools = readText("packages/create-aio-plugin/src/devtools.ts");
   requireIncludes(
     "packages/create-aio-plugin/src/devtools.ts",
     devtools,
-    contract.activeHooks,
-    "developer tool active hook"
-  );
-  requireIncludes(
-    "packages/create-aio-plugin/src/devtools.ts",
-    devtools,
-    contract.activePermissions,
-    "developer tool active permission"
-  );
-  requireIncludes(
-    "packages/create-aio-plugin/src/devtools.ts",
-    devtools,
-    runtimeTokens(contract),
-    "developer tool runtime"
-  );
-  requireIncludes(
-    "packages/create-aio-plugin/src/devtools.ts",
-    devtools,
-    contract.activeMutationFields ?? [],
-    "developer tool mutation field"
-  );
-  requireIncludes(
-    "packages/create-aio-plugin/src/devtools.ts",
-    devtools,
     [
       "doctorPluginFiles",
       "validatePluginFilesStrict",
-      "replayHookExplain",
-      "PLUGIN_RULE_PERMISSION_MISMATCH",
-      "PLUGIN_REPLAY_UNSUPPORTED_RUNTIME",
-      "PLUGIN_WASM_POLICY_GATED",
+      "packPluginBytes",
+      "publishCheckPluginBytes",
+      "normalizeExtensionMainPath",
+      "storedZipEntryNames",
+      "dist/extension.js",
+      "gateway.hooks",
+      "contributes.gatewayHooks",
+      "PLUGIN_INVALID_MAIN",
+      "PLUGIN_UNSUPPORTED_LEGACY_RUNTIME",
+      "PLUGIN_REPLAY_UNSUPPORTED",
     ],
-    "developer tool diagnostic surface"
+    "Extension Host developer tool package shape"
   );
   requireNotIncludes(
     "packages/create-aio-plugin/src/devtools.ts",
@@ -383,7 +352,7 @@ if (contract) {
   requireIncludesCaseInsensitive(
     "src-tauri/src/domain/plugins.rs",
     rust,
-    [...runtimeTokens(contract), ...officialRuntimeTokens(contract)],
+    ["extensionHost", ...officialRuntimeTokens(contract)],
     "runtime"
   );
   requireIncludes(
@@ -417,9 +386,7 @@ if (contract) {
     const entry = matrix?.[hook];
     if (!entry) continue;
     const timeoutToken = `${entry.timeoutMs} ms`;
-    const hookRow = manifestSpec
-      .split("\n")
-      .find((line) => line.includes(`| \`${hook}\``));
+    const hookRow = manifestSpec.split("\n").find((line) => line.includes(`| \`${hook}\``));
     if (!hookRow) {
       failures.push(`docs/plugin-manifest-v1.md is missing hook table row for ${hook}`);
       continue;
@@ -449,24 +416,6 @@ if (contract) {
     permissionsDoc,
     contract.reservedPermissions,
     "reserved permission"
-  );
-
-  const manifestGuidePath = "docs/plugins/reference/manifest.md";
-  const manifestGuide = readText(manifestGuidePath);
-  requireIncludes(
-    manifestGuidePath,
-    manifestGuide,
-    [...runtimeTokens(contract), ...officialRuntimeTokens(contract)],
-    "runtime"
-  );
-
-  const wasmGuidePath = "docs/plugins/runtime/wasm.md";
-  const wasmGuide = readText(wasmGuidePath);
-  requireIncludes(
-    wasmGuidePath,
-    wasmGuide,
-    ["wasm", "PLUGIN_RUNTIME_DISABLED"],
-    "WASM policy token"
   );
 
   requireRegex(
@@ -510,20 +459,6 @@ if (contract) {
     scaffold,
     ["contextPatch"],
     "legacy mutation field"
-  );
-
-  const wasmSdk = readText("packages/plugin-wasm-sdk/src/lib.rs");
-  requireIncludes(
-    "packages/plugin-wasm-sdk/src/lib.rs",
-    wasmSdk,
-    (contract.activeMutationFields ?? []).map(snakeCase),
-    "active mutation field"
-  );
-  requireIncludes(
-    "packages/plugin-wasm-sdk/src/lib.rs",
-    wasmSdk,
-    ['#[serde(rename_all = "camelCase")]'],
-    "camelCase serde ABI"
   );
 }
 
