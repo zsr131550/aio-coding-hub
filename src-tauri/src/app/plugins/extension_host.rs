@@ -204,16 +204,21 @@ impl ExtensionHostInstance {
                 "extension host API requires gateway.hooks",
             ));
         }
-        self.activate().await?;
-        let call = self.runtime.call_method(
-            "gatewayHooks.execute",
-            json!({
-                "hook": hook,
-                "context": context,
-            }),
-        );
+        let call = async {
+            self.activate().await?;
+            self.runtime
+                .call_method(
+                    "gatewayHooks.execute",
+                    json!({
+                        "hook": hook,
+                        "context": context,
+                    }),
+                )
+                .await
+                .map_err(map_process_error)
+        };
         match tokio::time::timeout(DEFAULT_EXTENSION_HOST_GATEWAY_TIMEOUT, call).await {
-            Ok(result) => result.map_err(map_process_error),
+            Ok(result) => result,
             Err(_) => {
                 self.runtime.shutdown().await;
                 Err(AppError::new(
@@ -755,6 +760,38 @@ mod tests {
 
         assert_eq!(err.code(), "PLUGIN_EXTENSION_HOST_UNDECLARED_GATEWAY_HOOK");
         host.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn extension_host_gateway_hook_timeout_covers_activation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_gateway_extension_plugin(
+            temp.path(),
+            r#"
+            module.exports.activate = function(api) {
+              while (true) {}
+            };
+            "#,
+            "gateway.request.afterBodyRead",
+        );
+
+        let mut host = super::ExtensionHost::start_for_tests(temp.path())
+            .await
+            .expect("start extension host");
+
+        let started = std::time::Instant::now();
+        let err = host
+            .execute_gateway_hook("gateway.request.afterBodyRead", json!({}))
+            .await
+            .expect_err("gateway hook activation should be inside gateway timeout");
+
+        assert_eq!(err.code(), "PLUGIN_EXTENSION_CALL_TIMEOUT");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "gateway hook timeout should cover activation, elapsed {:?}",
+            started.elapsed()
+        );
+        assert!(!host.is_running());
     }
 
     #[tokio::test]

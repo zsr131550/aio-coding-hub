@@ -51,8 +51,10 @@ pub(crate) trait GatewayPluginExecutor: Send + Sync {
     ) -> GatewayHookFuture;
 }
 
+#[cfg(test)]
 struct NoopGatewayPluginExecutor;
 
+#[cfg(test)]
 impl GatewayPluginExecutor for NoopGatewayPluginExecutor {
     fn execute_request_hook(
         &self,
@@ -198,6 +200,7 @@ pub(crate) struct GatewayPluginPipeline {
 }
 
 impl GatewayPluginPipeline {
+    #[cfg(test)]
     pub(crate) fn empty_shared() -> Arc<Self> {
         Arc::new(Self {
             plugins: RwLock::new(Arc::new(GatewayPluginSnapshot::default())),
