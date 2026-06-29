@@ -2,6 +2,7 @@
 
 pub(crate) mod contribution_registry;
 pub(crate) mod extension_host;
+pub(crate) mod extension_host_registry;
 pub(crate) mod extension_host_worker;
 pub(crate) mod official;
 pub(crate) mod official_assets;
