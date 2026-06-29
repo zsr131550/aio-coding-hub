@@ -1,6 +1,6 @@
 //! Usage: Built-in official plugin catalog.
 
-use crate::plugins::{validate_manifest, PluginManifest};
+use crate::plugins::{validate_manifest_for_official_plugin, PluginManifest};
 use crate::shared::error::{AppError, AppResult};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ pub(crate) fn official_plugin_from_root(
             ),
         ));
     }
-    validate_manifest(&manifest, env!("CARGO_PKG_VERSION"))?;
+    validate_manifest_for_official_plugin(&manifest, env!("CARGO_PKG_VERSION"))?;
     let default_config = official_default_config(plugin_id);
 
     Ok(OfficialPluginFixture {
@@ -127,9 +127,7 @@ mod tests {
         let permissions = fixture.manifest.permissions.clone();
         let runtime = match &fixture.manifest.runtime {
             PluginRuntime::ExtensionHost { .. } => "extensionHost".to_string(),
-            PluginRuntime::DeclarativeRules { .. } => "declarativeRules".to_string(),
             PluginRuntime::Native { engine } => format!("native:{engine}"),
-            PluginRuntime::Wasm { .. } => "wasm".to_string(),
         };
         crate::domain::plugins::PluginDetail {
             summary: crate::domain::plugins::PluginSummary {

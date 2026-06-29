@@ -10,7 +10,7 @@ use super::permissions::{
     enforce_hook_result_permissions as enforce_descriptor_result_permissions, GatewayPluginError,
 };
 use super::registry::HookRegistry;
-use crate::domain::plugins::{PluginDetail, PluginStatus};
+use crate::domain::plugins::{PluginDetail, PluginHook, PluginStatus};
 use crate::shared::time::now_unix_millis;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
@@ -1467,25 +1467,14 @@ fn failure_policy(plugin: &PluginDetail, hook_name: GatewayPluginHookName) -> Fa
         .unwrap_or(FailurePolicy::FailOpen)
 }
 
-fn plugin_hook(
-    plugin: &PluginDetail,
-    hook_name: GatewayPluginHookName,
-) -> Option<&crate::domain::plugins::PluginHook> {
-    plugin
-        .manifest
-        .hooks
-        .iter()
-        .find(|hook| hook.name == hook_name.as_str())
+fn plugin_hook(plugin: &PluginDetail, hook_name: GatewayPluginHookName) -> Option<&PluginHook> {
+    active_plugin_hooks(plugin).find(|hook| hook.name == hook_name.as_str())
 }
 
 fn runtime_kind(plugin: &PluginDetail) -> String {
     match &plugin.manifest.runtime {
         crate::domain::plugins::PluginRuntime::ExtensionHost { .. } => "extensionHost".to_string(),
-        crate::domain::plugins::PluginRuntime::DeclarativeRules { .. } => {
-            "declarativeRules".to_string()
-        }
         crate::domain::plugins::PluginRuntime::Native { engine } => format!("native:{engine}"),
-        crate::domain::plugins::PluginRuntime::Wasm { .. } => "wasm".to_string(),
     }
 }
 
@@ -1573,7 +1562,7 @@ fn build_plugin_snapshot(plugins: Vec<PluginDetail>) -> GatewayPluginSnapshot {
         if plugin.summary.status != PluginStatus::Enabled {
             continue;
         }
-        for hook in &plugin.manifest.hooks {
+        for hook in active_plugin_hooks(plugin) {
             let Some(hook_name) = hook_name_from_str(&hook.name) else {
                 continue;
             };
@@ -1597,6 +1586,18 @@ fn build_plugin_snapshot(plugins: Vec<PluginDetail>) -> GatewayPluginSnapshot {
         .collect();
 
     GatewayPluginSnapshot { by_hook }
+}
+
+fn active_plugin_hooks(plugin: &PluginDetail) -> impl Iterator<Item = &PluginHook> {
+    plugin.manifest.hooks.iter().chain(
+        plugin
+            .manifest
+            .contributes
+            .as_ref()
+            .map(|contributes| contributes.gateway_hooks.as_slice())
+            .unwrap_or(&[])
+            .iter(),
+    )
 }
 
 fn hook_name_from_str(raw: &str) -> Option<GatewayPluginHookName> {
@@ -1864,6 +1865,7 @@ impl GatewayPluginExecutor for InMemoryGatewayPluginExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::plugin_contributions::PluginContributes;
     use crate::domain::plugins::{
         PluginDetail, PluginHook, PluginInstallSource, PluginManifest, PluginRuntime, PluginStatus,
         PluginSummary,
@@ -1871,6 +1873,7 @@ mod tests {
     use crate::gateway::plugins::contract::DEFAULT_HOOK_TIMEOUT_MS;
     use axum::body::Bytes;
     use axum::http::{HeaderMap, Method};
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -1890,7 +1893,7 @@ mod tests {
                 name: plugin_id.to_string(),
                 current_version: Some("1.0.0".to_string()),
                 status: PluginStatus::Enabled,
-                runtime: "declarativeRules".to_string(),
+                runtime: "extensionHost".to_string(),
                 permission_risk: crate::domain::plugins::PluginPermissionRisk::High,
                 update_available: false,
                 last_error: None,
@@ -1902,19 +1905,27 @@ mod tests {
                 name: plugin_id.to_string(),
                 version: "1.0.0".to_string(),
                 api_version: "1.0.0".to_string(),
-                runtime: PluginRuntime::DeclarativeRules {
-                    rules: vec!["rules/main.json".to_string()],
+                runtime: PluginRuntime::ExtensionHost {
+                    language: "typescript".to_string(),
                 },
-                hooks: vec![PluginHook {
-                    name: "gateway.request.afterBodyRead".to_string(),
-                    priority,
-                    failure_policy: Some("fail-open".to_string()),
-                }],
-                permissions: permissions.iter().map(|item| item.to_string()).collect(),
-                main: None,
+                hooks: vec![],
+                permissions: vec![],
+                main: Some("dist/index.js".to_string()),
                 activation_events: vec![],
-                contributes: None,
-                capabilities: vec![],
+                contributes: Some(PluginContributes {
+                    providers: vec![],
+                    protocols: vec![],
+                    protocol_bridges: vec![],
+                    commands: vec![],
+                    gateway_hooks: vec![PluginHook {
+                        name: "gateway.request.afterBodyRead".to_string(),
+                        priority,
+                        failure_policy: Some("fail-open".to_string()),
+                    }],
+                    unsupported_gateway_rules: Default::default(),
+                    ui: BTreeMap::new(),
+                }),
+                capabilities: vec!["gateway.hooks".to_string()],
                 host_compatibility: crate::domain::plugins::PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),
@@ -1941,6 +1952,17 @@ mod tests {
             runtime_failures: vec![],
             rollback_versions: vec![],
         }
+    }
+
+    fn gateway_hook_mut(plugin: &mut PluginDetail) -> &mut PluginHook {
+        plugin
+            .manifest
+            .contributes
+            .as_mut()
+            .expect("extension host gateway hook contributions")
+            .gateway_hooks
+            .first_mut()
+            .expect("gateway hook")
     }
 
     fn request_input() -> GatewayRequestHookInput {
@@ -2364,7 +2386,7 @@ mod tests {
             },
         );
         let mut plugin = plugin("plugin.slow", 10, vec!["request.body.read"]);
-        plugin.manifest.hooks[0].failure_policy = Some("fail-closed".to_string());
+        gateway_hook_mut(&mut plugin).failure_policy = Some("fail-closed".to_string());
         let pipeline = GatewayPluginPipeline::for_tests(
             vec![plugin],
             Arc::new(executor),
@@ -2605,7 +2627,7 @@ mod tests {
                 "response.body.write",
             ],
         );
-        plugin.manifest.hooks[0].name = "gateway.response.after".to_string();
+        gateway_hook_mut(&mut plugin).name = "gateway.response.after".to_string();
 
         let pipeline = GatewayPluginPipeline::for_tests(
             vec![plugin],
@@ -2663,7 +2685,7 @@ mod tests {
                 "response.body.write",
             ],
         );
-        plugin.manifest.hooks[0].name = "gateway.error".to_string();
+        gateway_hook_mut(&mut plugin).name = "gateway.error".to_string();
 
         let pipeline = GatewayPluginPipeline::for_tests(
             vec![plugin],
@@ -2700,7 +2722,7 @@ mod tests {
                 }
             });
         let mut plugin = plugin("plugin.stream", 10, vec!["stream.inspect", "stream.modify"]);
-        plugin.manifest.hooks[0].name = "gateway.response.chunk".to_string();
+        gateway_hook_mut(&mut plugin).name = "gateway.response.chunk".to_string();
 
         let pipeline = GatewayPluginPipeline::for_tests(
             vec![plugin],
@@ -2726,7 +2748,7 @@ mod tests {
                 }
             });
         let mut plugin = plugin("plugin.stream", 10, vec!["stream.inspect", "stream.modify"]);
-        plugin.manifest.hooks[0].name = "gateway.response.chunk".to_string();
+        gateway_hook_mut(&mut plugin).name = "gateway.response.chunk".to_string();
 
         let pipeline = GatewayPluginPipeline::for_tests(
             vec![plugin],
@@ -2761,7 +2783,7 @@ mod tests {
             },
         );
         let mut plugin = plugin("plugin.slow", 10, vec!["request.body.read"]);
-        plugin.manifest.hooks[0].failure_policy = Some("fail-closed".to_string());
+        gateway_hook_mut(&mut plugin).failure_policy = Some("fail-closed".to_string());
         let pipeline = GatewayPluginPipeline::for_tests(
             vec![plugin],
             Arc::new(executor),
@@ -2804,7 +2826,7 @@ mod tests {
             }
         });
         let mut plugin = plugin("plugin.log", 10, vec!["log.redact"]);
-        plugin.manifest.hooks[0].name = "log.beforePersist".to_string();
+        gateway_hook_mut(&mut plugin).name = "log.beforePersist".to_string();
 
         let pipeline = GatewayPluginPipeline::for_tests(
             vec![plugin],

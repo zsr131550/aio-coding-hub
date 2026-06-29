@@ -470,17 +470,18 @@ mod tests {
             "version": "1.0.0",
             "apiVersion": "1.0.0",
             "runtime": {
-                "kind": "declarativeRules",
-                "rules": ["rules/main.json"]
+                "kind": "extensionHost",
+                "language": "typescript"
             },
-            "hooks": [
-                {
+            "main": "dist/extension.js",
+            "contributes": {
+                "gatewayHooks": [{
                     "name": "gateway.request.afterBodyRead",
                     "priority": 10,
                     "failurePolicy": "fail-open"
-                }
-            ],
-            "permissions": ["request.body.read"],
+                }]
+            },
+            "capabilities": ["gateway.hooks"],
             "hostCompatibility": {
                 "app": ">=0.56.0 <1.0.0",
                 "pluginApi": "^1.0.0",
@@ -595,6 +596,7 @@ mod tests {
             &[
                 ("plugin.json", manifest_json("local.safe").as_bytes()),
                 ("rules/main.json", br#"{"rules":[]}"#),
+                ("dist/extension.js", b"export default {};"),
                 ("README.md", b"# Local Test Plugin\n"),
             ],
         );
@@ -623,6 +625,7 @@ mod tests {
                     manifest_json("local.safe").as_bytes(),
                 ),
                 ("local-safe/rules/main.json", br#"{"rules":[]}"#),
+                ("local-safe/dist/extension.js", b"export default {};"),
             ],
         );
 

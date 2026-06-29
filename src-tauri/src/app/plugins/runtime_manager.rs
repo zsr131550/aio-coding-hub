@@ -6,9 +6,7 @@ use crate::gateway::plugins::permissions::GatewayPluginError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeDispatch {
-    DeclarativeRules,
     NativePrivacyFilter,
-    WasmNotWired,
     ExtensionHost,
 }
 
@@ -28,14 +26,9 @@ impl PluginRuntimeManager {
 
     pub(crate) fn validate_runtime_policy(
         &self,
-        runtime: &PluginRuntime,
+        _runtime: &PluginRuntime,
     ) -> Result<(), GatewayPluginError> {
-        if matches!(runtime, PluginRuntime::Wasm { .. }) && !self.policy.wasm_enabled {
-            return Err(GatewayPluginError::new(
-                "PLUGIN_RUNTIME_DISABLED",
-                "wasm runtime execution is disabled by host policy",
-            ));
-        }
+        let _wasm_enabled = self.policy.wasm_enabled;
         Ok(())
     }
 
@@ -51,7 +44,6 @@ impl PluginRuntimeManager {
 
         match runtime {
             PluginRuntime::ExtensionHost { .. } => Ok(RuntimeDispatch::ExtensionHost),
-            PluginRuntime::DeclarativeRules { .. } => Ok(RuntimeDispatch::DeclarativeRules),
             PluginRuntime::Native { engine }
                 if plugin_id == "official.privacy-filter" && engine == "privacyFilter" =>
             {
@@ -61,7 +53,6 @@ impl PluginRuntimeManager {
                 "PLUGIN_UNSUPPORTED_RUNTIME",
                 format!("unsupported native plugin runtime engine: {engine}"),
             )),
-            PluginRuntime::Wasm { .. } => Ok(RuntimeDispatch::WasmNotWired),
         }
     }
 }
@@ -73,59 +64,17 @@ mod tests {
     use crate::domain::plugins::PluginRuntime;
 
     #[test]
-    fn runtime_manager_rejects_wasm_when_policy_disabled() {
+    fn runtime_manager_rejects_non_extension_host_community_runtime() {
         let manager = PluginRuntimeManager::for_tests(RuntimePolicy::default());
-        let runtime = PluginRuntime::Wasm {
-            abi_version: "1.0.0".to_string(),
-            memory_limit_bytes: Some(16 * 1024 * 1024),
+        let runtime = PluginRuntime::Native {
+            engine: "privacyFilter".to_string(),
         };
 
         let err = manager
-            .validate_runtime_policy(&runtime)
-            .expect_err("wasm should be disabled by default policy");
+            .runtime_dispatch("example.privacy-filter", &runtime)
+            .expect_err("community native runtime should be rejected");
 
-        assert_eq!(err.code(), "PLUGIN_RUNTIME_DISABLED");
-        assert_eq!(
-            err.to_string(),
-            "PLUGIN_RUNTIME_DISABLED: wasm runtime execution is disabled by host policy"
-        );
-    }
-
-    #[test]
-    fn runtime_manager_allows_declarative_rules_policy() {
-        let manager = PluginRuntimeManager::for_tests(RuntimePolicy::default());
-        let runtime = PluginRuntime::DeclarativeRules {
-            rules: vec!["rules/main.json".to_string()],
-        };
-
-        manager
-            .validate_runtime_policy(&runtime)
-            .expect("declarative rules should be allowed by host policy");
-        assert_eq!(
-            manager
-                .runtime_dispatch("example.rules", &runtime)
-                .expect("declarative rules should resolve"),
-            RuntimeDispatch::DeclarativeRules
-        );
-    }
-
-    #[test]
-    fn runtime_manager_returns_wasm_not_wired_decision_when_policy_enabled() {
-        let manager = PluginRuntimeManager::for_tests(RuntimePolicy {
-            wasm_enabled: true,
-            process_enabled: false,
-        });
-        let runtime = PluginRuntime::Wasm {
-            abi_version: "1.0.0".to_string(),
-            memory_limit_bytes: Some(16 * 1024 * 1024),
-        };
-
-        assert_eq!(
-            manager
-                .runtime_dispatch("example.wasm", &runtime)
-                .expect("enabled wasm policy should reach dispatch decision"),
-            RuntimeDispatch::WasmNotWired
-        );
+        assert_eq!(err.code(), "PLUGIN_UNSUPPORTED_RUNTIME");
     }
 
     #[test]

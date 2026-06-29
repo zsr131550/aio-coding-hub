@@ -1,7 +1,6 @@
 //! Usage: Runtime dispatch for gateway plugin execution.
 
 use crate::app::plugins::official_privacy_filter_runtime::OfficialPrivacyFilterRuntime;
-use crate::app::plugins::rule_runtime::RuleRuntimeGatewayPluginExecutor;
 use crate::app::plugins::runtime_lifecycle::RuntimeLifecycleRegistry;
 use crate::app::plugins::runtime_manager::{PluginRuntimeManager, RuntimeDispatch};
 use crate::app::plugins::runtime_policy::RuntimePolicy;
@@ -17,7 +16,6 @@ pub(crate) struct RuntimeExecutionPolicy {
 }
 
 pub(crate) struct RuntimeGatewayPluginExecutor {
-    rule_runtime: Arc<RuleRuntimeGatewayPluginExecutor>,
     privacy_filter_runtime: Arc<OfficialPrivacyFilterRuntime>,
     lifecycle: RuntimeLifecycleRegistry,
     policy: RuntimeExecutionPolicy,
@@ -25,13 +23,10 @@ pub(crate) struct RuntimeGatewayPluginExecutor {
 
 impl RuntimeGatewayPluginExecutor {
     pub(crate) fn new(policy: RuntimeExecutionPolicy) -> Self {
-        let rule_runtime = Arc::new(RuleRuntimeGatewayPluginExecutor::default());
         let privacy_filter_runtime = Arc::new(OfficialPrivacyFilterRuntime::default());
         let lifecycle = RuntimeLifecycleRegistry::default();
-        lifecycle.register_cache(rule_runtime.clone());
         lifecycle.register_cache(privacy_filter_runtime.clone());
         Self {
-            rule_runtime,
             privacy_filter_runtime,
             lifecycle,
             policy,
@@ -54,19 +49,12 @@ impl RuntimeGatewayPluginExecutor {
         });
 
         match manager.runtime_dispatch(&plugin.summary.plugin_id, &plugin.manifest.runtime)? {
-            RuntimeDispatch::DeclarativeRules => self
-                .rule_runtime
-                .execute_declarative_rules_plugin(plugin, context),
             RuntimeDispatch::NativePrivacyFilter => {
                 self.privacy_filter_runtime.execute_plugin(plugin, context)
             }
-            RuntimeDispatch::WasmNotWired => Err(GatewayPluginError::new(
-                "PLUGIN_WASM_NOT_WIRED",
-                "wasm runtime policy is enabled but gateway execution is not wired in this release",
-            )),
             RuntimeDispatch::ExtensionHost => Err(GatewayPluginError::new(
-                "PLUGIN_EXTENSION_HOST_NOT_WIRED",
-                "extension host runtime is managed outside gateway hook execution",
+                "PLUGIN_EXTENSION_HOST_GATEWAY_NOT_WIRED",
+                "extension host gateway hook execution is not wired in this release",
             )),
         }
     }
@@ -137,59 +125,28 @@ impl GatewayPluginExecutor for RuntimeGatewayPluginExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::plugin_contributions::PluginContributes;
     use crate::domain::plugins::{
         PluginDetail, PluginHook, PluginHostCompatibility, PluginInstallSource, PluginManifest,
         PluginPermissionRisk, PluginRuntime, PluginStatus, PluginSummary,
     };
     use crate::gateway::plugins::context::{
-        GatewayHookAction, GatewayVisibleHookContext, GatewayVisibleLogContext,
-        GatewayVisibleRequestContext, GatewayVisibleResponseContext, GatewayVisibleStreamContext,
+        GatewayVisibleHookContext, GatewayVisibleLogContext, GatewayVisibleRequestContext,
+        GatewayVisibleResponseContext, GatewayVisibleStreamContext,
     };
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     #[test]
-    fn runtime_executor_returns_clear_error_for_policy_disabled_wasm() {
-        let executor = RuntimeGatewayPluginExecutor::for_tests(RuntimeExecutionPolicy {
-            wasm_enabled: false,
-        });
-        let plugin = wasm_plugin_detail("example.wasm");
-        let context = hook_context("gateway.request.afterBodyRead", "trace-1");
+    fn runtime_executor_returns_temporary_error_for_extension_host_gateway_hook() {
+        let plugin = extension_host_plugin_detail("example.extension");
+        let context = hook_context("gateway.request.afterBodyRead", "trace-extension");
 
-        let err = executor
+        let err = executor()
             .execute_plugin_sync(&plugin, context)
-            .expect_err("wasm disabled");
+            .expect_err("extension host gateway hooks are not wired until Task 8");
 
-        assert_eq!(err.code(), "PLUGIN_RUNTIME_DISABLED");
-        assert!(err.to_string().contains("wasm"));
-    }
-
-    #[test]
-    fn runtime_executor_delegates_declarative_rules_to_rule_runtime() {
-        let dir = tempfile::tempdir().expect("temp plugin dir");
-        let rules_dir = dir.path().join("rules");
-        std::fs::create_dir_all(&rules_dir).expect("rules dir");
-        std::fs::write(
-            rules_dir.join("main.json"),
-            json!({
-                "rules": [{
-                    "id": "no-op-warn",
-                    "hook": "gateway.request.afterBodyRead",
-                    "target": { "field": "request.body" },
-                    "match": { "regex": "not-present" },
-                    "action": { "kind": "warn", "message": "not used" }
-                }]
-            })
-            .to_string(),
-        )
-        .expect("rule file");
-        let plugin = rule_plugin_detail("example.rules", dir.path().to_string_lossy().to_string());
-        let context = hook_context("gateway.request.afterBodyRead", "trace-2");
-
-        let result = executor()
-            .execute_plugin_sync(&plugin, context)
-            .expect("rule runtime executes");
-
-        assert_eq!(result.action, GatewayHookAction::Continue);
+        assert_eq!(err.code(), "PLUGIN_EXTENSION_HOST_GATEWAY_NOT_WIRED");
     }
 
     #[test]
@@ -251,38 +208,9 @@ mod tests {
             .expect("official privacy filter runtime executes");
         assert_eq!(executor.privacy_filter_cache_size_for_tests(), 1);
 
-        let dir = tempfile::tempdir().expect("temp plugin dir");
-        let rules_dir = dir.path().join("rules");
-        std::fs::create_dir_all(&rules_dir).expect("rules dir");
-        let rule_file = rules_dir.join("main.json");
-        write_replace_rule_file(&rule_file, "[FIRST]");
-        let rule_plugin =
-            rule_plugin_detail("example.rules", dir.path().to_string_lossy().to_string());
-        let rule_context = hook_context("gateway.request.afterBodyRead", "trace-rule-dispose");
-
-        let first_result = executor
-            .execute_plugin_sync(&rule_plugin, rule_context)
-            .expect("rule runtime executes");
-        assert!(first_result
-            .request_body
-            .as_deref()
-            .is_some_and(|body| body.contains("[FIRST]")));
-        write_replace_rule_file(&rule_file, "[SECOND]");
-
         executor.dispose_runtime_caches_for_tests();
 
-        let second_result = executor
-            .execute_plugin_sync(
-                &rule_plugin,
-                hook_context("gateway.request.afterBodyRead", "trace-rule-dispose-reload"),
-            )
-            .expect("rule runtime reloads after dispose");
-
         assert_eq!(executor.privacy_filter_cache_size_for_tests(), 0);
-        assert!(second_result
-            .request_body
-            .as_deref()
-            .is_some_and(|body| body.contains("[SECOND]")));
     }
 
     fn executor() -> RuntimeGatewayPluginExecutor {
@@ -307,26 +235,14 @@ mod tests {
         }
     }
 
-    fn wasm_plugin_detail(plugin_id: &str) -> PluginDetail {
+    fn extension_host_plugin_detail(plugin_id: &str) -> PluginDetail {
         plugin_detail(
             plugin_id,
-            PluginRuntime::Wasm {
-                abi_version: "1.0.0".to_string(),
-                memory_limit_bytes: Some(16 * 1024 * 1024),
+            PluginRuntime::ExtensionHost {
+                language: "typescript".to_string(),
             },
-            "wasm".to_string(),
+            "extensionHost".to_string(),
             None,
-        )
-    }
-
-    fn rule_plugin_detail(plugin_id: &str, installed_dir: String) -> PluginDetail {
-        plugin_detail(
-            plugin_id,
-            PluginRuntime::DeclarativeRules {
-                rules: vec!["rules/main.json".to_string()],
-            },
-            "declarativeRules".to_string(),
-            Some(installed_dir),
         )
     }
 
@@ -360,23 +276,6 @@ mod tests {
         }
     }
 
-    fn write_replace_rule_file(path: &std::path::Path, replacement: &str) {
-        std::fs::write(
-            path,
-            json!({
-                "rules": [{
-                    "id": "replace-message",
-                    "hook": "gateway.request.afterBodyRead",
-                    "target": { "field": "request.body" },
-                    "match": { "regex": "hello" },
-                    "action": { "kind": "replace", "replacement": replacement }
-                }]
-            })
-            .to_string(),
-        )
-        .expect("rule file");
-    }
-
     fn plugin_detail(
         plugin_id: &str,
         runtime: PluginRuntime,
@@ -403,19 +302,24 @@ mod tests {
                 version: "1.0.0".to_string(),
                 api_version: "1.0.0".to_string(),
                 runtime,
-                hooks: vec![PluginHook {
-                    name: "gateway.request.afterBodyRead".to_string(),
-                    priority: 10,
-                    failure_policy: Some("fail-open".to_string()),
-                }],
-                permissions: vec![
-                    "request.body.read".to_string(),
-                    "request.body.write".to_string(),
-                ],
-                main: None,
+                hooks: vec![],
+                permissions: vec![],
+                main: Some("dist/index.js".to_string()),
                 activation_events: vec![],
-                contributes: None,
-                capabilities: vec![],
+                contributes: Some(PluginContributes {
+                    providers: vec![],
+                    protocols: vec![],
+                    protocol_bridges: vec![],
+                    commands: vec![],
+                    gateway_hooks: vec![PluginHook {
+                        name: "gateway.request.afterBodyRead".to_string(),
+                        priority: 10,
+                        failure_policy: Some("fail-open".to_string()),
+                    }],
+                    unsupported_gateway_rules: Default::default(),
+                    ui: BTreeMap::new(),
+                }),
+                capabilities: vec!["gateway.hooks".to_string()],
                 host_compatibility: PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),

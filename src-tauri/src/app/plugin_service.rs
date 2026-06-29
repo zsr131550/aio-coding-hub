@@ -1,13 +1,13 @@
 use crate::app::plugins::contribution_registry::ActiveContributionSnapshot;
 use crate::app::plugins::extension_host::ExtensionHostInstance;
 use crate::domain::plugins::{
-    permission_risk, validate_manifest, PluginCommandImpact, PluginCompatibilitySummary,
-    PluginContributionChange, PluginContributionImpact, PluginContributionImpactItem, PluginDetail,
-    PluginHookLifecycleSummary, PluginInstallPreview, PluginInstallSource, PluginLifecycleChange,
-    PluginLifecycleNotice, PluginManifest, PluginPermissionLifecycleChange,
-    PluginPermissionLifecycleSummary, PluginPermissionRisk, PluginRuntime,
-    PluginRuntimeLifecycleSummary, PluginStatus, PluginTrustSummary, PluginUiSlotImpact,
-    PluginUpdateDiff,
+    permission_risk, validate_manifest, validate_manifest_for_official_plugin, PluginCommandImpact,
+    PluginCompatibilitySummary, PluginContributionChange, PluginContributionImpact,
+    PluginContributionImpactItem, PluginDetail, PluginHookLifecycleSummary, PluginInstallPreview,
+    PluginInstallSource, PluginLifecycleChange, PluginLifecycleNotice, PluginManifest,
+    PluginPermissionLifecycleChange, PluginPermissionLifecycleSummary, PluginPermissionRisk,
+    PluginRuntime, PluginRuntimeLifecycleSummary, PluginStatus, PluginTrustSummary,
+    PluginUiSlotImpact, PluginUpdateDiff,
 };
 use crate::infra::plugins::runtime_reports::{
     record_extension_execution_report, RecordPluginExtensionExecutionReportInput,
@@ -266,7 +266,11 @@ fn enabled_plugins_for_gateway_once(db: &crate::db::Db) -> AppResult<Vec<PluginD
             db,
             repository::get_plugin(db, &summary.plugin_id)?,
         )?;
-        if let Err(err) = validate_manifest(&detail.manifest, env!("CARGO_PKG_VERSION")) {
+        if let Err(err) = validate_manifest_for_source(
+            &detail.manifest,
+            detail.install_source,
+            env!("CARGO_PKG_VERSION"),
+        ) {
             tracing::warn!(
                 plugin_id = %summary.plugin_id,
                 error = ?err,
@@ -335,7 +339,7 @@ pub(crate) fn install_plugin_manifest(
     installed_dir: Option<String>,
     host_version: &str,
 ) -> AppResult<PluginDetail> {
-    validate_manifest(&manifest, host_version)?;
+    validate_manifest_for_source(&manifest, install_source, host_version)?;
     validate_reserved_official_source(&manifest, install_source)?;
     let plugin_id = manifest.id.clone();
     let requested_permissions = manifest.permissions.clone();
@@ -577,12 +581,6 @@ fn runtime_lifecycle_summary(manifest: &PluginManifest) -> PluginRuntimeLifecycl
             supported: true,
             blocking_reasons: Vec::new(),
         },
-        PluginRuntime::DeclarativeRules { .. } => PluginRuntimeLifecycleSummary {
-            kind: "declarativeRules".to_string(),
-            label: "Declarative Rules".to_string(),
-            supported: true,
-            blocking_reasons: Vec::new(),
-        },
         PluginRuntime::Native { engine } if manifest.id == OFFICIAL_PRIVACY_FILTER_ID => {
             PluginRuntimeLifecycleSummary {
                 kind: "native".to_string(),
@@ -601,29 +599,26 @@ fn runtime_lifecycle_summary(manifest: &PluginManifest) -> PluginRuntimeLifecycl
                 "third-party native plugin runtime is not supported",
             )],
         },
-        PluginRuntime::Wasm { .. } => PluginRuntimeLifecycleSummary {
-            kind: "wasm".to_string(),
-            label: "WASM".to_string(),
-            supported: false,
-            blocking_reasons: vec![lifecycle_notice(
-                "warn",
-                "PLUGIN_WASM_POLICY_GATED",
-                "WASM plugin execution is policy-gated in this release",
-            )],
-        },
     }
 }
 
 fn hook_lifecycle_summaries(manifest: &PluginManifest) -> Vec<PluginHookLifecycleSummary> {
-    manifest
-        .hooks
-        .iter()
+    declared_gateway_hooks(manifest)
+        .into_iter()
         .map(|hook| PluginHookLifecycleSummary {
             name: hook.name.clone(),
             priority: hook.priority,
             failure_policy: hook.failure_policy.clone(),
         })
         .collect()
+}
+
+fn declared_gateway_hooks(manifest: &PluginManifest) -> Vec<&crate::domain::plugins::PluginHook> {
+    let mut hooks = manifest.hooks.iter().collect::<Vec<_>>();
+    if let Some(contributes) = manifest.contributes.as_ref() {
+        hooks.extend(contributes.gateway_hooks.iter());
+    }
+    hooks
 }
 
 fn permission_lifecycle_summaries(
@@ -715,25 +710,13 @@ fn contribution_impact(manifest: &PluginManifest) -> PluginContributionImpact {
                 hook.failure_policy.as_deref().unwrap_or("-")
             )),
         });
-    let gateway_rules = contributes
-        .gateway_rules
-        .iter()
-        .enumerate()
-        .map(|(index, rule)| PluginContributionImpactItem {
-            id: rule
-                .id
-                .clone()
-                .unwrap_or_else(|| format!("gatewayRule.{index}")),
-            label: Some(rule.rules.join(", ")),
-        });
-
     PluginContributionImpact {
         providers,
         protocols,
         protocol_bridges,
         ui_slots,
         commands,
-        gateway: gateway_hooks.chain(gateway_rules).collect(),
+        gateway: gateway_hooks.collect(),
         capabilities: manifest.capabilities.clone(),
     }
 }
@@ -1305,25 +1288,6 @@ fn contribution_signatures(manifest: &PluginManifest) -> BTreeMap<String, Contri
             },
         );
     }
-    for (index, rule) in contributes.gateway_rules.iter().enumerate() {
-        let rule_id = rule
-            .id
-            .clone()
-            .unwrap_or_else(|| format!("gatewayRule.{index}"));
-        let rules = rule.rules.join(", ");
-        insert_contribution_signature(
-            &mut out,
-            format!("gatewayRule:{rule_id}"),
-            ContributionSignature {
-                kind: "gatewayRule".to_string(),
-                name: rule_id,
-                label: rule.rules.first().cloned(),
-                summary: short_contribution_summary(rules),
-                fingerprint: contribution_fingerprint("gatewayRule", rule),
-            },
-        );
-    }
-
     for (slot_id, contributions) in &contributes.ui {
         for contribution in contributions {
             let label = contribution
@@ -1991,7 +1955,7 @@ pub(crate) fn enable_plugin(
             ),
         ));
     }
-    validate_manifest(&detail.manifest, host_version)?;
+    validate_manifest_for_source(&detail.manifest, detail.install_source, host_version)?;
     ensure_runtime_enabled(&detail.manifest)?;
     ensure_required_permissions_granted(&detail)?;
     validate_config_against_schema(detail.manifest.config_schema.as_ref(), &detail.config)?;
@@ -2140,20 +2104,27 @@ fn ensure_required_permissions_granted(detail: &PluginDetail) -> AppResult<()> {
 fn ensure_runtime_enabled(manifest: &PluginManifest) -> AppResult<()> {
     match &manifest.runtime {
         PluginRuntime::ExtensionHost { .. } => Ok(()),
-        PluginRuntime::DeclarativeRules { .. } => Ok(()),
         PluginRuntime::Native { engine }
             if manifest.id == "official.privacy-filter" && engine == "privacyFilter" =>
         {
             Ok(())
         }
-        PluginRuntime::Wasm { .. } => Err(AppError::new(
-            "PLUGIN_RUNTIME_DISABLED",
-            "wasm runtime execution is disabled by host policy",
-        )),
         PluginRuntime::Native { .. } => Err(AppError::new(
             "PLUGIN_UNSUPPORTED_RUNTIME",
             "native runtime is reserved for official plugins",
         )),
+    }
+}
+
+fn validate_manifest_for_source(
+    manifest: &PluginManifest,
+    install_source: PluginInstallSource,
+    host_version: &str,
+) -> Result<(), crate::domain::plugins::PluginValidationError> {
+    if install_source == PluginInstallSource::Official {
+        validate_manifest_for_official_plugin(manifest, host_version)
+    } else {
+        validate_manifest(manifest, host_version)
     }
 }
 
@@ -2514,7 +2485,7 @@ fn validate_enum(
 mod tests {
     use super::*;
     use crate::domain::plugins::{
-        PluginInstallSource, PluginManifest, PluginPermissionRisk, PluginStatus,
+        PluginInstallSource, PluginManifest, PluginRuntime, PluginStatus,
     };
     use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayRequestHookInput};
     use crate::gateway::plugins::pipeline::{GatewayPluginPipeline, GatewayPluginPipelineConfig};
@@ -2529,17 +2500,18 @@ mod tests {
             "version": "1.0.0",
             "apiVersion": "1.0.0",
             "runtime": {
-                "kind": "declarativeRules",
-                "rules": ["rules/main.json"]
+                "kind": "extensionHost",
+                "language": "typescript"
             },
-            "hooks": [
-                {
+            "main": "dist/extension.js",
+            "contributes": {
+                "gatewayHooks": [{
                     "name": "gateway.request.afterBodyRead",
                     "priority": 100,
                     "failurePolicy": "fail-open"
-                }
-            ],
-            "permissions": ["request.body.read", "request.body.write"],
+                }]
+            },
+            "capabilities": ["gateway.hooks"],
             "hostCompatibility": {
                 "app": ">=0.56.0 <1.0.0",
                 "pluginApi": "^1.0.0",
@@ -2559,33 +2531,14 @@ mod tests {
         .unwrap()
     }
 
-    fn wasm_manifest(plugin_id: &str) -> PluginManifest {
-        serde_json::from_value(serde_json::json!({
-            "id": plugin_id,
-            "name": "WASM Policy Plugin",
-            "version": "1.0.0",
-            "apiVersion": "1.0.0",
-            "runtime": {
-                "kind": "wasm",
-                "abiVersion": "1.0.0",
-                "memoryLimitBytes": 16777216
-            },
-            "entry": "plugin.wasm",
-            "hooks": [
-                {
-                    "name": "gateway.request.afterBodyRead",
-                    "priority": 100,
-                    "failurePolicy": "fail-open"
-                }
-            ],
-            "permissions": ["request.body.read"],
-            "hostCompatibility": {
-                "app": ">=0.56.0 <1.0.0",
-                "pluginApi": "^1.0.0",
-                "platforms": ["macos", "windows", "linux"]
-            }
-        }))
-        .unwrap()
+    fn community_native_manifest(plugin_id: &str) -> PluginManifest {
+        let mut manifest = manifest();
+        manifest.id = plugin_id.to_string();
+        manifest.name = "Native Policy Plugin".to_string();
+        manifest.runtime = PluginRuntime::Native {
+            engine: "privacyFilter".to_string(),
+        };
+        manifest
     }
 
     fn extension_manifest(plugin_id: &str, command: &str) -> PluginManifest {
@@ -2840,28 +2793,13 @@ mod tests {
     }
 
     #[test]
-    fn enable_plugin_rejects_wasm_when_host_policy_disables_execution() {
-        let dir = tempfile::tempdir().expect("db dir");
-        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).expect("db");
-        install_plugin_manifest(
-            &db,
-            wasm_manifest("acme.wasm-policy"),
-            PluginInstallSource::Local,
-            Some(dir.path().to_string_lossy().to_string()),
-            env!("CARGO_PKG_VERSION"),
-        )
-        .expect("install");
-        grant_plugin_permissions(
-            &db,
-            "acme.wasm-policy",
-            vec!["request.body.read".to_string()],
-        )
-        .expect("grant");
+    fn runtime_enabled_rejects_non_official_native_runtime() {
+        let manifest = community_native_manifest("acme.native-policy");
 
-        let err = enable_plugin(&db, "acme.wasm-policy", env!("CARGO_PKG_VERSION"))
-            .expect_err("wasm should not enable without policy");
+        let err = ensure_runtime_enabled(&manifest)
+            .expect_err("community native runtime should not be enabled");
 
-        assert_eq!(err.code(), "PLUGIN_RUNTIME_DISABLED");
+        assert_eq!(err.code(), "PLUGIN_UNSUPPORTED_RUNTIME");
     }
 
     #[test]
@@ -3454,17 +3392,18 @@ DROP TABLE plugins;
             "version": version,
             "apiVersion": "1.0.0",
             "runtime": {
-                "kind": "declarativeRules",
-                "rules": ["rules/main.json"]
+                "kind": "extensionHost",
+                "language": "typescript"
             },
-            "hooks": [
-                {
+            "main": "dist/extension.js",
+            "contributes": {
+                "gatewayHooks": [{
                     "name": "gateway.request.afterBodyRead",
                     "priority": 10,
                     "failurePolicy": "fail-open"
-                }
-            ],
-            "permissions": ["request.meta.read"],
+                }]
+            },
+            "capabilities": ["gateway.hooks"],
             "hostCompatibility": {
                 "app": ">=0.56.0 <1.0.0",
                 "pluginApi": "^1.0.0",
@@ -3636,13 +3575,17 @@ DROP TABLE plugins;
         assert_eq!(preview.name, "Local Package Plugin");
         assert_eq!(preview.version, "1.0.0");
         assert_eq!(preview.source, PluginInstallSource::Local);
-        assert_eq!(preview.runtime.kind, "declarativeRules");
+        assert_eq!(preview.runtime.kind, "extensionHost");
         assert!(preview.runtime.supported);
         assert!(preview.compatibility.compatible);
         assert!(preview.trust.unsigned);
         assert!(!preview.trust.signature_verified);
-        assert_eq!(preview.permissions[0].permission, "request.meta.read");
-        assert_eq!(preview.permissions[0].risk, PluginPermissionRisk::Low);
+        assert!(preview.permissions.is_empty());
+        assert_eq!(preview.hooks[0].name, "gateway.request.afterBodyRead");
+        assert_eq!(
+            preview.contribution_impact.capabilities,
+            vec!["gateway.hooks".to_string()]
+        );
         assert!(preview.blocking_reasons.is_empty());
         assert!(repository::get_plugin(&db, "local.preview-safe").is_err());
     }

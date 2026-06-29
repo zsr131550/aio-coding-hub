@@ -123,6 +123,7 @@ where
 mod tests {
     use super::build_router;
     use crate::app::plugins::{official, runtime_executor::RuntimeGatewayPluginExecutor};
+    use crate::domain::plugin_contributions::PluginContributes;
     use crate::domain::plugins::{
         PluginDetail, PluginHook, PluginHostCompatibility, PluginInstallSource, PluginManifest,
         PluginPermissionRisk, PluginRuntime, PluginStatus, PluginSummary,
@@ -142,7 +143,7 @@ mod tests {
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use serde_json::Value;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::ffi::OsString;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
@@ -803,7 +804,7 @@ mod tests {
                 name: "Request Rewrite".to_string(),
                 current_version: Some("1.0.0".to_string()),
                 status: PluginStatus::Enabled,
-                runtime: "declarativeRules".to_string(),
+                runtime: "extensionHost".to_string(),
                 permission_risk: PluginPermissionRisk::High,
                 update_available: false,
                 last_error: None,
@@ -815,24 +816,29 @@ mod tests {
                 name: "Request Rewrite".to_string(),
                 version: "1.0.0".to_string(),
                 api_version: "1.0.0".to_string(),
-                runtime: PluginRuntime::DeclarativeRules {
-                    rules: vec!["rules/main.json".to_string()],
+                runtime: PluginRuntime::ExtensionHost {
+                    language: "typescript".to_string(),
                 },
-                hooks: vec![PluginHook {
-                    name: GatewayPluginHookName::RequestAfterBodyRead
-                        .as_str()
-                        .to_string(),
-                    priority: 10,
-                    failure_policy: Some("fail-open".to_string()),
-                }],
-                permissions: vec![
-                    "request.body.read".to_string(),
-                    "request.body.write".to_string(),
-                ],
-                main: None,
+                hooks: vec![],
+                permissions: vec![],
+                main: Some("dist/index.js".to_string()),
                 activation_events: vec![],
-                contributes: None,
-                capabilities: vec![],
+                contributes: Some(PluginContributes {
+                    providers: vec![],
+                    protocols: vec![],
+                    protocol_bridges: vec![],
+                    commands: vec![],
+                    gateway_hooks: vec![PluginHook {
+                        name: GatewayPluginHookName::RequestAfterBodyRead
+                            .as_str()
+                            .to_string(),
+                        priority: 10,
+                        failure_policy: Some("fail-open".to_string()),
+                    }],
+                    unsupported_gateway_rules: Default::default(),
+                    ui: BTreeMap::new(),
+                }),
+                capabilities: vec!["gateway.hooks".to_string()],
                 host_compatibility: PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),
@@ -865,8 +871,19 @@ mod tests {
     }
 
     fn fail_closed(mut plugin: PluginDetail) -> PluginDetail {
-        plugin.manifest.hooks[0].failure_policy = Some("fail-closed".to_string());
+        gateway_hook_mut(&mut plugin).failure_policy = Some("fail-closed".to_string());
         plugin
+    }
+
+    fn gateway_hook_mut(plugin: &mut PluginDetail) -> &mut PluginHook {
+        plugin
+            .manifest
+            .contributes
+            .as_mut()
+            .expect("extension host gateway hook contributions")
+            .gateway_hooks
+            .first_mut()
+            .expect("gateway hook")
     }
 
     fn before_send_header_plugin() -> PluginDetail {
@@ -875,14 +892,13 @@ mod tests {
         plugin.summary.name = "Before Send".to_string();
         plugin.manifest.id = "test.before-send".to_string();
         plugin.manifest.name = "Before Send".to_string();
-        plugin.manifest.hooks[0].name = GatewayPluginHookName::RequestBeforeSend
+        gateway_hook_mut(&mut plugin).name = GatewayPluginHookName::RequestBeforeSend
             .as_str()
             .to_string();
-        plugin.manifest.permissions = vec![
+        plugin.granted_permissions = vec![
             "request.meta.read".to_string(),
             "request.header.write".to_string(),
         ];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
         plugin
     }
 
@@ -892,12 +908,12 @@ mod tests {
         plugin.summary.name = "Response After".to_string();
         plugin.manifest.id = "test.response-after".to_string();
         plugin.manifest.name = "Response After".to_string();
-        plugin.manifest.hooks[0].name = GatewayPluginHookName::ResponseAfter.as_str().to_string();
-        plugin.manifest.permissions = vec![
+        gateway_hook_mut(&mut plugin).name =
+            GatewayPluginHookName::ResponseAfter.as_str().to_string();
+        plugin.granted_permissions = vec![
             "response.body.read".to_string(),
             "response.body.write".to_string(),
         ];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
         plugin
     }
 
@@ -907,10 +923,10 @@ mod tests {
         plugin.summary.name = "Stream Chunk".to_string();
         plugin.manifest.id = "test.stream-chunk".to_string();
         plugin.manifest.name = "Stream Chunk".to_string();
-        plugin.manifest.hooks[0].name = GatewayPluginHookName::ResponseChunk.as_str().to_string();
-        plugin.manifest.permissions =
+        gateway_hook_mut(&mut plugin).name =
+            GatewayPluginHookName::ResponseChunk.as_str().to_string();
+        plugin.granted_permissions =
             vec!["stream.inspect".to_string(), "stream.modify".to_string()];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
         plugin
     }
 
@@ -920,10 +936,9 @@ mod tests {
         plugin.summary.name = "Log Redaction".to_string();
         plugin.manifest.id = "test.log-redaction".to_string();
         plugin.manifest.name = "Log Redaction".to_string();
-        plugin.manifest.hooks[0].name =
+        gateway_hook_mut(&mut plugin).name =
             GatewayPluginHookName::LogBeforePersist.as_str().to_string();
-        plugin.manifest.permissions = vec!["log.redact".to_string()];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
+        plugin.granted_permissions = vec!["log.redact".to_string()];
         plugin
     }
 
@@ -963,13 +978,12 @@ mod tests {
         plugin.summary.name = "Gateway Error".to_string();
         plugin.manifest.id = "test.gateway-error".to_string();
         plugin.manifest.name = "Gateway Error".to_string();
-        plugin.manifest.hooks[0].name = GatewayPluginHookName::Error.as_str().to_string();
-        plugin.manifest.permissions = vec![
+        gateway_hook_mut(&mut plugin).name = GatewayPluginHookName::Error.as_str().to_string();
+        plugin.granted_permissions = vec![
             "response.body.read".to_string(),
             "response.body.write".to_string(),
             "response.header.write".to_string(),
         ];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
         plugin
     }
 
@@ -1591,11 +1605,10 @@ mod tests {
         let db = db::init_for_tests(&db_dir.path().join("privacy-filter-retry.sqlite"))
             .expect("init test db");
         let mut plugin = before_send_header_plugin();
-        plugin.manifest.permissions = vec![
+        plugin.granted_permissions = vec![
             "request.body.read".to_string(),
             "request.body.write".to_string(),
         ];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
         persist_plugin_detail(&db, &plugin);
 
         let (upstream_base_url, mut captured_rx, upstream_task) =

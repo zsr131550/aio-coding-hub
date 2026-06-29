@@ -1,7 +1,8 @@
 use crate::db;
 use crate::domain::plugins::{
-    validate_manifest, PluginAuditLog, PluginDetail, PluginInstallSource, PluginManifest,
-    PluginPermissionRisk, PluginRuntime, PluginRuntimeFailure, PluginStatus, PluginSummary,
+    validate_manifest, validate_manifest_for_official_plugin, PluginAuditLog, PluginDetail,
+    PluginInstallSource, PluginManifest, PluginPermissionRisk, PluginRuntime, PluginRuntimeFailure,
+    PluginStatus, PluginSummary,
 };
 use crate::shared::error::{db_err, AppResult};
 use crate::shared::time::now_unix_seconds;
@@ -251,7 +252,7 @@ fn insert_plugin_with_conn(
     conn: &rusqlite::Connection,
     input: InsertPluginInput,
 ) -> AppResult<PluginDetail> {
-    validate_manifest(&input.manifest, env!("CARGO_PKG_VERSION"))?;
+    validate_manifest_for_source(&input.manifest, input.install_source)?;
     let now = now_unix_seconds();
     let manifest_json = serde_json::to_string(&input.manifest)
         .map_err(|e| format!("PLUGIN_INVALID_MANIFEST: failed to serialize manifest: {e}"))?;
@@ -366,7 +367,8 @@ fn update_plugin_manifest_with_conn(
     manifest: PluginManifest,
     installed_dir: Option<String>,
 ) -> AppResult<PluginDetail> {
-    validate_manifest(&manifest, env!("CARGO_PKG_VERSION"))?;
+    let install_source = install_source_for_plugin_with_conn(conn, &manifest.id)?;
+    validate_manifest_for_source(&manifest, install_source)?;
     let now = now_unix_seconds();
     let plugin_id = manifest.id.clone();
     let version = manifest.version.clone();
@@ -757,10 +759,38 @@ fn detail_from_row(row: &rusqlite::Row<'_>) -> Result<PluginDetailRow, rusqlite:
 fn runtime_name(manifest: &PluginManifest) -> String {
     match manifest.runtime {
         PluginRuntime::ExtensionHost { .. } => "extensionHost".to_string(),
-        PluginRuntime::DeclarativeRules { .. } => "declarativeRules".to_string(),
         PluginRuntime::Native { ref engine } => format!("native:{engine}"),
-        PluginRuntime::Wasm { .. } => "wasm".to_string(),
     }
+}
+
+fn validate_manifest_for_source(
+    manifest: &PluginManifest,
+    install_source: PluginInstallSource,
+) -> AppResult<()> {
+    if install_source == PluginInstallSource::Official {
+        validate_manifest_for_official_plugin(manifest, env!("CARGO_PKG_VERSION"))?;
+    } else {
+        validate_manifest(manifest, env!("CARGO_PKG_VERSION"))?;
+    }
+    Ok(())
+}
+
+fn install_source_for_plugin_with_conn(
+    conn: &rusqlite::Connection,
+    plugin_id: &str,
+) -> AppResult<PluginInstallSource> {
+    let raw = conn
+        .query_row(
+            "SELECT install_source FROM plugins WHERE plugin_id = ?1",
+            params![plugin_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| db_err!("failed to read plugin install source: {e}"))?;
+    Ok(raw
+        .as_deref()
+        .and_then(PluginInstallSource::parse)
+        .unwrap_or(PluginInstallSource::Local))
 }
 
 fn highest_permission_risk(permissions: &[String]) -> PluginPermissionRisk {
@@ -983,17 +1013,18 @@ mod tests {
             "version": "1.0.0",
             "apiVersion": "1.0.0",
             "runtime": {
-                "kind": "declarativeRules",
-                "rules": ["rules/main.json"]
+                "kind": "extensionHost",
+                "language": "typescript"
             },
-            "hooks": [
-                {
+            "main": "dist/index.js",
+            "contributes": {
+                "gatewayHooks": [{
                     "name": "gateway.request.afterBodyRead",
                     "priority": 100,
                     "failurePolicy": "fail-open"
-                }
-            ],
-            "permissions": ["request.body.read", "request.body.write"],
+                }]
+            },
+            "capabilities": ["gateway.hooks"],
             "hostCompatibility": {
                 "app": ">=0.56.0 <1.0.0",
                 "pluginApi": "^1.0.0",
@@ -1130,7 +1161,7 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].plugin_id, "community.prompt-helper");
         assert_eq!(list[0].status, PluginStatus::Enabled);
-        assert_eq!(list[0].runtime, "declarativeRules");
+        assert_eq!(list[0].runtime, "extensionHost");
 
         let detail = get_plugin(&db, "community.prompt-helper").unwrap();
         assert_eq!(detail.manifest, manifest);
@@ -1273,7 +1304,7 @@ INSERT INTO plugin_market_sources(
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
         let mut manifest = manifest();
-        manifest.permissions.push("unknown.permission".to_string());
+        manifest.capabilities.push("unknown.capability".to_string());
 
         let err = insert_plugin(
             &db,
@@ -1286,6 +1317,6 @@ INSERT INTO plugin_market_sources(
         )
         .unwrap_err();
 
-        assert!(err.to_string().starts_with("PLUGIN_UNKNOWN_PERMISSION:"));
+        assert!(err.to_string().starts_with("PLUGIN_UNKNOWN_CAPABILITY:"));
     }
 }
