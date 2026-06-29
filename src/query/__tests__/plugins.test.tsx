@@ -100,7 +100,8 @@ function detail(overrides: Partial<PluginDetail> = {}): PluginDetail {
       name: baseSummary.name,
       version: "1.0.0",
       apiVersion: "1.0.0",
-      runtime: { kind: "declarativeRules", rules: ["rules/main.json"] },
+      runtime: { kind: "extensionHost", language: "typescript" },
+      main: "dist/extension.js",
       hooks: [{ name: "gateway.request.afterBodyRead", priority: 100 }],
       permissions: ["request.body.read"],
       hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
@@ -152,7 +153,6 @@ function activeContributions(
     protocolBridges: [],
     commands: [],
     gatewayHooks: [],
-    gatewayRules: [],
     ...overrides,
   };
 }

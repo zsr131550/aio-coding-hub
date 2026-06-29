@@ -686,7 +686,7 @@ fn validate_extension_host_manifest(
         ));
     }
     validate_activation_events(&manifest.activation_events)?;
-    validate_contributes(manifest.contributes.as_ref())?;
+    validate_contributes(manifest.id.as_str(), manifest.contributes.as_ref())?;
     validate_capabilities(&manifest.capabilities)?;
     validate_capability_dependencies(manifest.contributes.as_ref(), &manifest.capabilities)?;
     Ok(())
@@ -727,6 +727,7 @@ fn validate_activation_events(activation_events: &[String]) -> Result<(), Plugin
 }
 
 fn validate_contributes(
+    plugin_id: &str,
     contributes: Option<&PluginContributes>,
 ) -> Result<(), PluginValidationError> {
     let Some(contributes) = contributes else {
@@ -770,6 +771,12 @@ fn validate_contributes(
             return Err(PluginValidationError::new(
                 "PLUGIN_INVALID_PROTOCOL_BRIDGE_CONTRIBUTION",
                 "protocol bridge contribution requires bridgeType, inboundProtocol, and outboundProtocol",
+            ));
+        }
+        if !is_namespaced_contribution_id(plugin_id, &bridge.bridge_type) {
+            return Err(PluginValidationError::new(
+                "PLUGIN_INVALID_PROTOCOL_BRIDGE_CONTRIBUTION",
+                "protocol bridge bridgeType must be lower-case and namespaced by plugin id",
             ));
         }
     }
@@ -983,6 +990,32 @@ fn is_button_field(field: &HostRenderedField) -> bool {
 
 fn is_blank(value: &str) -> bool {
     value.trim().is_empty()
+}
+
+fn is_namespaced_contribution_id(plugin_id: &str, value: &str) -> bool {
+    if !is_valid_contribution_id(value) {
+        return false;
+    }
+    if value == plugin_id {
+        return true;
+    }
+    let Some(suffix) = value.strip_prefix(plugin_id) else {
+        return false;
+    };
+    suffix.len() > 1 && matches!(suffix.as_bytes().first(), Some(b'.' | b'/' | b':'))
+}
+
+fn is_valid_contribution_id(value: &str) -> bool {
+    value
+        .split(|ch| matches!(ch, '.' | '/' | ':'))
+        .all(|segment| {
+            let mut chars = segment.chars();
+            let Some(first) = chars.next() else {
+                return false;
+            };
+            (first.is_ascii_lowercase() || first.is_ascii_digit())
+                && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+        })
 }
 
 fn validate_hooks(hooks: &[PluginHook]) -> Result<(), PluginValidationError> {
@@ -1448,6 +1481,62 @@ mod tests {
         });
 
         assert_manifest_validation_error(raw, "PLUGIN_MISSING_CAPABILITY");
+    }
+
+    #[test]
+    fn extension_host_rejects_non_namespaced_protocol_bridge_type() {
+        let mut raw = valid_extension_host_manifest();
+        raw["capabilities"] = serde_json::json!(["protocol.bridge"]);
+        raw["contributes"] = serde_json::json!({
+            "protocolBridges": [{
+                "bridgeType": "openai-gemini",
+                "inboundProtocol": "openai.chat",
+                "outboundProtocol": "gemini.generateContent"
+            }]
+        });
+
+        let err = manifest_validation_error(raw);
+        assert_eq!(err.code, "PLUGIN_INVALID_PROTOCOL_BRIDGE_CONTRIBUTION");
+        assert_eq!(
+            err.message,
+            "protocol bridge bridgeType must be lower-case and namespaced by plugin id"
+        );
+    }
+
+    #[test]
+    fn extension_host_rejects_invalid_protocol_bridge_type() {
+        let mut raw = valid_extension_host_manifest();
+        raw["capabilities"] = serde_json::json!(["protocol.bridge"]);
+        raw["contributes"] = serde_json::json!({
+            "protocolBridges": [{
+                "bridgeType": "acme.extension.OpenAI",
+                "inboundProtocol": "openai.chat",
+                "outboundProtocol": "gemini.generateContent"
+            }]
+        });
+
+        let err = manifest_validation_error(raw);
+        assert_eq!(err.code, "PLUGIN_INVALID_PROTOCOL_BRIDGE_CONTRIBUTION");
+        assert_eq!(
+            err.message,
+            "protocol bridge bridgeType must be lower-case and namespaced by plugin id"
+        );
+    }
+
+    #[test]
+    fn extension_host_accepts_valid_namespaced_protocol_bridge_type() {
+        let mut raw = valid_extension_host_manifest();
+        raw["capabilities"] = serde_json::json!(["protocol.bridge"]);
+        raw["contributes"] = serde_json::json!({
+            "protocolBridges": [{
+                "bridgeType": "acme.extension.openai-gemini",
+                "inboundProtocol": "openai.chat",
+                "outboundProtocol": "gemini.generateContent"
+            }]
+        });
+        let manifest: PluginManifest = serde_json::from_value(raw).unwrap();
+
+        validate_manifest(&manifest, "0.62.0").unwrap();
     }
 
     #[test]

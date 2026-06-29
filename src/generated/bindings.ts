@@ -2067,7 +2067,6 @@ export type ActiveContributionSnapshot = {
   protocolBridges: ActiveProtocolBridgeContribution[];
   commands: ActiveCommandContribution[];
   gatewayHooks: ActiveGatewayHookContribution[];
-  gatewayRules: ActiveGatewayRuleContribution[];
 };
 export type ActiveGatewayHookContribution = {
   pluginId: string;
@@ -2075,14 +2074,9 @@ export type ActiveGatewayHookContribution = {
   priority: number;
   failurePolicy: string | null;
 };
-export type ActiveGatewayRuleContribution = {
-  pluginId: string;
-  contributionId: string;
-  rules: string[];
-  hooks: string[];
-};
 export type ActiveProtocolBridgeContribution = {
   pluginId: string;
+  contributionId: string;
   bridgeType: string;
   inboundProtocol: string;
   outboundProtocol: string;
@@ -2632,7 +2626,6 @@ export type GatewayRectifierSettingsUpdate = {
   responseFixerMaxJsonDepth: number;
   responseFixerMaxFixSize: number;
 };
-export type GatewayRuleContribution = { id?: string | null; rules: string[]; hooks?: string[] };
 export type GatewayStatus = {
   running: boolean;
   port: number | null;
@@ -2863,7 +2856,6 @@ export type PluginContributes = {
   protocolBridges?: ProtocolBridgeContribution[];
   commands?: CommandContribution[];
   gatewayHooks?: PluginHook[];
-  gatewayRules?: GatewayRuleContribution[];
   ui?: Partial<{ [key in string]: UiContribution[] }>;
 };
 export type PluginContributionChange = {
@@ -3122,9 +3114,7 @@ export type PluginRevokePermissionInput = { pluginId: string; permission: string
 export type PluginRollbackInput = { pluginId: string; version: string };
 export type PluginRuntime =
   | { kind: "extensionHost"; language: string }
-  | { kind: "declarativeRules"; rules: string[] }
-  | { kind: "native"; engine: string }
-  | { kind: "wasm"; abiVersion: string; memoryLimitBytes?: number | null };
+  | { kind: "native"; engine: string };
 export type PluginRuntimeFailure = {
   id: number;
   plugin_id: string;
