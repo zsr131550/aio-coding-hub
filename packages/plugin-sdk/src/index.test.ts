@@ -149,6 +149,60 @@ describe("validateManifest", () => {
     expect(validateManifest(manifest)).toEqual({ ok: true });
   });
 
+  test("rejects non-namespaced protocol bridge contribution", () => {
+    const manifest: PluginManifest = {
+      id: "acme.bridge",
+      name: "Claude OpenAI Gemini Bridge",
+      version: "0.1.0",
+      apiVersion: "1.0.0",
+      main: "dist/extension.js",
+      runtime: { kind: "extensionHost", language: "typescript" },
+      contributes: {
+        protocolBridges: [
+          {
+            bridgeType: "openai-gemini",
+            inboundProtocol: "openai.chat",
+            outboundProtocol: "gemini.generateContent",
+          },
+        ],
+      },
+      capabilities: ["protocol.bridge"],
+      hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+    };
+
+    expect(validateManifest(manifest)).toMatchObject({
+      ok: false,
+      error: { code: "PLUGIN_INVALID_PROTOCOL_BRIDGE_CONTRIBUTION" },
+    });
+  });
+
+  test("rejects invalid protocol bridge contribution id", () => {
+    const manifest: PluginManifest = {
+      id: "acme.bridge",
+      name: "Claude OpenAI Gemini Bridge",
+      version: "0.1.0",
+      apiVersion: "1.0.0",
+      main: "dist/extension.js",
+      runtime: { kind: "extensionHost", language: "typescript" },
+      contributes: {
+        protocolBridges: [
+          {
+            bridgeType: "acme.bridge.OpenAI",
+            inboundProtocol: "openai.chat",
+            outboundProtocol: "gemini.generateContent",
+          },
+        ],
+      },
+      capabilities: ["protocol.bridge"],
+      hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+    };
+
+    expect(validateManifest(manifest)).toMatchObject({
+      ok: false,
+      error: { code: "PLUGIN_INVALID_PROTOCOL_BRIDGE_CONTRIBUTION" },
+    });
+  });
+
   test("rejects malformed provider contribution", () => {
     const manifest = {
       ...openRouterManifest,
@@ -359,7 +413,7 @@ describe("validateManifest", () => {
           contributes: {
             protocolBridges: [
               {
-                bridgeType: "acme.bridge.openai-gemini",
+                bridgeType: "acme.openrouter.openai-gemini",
                 inboundProtocol: "openai.chat",
                 outboundProtocol: "gemini.generateContent",
               },

@@ -7,6 +7,8 @@ use crate::plugins::PluginStatus;
 use crate::shared::error::AppError;
 use crate::shared::error::AppResult;
 
+use super::extension_protocol_bridge::ExtensionProtocolBridgeRegistry;
+
 #[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveUiContribution {
@@ -41,6 +43,7 @@ pub struct ActiveProtocolContribution {
 #[serde(rename_all = "camelCase")]
 pub struct ActiveProtocolBridgeContribution {
     pub plugin_id: String,
+    pub contribution_id: String,
     pub bridge_type: String,
     pub inbound_protocol: String,
     pub outbound_protocol: String,
@@ -117,12 +120,15 @@ impl ActiveContributionSnapshot {
             }
 
             for bridge in &contributes.protocol_bridges {
-                ensure_contribution_id(&bridge.bridge_type, "protocol bridge")?;
-                ensure_namespaced(plugin_id, &bridge.bridge_type, "protocol bridge")?;
+                ensure_protocol_bridge_type(plugin_id, &bridge.bridge_type)?;
                 snapshot
                     .protocol_bridges
                     .push(ActiveProtocolBridgeContribution {
                         plugin_id: plugin_id.to_string(),
+                        contribution_id: ExtensionProtocolBridgeRegistry::contribution_id(
+                            plugin_id,
+                            &bridge.bridge_type,
+                        ),
                         bridge_type: bridge.bridge_type.clone(),
                         inbound_protocol: bridge.inbound_protocol.clone(),
                         outbound_protocol: bridge.outbound_protocol.clone(),
@@ -231,6 +237,48 @@ fn ensure_namespaced(plugin_id: &str, value: &str, contribution_kind: &str) -> A
     ))
 }
 
+fn ensure_protocol_bridge_type(plugin_id: &str, bridge_type: &str) -> AppResult<()> {
+    ensure_contribution_id(bridge_type, "protocol bridge")?;
+    if !is_valid_protocol_bridge_type(bridge_type) {
+        return Err(AppError::new(
+            "PLUGIN_INVALID_PROTOCOL_BRIDGE_CONTRIBUTION",
+            "protocol bridge bridgeType must use lower-case id segments",
+        ));
+    }
+    if is_protocol_bridge_namespaced(plugin_id, bridge_type) {
+        return Ok(());
+    }
+
+    Err(AppError::new(
+        "PLUGIN_CONTRIBUTION_NAMESPACE_MISMATCH",
+        format!(
+            "protocol bridge contribution id {bridge_type} must be namespaced by plugin {plugin_id}"
+        ),
+    ))
+}
+
+fn is_valid_protocol_bridge_type(value: &str) -> bool {
+    value
+        .split(|ch| matches!(ch, '.' | '/' | ':'))
+        .all(|segment| {
+            let mut chars = segment.chars();
+            let Some(first) = chars.next() else {
+                return false;
+            };
+            (first.is_ascii_lowercase() || first.is_ascii_digit())
+                && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+        })
+}
+
+fn is_protocol_bridge_namespaced(plugin_id: &str, value: &str) -> bool {
+    if value == plugin_id {
+        return true;
+    }
+    value
+        .strip_prefix(plugin_id)
+        .is_some_and(|suffix| matches!(suffix.as_bytes().first(), Some(b'.' | b'/' | b':')))
+}
+
 fn is_plugin_namespaced(plugin_id: &str, value: &str) -> bool {
     if value == plugin_id {
         return true;
@@ -324,6 +372,32 @@ mod contribution_registry_tests {
         let err = ActiveContributionSnapshot::from_plugin_details(&[plugin]).unwrap_err();
 
         assert_eq!(err.code(), "PLUGIN_CONTRIBUTION_NAMESPACE_MISMATCH");
+    }
+
+    #[test]
+    fn contribution_registry_rejects_invalid_protocol_bridge_type() {
+        let plugin = plugin_detail_with_protocol_bridge("acme.bridge", "acme.bridge.OpenAI");
+
+        let err = ActiveContributionSnapshot::from_plugin_details(&[plugin]).unwrap_err();
+
+        assert_eq!(err.code(), "PLUGIN_INVALID_PROTOCOL_BRIDGE_CONTRIBUTION");
+    }
+
+    #[test]
+    fn contribution_registry_indexes_namespaced_protocol_bridge() {
+        let plugin = plugin_detail_with_protocol_bridge("acme.bridge", "acme.bridge.openai-gemini");
+
+        let snapshot =
+            ActiveContributionSnapshot::from_plugin_details(&[plugin]).expect("snapshot");
+
+        assert_eq!(snapshot.protocol_bridges.len(), 1);
+        let bridge = &snapshot.protocol_bridges[0];
+        assert_eq!(bridge.plugin_id, "acme.bridge");
+        assert_eq!(bridge.contribution_id, "acme.bridge.openai-gemini");
+        assert_eq!(bridge.bridge_type, "acme.bridge.openai-gemini");
+        assert_eq!(bridge.inbound_protocol, "claude");
+        assert_eq!(bridge.outbound_protocol, "codex");
+        assert_eq!(bridge.supports_streaming, Some(true));
     }
 
     #[test]

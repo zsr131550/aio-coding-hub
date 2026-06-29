@@ -377,7 +377,7 @@ export function validateManifest(manifest: PluginManifest): ValidationResult {
   const activationError = validateActivationEvents(manifest.activationEvents);
   if (activationError) return activationError;
   const contributes = manifest.contributes ?? {};
-  const contributionError = validateContributes(contributes);
+  const contributionError = validateContributes(contributes, manifest.id);
   if (contributionError) return contributionError;
   const capabilities = manifest.capabilities ?? [];
   const capabilityError = validateCapabilities(capabilities);
@@ -412,7 +412,10 @@ function validateActivationEvents(activationEvents: unknown): ValidationResult |
   return null;
 }
 
-function validateContributes(contributes: PluginContributes): ValidationResult | null {
+function validateContributes(
+  contributes: PluginContributes,
+  pluginId: string
+): ValidationResult | null {
   const raw = asRecord(contributes);
   if (!raw) {
     return invalid("PLUGIN_INVALID_CONTRIBUTES", "contributes must be an object");
@@ -421,7 +424,7 @@ function validateContributes(contributes: PluginContributes): ValidationResult |
   if (providerError) return providerError;
   const protocolError = validateProtocolContributions(raw.protocols);
   if (protocolError) return protocolError;
-  const protocolBridgeError = validateProtocolBridgeContributions(raw.protocolBridges);
+  const protocolBridgeError = validateProtocolBridgeContributions(raw.protocolBridges, pluginId);
   if (protocolBridgeError) return protocolBridgeError;
   const commandError = validateCommandContributions(raw.commands);
   if (commandError) return commandError;
@@ -485,7 +488,10 @@ function validateProtocolContributions(protocols: unknown): ValidationResult | n
   return null;
 }
 
-function validateProtocolBridgeContributions(protocolBridges: unknown): ValidationResult | null {
+function validateProtocolBridgeContributions(
+  protocolBridges: unknown,
+  pluginId: string
+): ValidationResult | null {
   if (protocolBridges == null) return null;
   if (!Array.isArray(protocolBridges)) {
     return invalid(
@@ -505,6 +511,12 @@ function validateProtocolBridgeContributions(protocolBridges: unknown): Validati
       return invalid(
         "PLUGIN_INVALID_PROTOCOL_BRIDGE_CONTRIBUTION",
         "protocol bridge contribution requires bridgeType, inboundProtocol, and outboundProtocol"
+      );
+    }
+    if (!isNamespacedContributionId(pluginId, record.bridgeType)) {
+      return invalid(
+        "PLUGIN_INVALID_PROTOCOL_BRIDGE_CONTRIBUTION",
+        "protocol bridge bridgeType must be lower-case and namespaced by plugin id"
       );
     }
   }
@@ -711,6 +723,18 @@ function hasOwn(value: Record<string, unknown>, key: string): boolean {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
+}
+
+function isNamespacedContributionId(pluginId: string, value: string): boolean {
+  if (!isValidContributionId(value)) return false;
+  if (value === pluginId) return true;
+  if (!value.startsWith(pluginId)) return false;
+  const suffix = value.slice(pluginId.length);
+  return suffix.length > 1 && [".", "/", ":"].includes(suffix[0]);
+}
+
+function isValidContributionId(value: string): boolean {
+  return /^[a-z0-9][a-z0-9-]*(?:[./:][a-z0-9][a-z0-9-]*)*$/.test(value);
 }
 
 function invalid(code: string, message: string): ValidationResult {
