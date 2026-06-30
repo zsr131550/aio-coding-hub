@@ -376,6 +376,15 @@ describe("components/cli-manager/tabs/CodexTab", () => {
           toml: 'approval_policy = "on-request"\\n',
         }}
         appSettings={createAppSettings({ codex_reasoning_guard_enabled: false })}
+        codexReasoningGuardSessionStats={createReasoningGuardStats()}
+        codexReasoningGuardAllStats={createReasoningGuardStats({
+          hit_request_count: 12,
+          hit_attempt_count: 18,
+          normal_request_count: 68,
+          total_request_count: 80,
+          hit_rate: 0.15,
+        })}
+        appSessionStartedAtMs={1_770_000_000_000}
         refreshCodex={vi.fn()}
         openCodexConfigDir={vi.fn()}
         persistCodexConfig={vi.fn()}
@@ -387,11 +396,20 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(screen.getByText("命中请求数")).toBeInTheDocument();
     expect(screen.getByLabelText("降智拦截统计开始日期")).toBeInTheDocument();
     expect(screen.getByLabelText("降智拦截统计结束日期")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "本次应用打开后" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "全部统计" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "本次应用打开后" })[0]).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "全部统计" })[0]).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "自定义日期" })[0]).toBeInTheDocument();
     expect(screen.getByText("4")).toBeInTheDocument();
     expect(screen.getByText("9")).toBeInTheDocument();
     expect(screen.getByText("12.5%")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "全部统计" })[0]);
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.getByText("18")).toBeInTheDocument();
+    expect(screen.getByText("15.0%")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "本次应用打开后" })[0]);
+    expect(screen.getByText("4")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: "切换 Codex 降智拦截" }));
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
@@ -414,6 +432,15 @@ describe("components/cli-manager/tabs/CodexTab", () => {
           toml: 'approval_policy = "on-request"\\n',
         }}
         appSettings={createAppSettings({ codex_reasoning_guard_enabled: true })}
+        codexReasoningGuardSessionStats={createReasoningGuardStats()}
+        codexReasoningGuardAllStats={createReasoningGuardStats({
+          hit_request_count: 12,
+          hit_attempt_count: 18,
+          normal_request_count: 68,
+          total_request_count: 80,
+          hit_rate: 0.15,
+        })}
+        appSessionStartedAtMs={1_770_000_000_000}
         refreshCodex={vi.fn()}
         openCodexConfigDir={vi.fn()}
         persistCodexConfig={vi.fn()}

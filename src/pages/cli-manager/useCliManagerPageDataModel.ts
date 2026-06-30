@@ -10,6 +10,7 @@ import {
 import { logToConsole } from "../../services/consoleLog";
 import { openDesktopSinglePath } from "../../services/desktop/dialog";
 import { openDesktopPath } from "../../services/desktop/opener";
+import { useAppSessionStartedAtMs } from "../../app/appSession";
 import { type GatewayRectifierSettingsPatch } from "../../services/settings/settingsGatewayRectifier";
 import type {
   AppSettings,
@@ -40,6 +41,7 @@ import {
   useCliManagerCodexConfigTomlSetMutation,
   useCliManagerCodexInfoQuery,
   useCliManagerCodexProviderSyncMutation,
+  useCliManagerCodexReasoningGuardStatsQuery,
   useCliManagerGeminiConfigQuery,
   useCliManagerGeminiConfigSetMutation,
   useCliManagerGeminiInfoQuery,
@@ -73,6 +75,7 @@ const DEFAULT_RECTIFIER: GatewayRectifierSettingsPatch = {
 
 export function useCliManagerPageDataModel() {
   const [tab, setTab] = useState<CliManagerTabKey>("general");
+  const appSessionStartedAtMs = useAppSessionStartedAtMs();
 
   const settingsQuery = useSettingsQuery();
   const appSettings = settingsQuery.data ?? null;
@@ -144,6 +147,18 @@ export function useCliManagerPageDataModel() {
   const codexConfigSetMutation = useCliManagerCodexConfigSetMutation();
   const codexConfigTomlSetMutation = useCliManagerCodexConfigTomlSetMutation();
   const codexProviderSyncMutation = useCliManagerCodexProviderSyncMutation();
+  const codexReasoningGuardSessionStatsQuery = useCliManagerCodexReasoningGuardStatsQuery(
+    appSessionStartedAtMs == null
+      ? null
+      : { startCreatedAtMs: appSessionStartedAtMs, endCreatedAtMs: null },
+    {
+      enabled: tab === "codex" && appSessionStartedAtMs != null,
+    }
+  );
+  const codexReasoningGuardAllStatsQuery = useCliManagerCodexReasoningGuardStatsQuery(null, {
+    enabled: tab === "codex",
+  });
+
   const codexInfo = codexInfoQuery.data ?? null;
   const codexConfig = codexConfigQuery.data ?? null;
   const codexConfigToml = codexConfigTomlQuery.data ?? null;
@@ -155,6 +170,10 @@ export function useCliManagerPageDataModel() {
   const codexConfigTomlLoading = codexConfigTomlQuery.isFetching;
   const codexConfigTomlSaving = codexConfigTomlSetMutation.isPending;
   const codexProviderSyncing = codexProviderSyncMutation.isPending;
+  const codexReasoningGuardSessionStats = codexReasoningGuardSessionStatsQuery.data ?? null;
+  const codexReasoningGuardAllStats = codexReasoningGuardAllStatsQuery.data ?? null;
+  const codexReasoningGuardSessionStatsLoading = codexReasoningGuardSessionStatsQuery.isFetching;
+  const codexReasoningGuardAllStatsLoading = codexReasoningGuardAllStatsQuery.isFetching;
 
   const geminiInfoQuery = useCliManagerGeminiInfoQuery({ enabled: tab === "gemini" });
   const geminiConfigQuery = useCliManagerGeminiConfigQuery({ enabled: tab === "gemini" });
@@ -692,6 +711,11 @@ export function useCliManagerPageDataModel() {
       codexInfo,
       codexConfig,
       codexConfigToml,
+      codexReasoningGuardSessionStats,
+      codexReasoningGuardSessionStatsLoading,
+      codexReasoningGuardAllStats,
+      codexReasoningGuardAllStatsLoading,
+      appSessionStartedAtMs,
       appSettings,
       commonSettingsSaving,
       codexHomeSettingsSaving: commonSettingsSaving || settingsWriteBlocked,
