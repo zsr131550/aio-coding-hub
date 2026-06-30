@@ -141,6 +141,7 @@ mod tests {
     use axum::http::{header, Method, Request, StatusCode};
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use futures_core::Stream;
     use serde_json::Value;
     use std::collections::HashMap;
     use std::ffi::OsString;
@@ -695,6 +696,10 @@ mod tests {
         insert_codex_provider_with_priority(db, "Timeout Stub", base_url, 0)
     }
 
+    fn disable_upstream_retry_policy(settings: &mut settings::AppSettings) {
+        settings.upstream_retry_policy.enabled = false;
+    }
+
     fn insert_codex_oauth_provider_with_priority(db: &db::Db, name: &str, priority: i64) -> i64 {
         insert_codex_oauth_provider_with_base_urls(db, name, Vec::new(), priority)
     }
@@ -1068,6 +1073,7 @@ mod tests {
         app_settings.upstream_first_byte_timeout_seconds = 1;
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
 
         let db_dir = tempfile::tempdir().expect("db dir");
@@ -1172,6 +1178,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -1805,6 +1812,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -2041,6 +2049,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -2110,6 +2119,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -2185,6 +2195,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -2265,6 +2276,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -2515,6 +2527,7 @@ mod tests {
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 2;
         app_settings.provider_cooldown_seconds = 0;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -3552,7 +3565,7 @@ mod tests {
         let (sse_base_url, sse_task) = spawn_delayed_chunked_sse_upstream(
             first_chunk,
             completion_chunk,
-            Duration::from_millis(50),
+            Duration::from_millis(500),
         )
         .await;
         let provider_id =
@@ -3584,18 +3597,17 @@ mod tests {
             .expect("trace header")
             .to_string();
 
-        let mut body = Box::pin(response.into_body());
-        let first_frame = tokio::time::timeout(
+        let mut body_stream = Box::pin(response.into_body().into_data_stream());
+        let first_chunk = tokio::time::timeout(
             Duration::from_secs(2),
-            std::future::poll_fn(|cx| body.as_mut().poll_frame(cx)),
+            std::future::poll_fn(|cx| body_stream.as_mut().poll_next(cx)),
         )
         .await
-        .expect("first relay frame timeout")
-        .expect("first relay frame")
-        .expect("first relay frame ok");
-        let first_chunk = first_frame.into_data().expect("data frame");
+        .expect("first relay chunk timeout")
+        .expect("first relay chunk")
+        .expect("first relay chunk ok");
         assert!(String::from_utf8_lossy(&first_chunk).contains("hello"));
-        drop(body);
+        drop(body_stream);
 
         tokio::time::timeout(Duration::from_secs(2), writer_task)
             .await
@@ -3808,7 +3820,8 @@ mod tests {
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
 
-        let app_settings = settings::AppSettings::default();
+        let mut app_settings = settings::AppSettings::default();
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -3962,6 +3975,7 @@ mod tests {
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 2;
         app_settings.provider_cooldown_seconds = 30;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -4070,7 +4084,8 @@ mod tests {
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
 
-        let app_settings = settings::AppSettings::default();
+        let mut app_settings = settings::AppSettings::default();
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -4205,6 +4220,7 @@ mod tests {
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         app_settings.codex_reasoning_guard_exhausted_action =
             settings::CodexReasoningGuardExhaustedAction::ReturnError;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
 
         let db_dir = tempfile::tempdir().expect("db dir");
@@ -4310,6 +4326,7 @@ mod tests {
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         app_settings.codex_reasoning_guard_exhausted_action =
             settings::CodexReasoningGuardExhaustedAction::SwitchProvider;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -4422,6 +4439,7 @@ mod tests {
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         app_settings.codex_reasoning_guard_exhausted_action =
             settings::CodexReasoningGuardExhaustedAction::SwitchProvider;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -4510,6 +4528,7 @@ mod tests {
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         app_settings.codex_reasoning_guard_exhausted_action =
             settings::CodexReasoningGuardExhaustedAction::ReturnError;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -4587,6 +4606,7 @@ mod tests {
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         app_settings.codex_reasoning_guard_exhausted_action =
             settings::CodexReasoningGuardExhaustedAction::SwitchProvider;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -5161,6 +5181,7 @@ mod tests {
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         app_settings.codex_reasoning_guard_exhausted_action =
             settings::CodexReasoningGuardExhaustedAction::SwitchProvider;
+        disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");

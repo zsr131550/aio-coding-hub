@@ -429,7 +429,7 @@ fn restore_from_manifest<R: tauri::Runtime>(
             let Some(rel) = entry.backup_rel.as_ref() else {
                 return Err(format!("missing backup_rel for {}", entry.kind).into());
             };
-            let backup_path = files_dir.join(rel);
+            let backup_path = safe_backup_path(&files_dir, rel)?;
 
             // Use merge-restore for known file kinds to preserve user changes
             // made while the proxy was enabled.
@@ -543,7 +543,49 @@ pub fn backup_file_path_for_enabled_manifest<R: tauri::Runtime>(
         write_manifest(app, cli_key, &manifest)?;
     }
 
-    Ok(backup_rel.map(|rel| files_dir.join(rel)))
+    backup_rel
+        .map(|rel| safe_backup_path(&files_dir, &rel))
+        .transpose()
+}
+
+fn safe_backup_path(files_dir: &Path, rel: &str) -> crate::shared::error::AppResult<PathBuf> {
+    let rel_path = Path::new(rel);
+    if rel.trim().is_empty()
+        || rel_path.is_absolute()
+        || rel_path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!("SEC_INVALID_INPUT: invalid CLI proxy backup_rel={rel}").into());
+    }
+
+    let mut path = files_dir.to_path_buf();
+    for component in rel_path.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(format!("SEC_INVALID_INPUT: invalid CLI proxy backup_rel={rel}").into());
+        };
+        path.push(part);
+        if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: refusing to use symlink CLI proxy backup path={}",
+                    path.display()
+                )
+                .into());
+            }
+        }
+    }
+
+    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "SEC_INVALID_INPUT: refusing to use symlink CLI proxy backup path={}",
+                path.display()
+            )
+            .into());
+        }
+    }
+    Ok(path)
 }
 
 fn backup_for_enable<R: tauri::Runtime>(
@@ -759,7 +801,7 @@ fn restore_backups_exactly_from_manifest<R: tauri::Runtime>(
             let Some(rel) = entry.backup_rel.as_ref() else {
                 return Err(format!("missing backup_rel for {}", entry.kind).into());
             };
-            let backup_path = files_dir.join(rel);
+            let backup_path = safe_backup_path(&files_dir, rel)?;
             let bytes = read_cli_proxy_file(&backup_path)?;
             if let Some(parent) = target_path.parent() {
                 std::fs::create_dir_all(parent)

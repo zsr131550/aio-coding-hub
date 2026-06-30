@@ -40,6 +40,7 @@ import {
   useCliManagerCodexConfigTomlQuery,
   useCliManagerCodexConfigTomlSetMutation,
   useCliManagerCodexInfoQuery,
+  useCliManagerCodexProviderSyncMutation,
   useCliManagerCodexReasoningGuardStatsQuery,
   useCliManagerGeminiConfigQuery,
   useCliManagerGeminiConfigSetMutation,
@@ -145,6 +146,7 @@ export function useCliManagerPageDataModel() {
   const codexConfigTomlQuery = useCliManagerCodexConfigTomlQuery({ enabled: tab === "codex" });
   const codexConfigSetMutation = useCliManagerCodexConfigSetMutation();
   const codexConfigTomlSetMutation = useCliManagerCodexConfigTomlSetMutation();
+  const codexProviderSyncMutation = useCliManagerCodexProviderSyncMutation();
   const codexReasoningGuardSessionStatsQuery = useCliManagerCodexReasoningGuardStatsQuery(
     appSessionStartedAtMs,
     {
@@ -165,6 +167,7 @@ export function useCliManagerPageDataModel() {
   const codexConfigSaving = codexConfigSetMutation.isPending;
   const codexConfigTomlLoading = codexConfigTomlQuery.isFetching;
   const codexConfigTomlSaving = codexConfigTomlSetMutation.isPending;
+  const codexProviderSyncing = codexProviderSyncMutation.isPending;
   const codexReasoningGuardSessionStats = codexReasoningGuardSessionStatsQuery.data ?? null;
   const codexReasoningGuardAllStats = codexReasoningGuardAllStatsQuery.data ?? null;
   const codexReasoningGuardSessionStatsLoading = codexReasoningGuardSessionStatsQuery.isFetching;
@@ -562,6 +565,27 @@ export function useCliManagerPageDataModel() {
     }
   }
 
+  async function syncCodexProvider() {
+    if (codexConfigSaving || codexConfigTomlSaving || codexProviderSyncing) return;
+    if (codexAvailable !== "available") return;
+
+    try {
+      const result = await codexProviderSyncMutation.mutateAsync();
+      toast(`已同步 Codex Provider 到 ${result.target_provider}`);
+    } catch (err) {
+      const formatted = formatActionFailureToast("同步 Codex Provider", err);
+      logToConsole("error", "同步 Codex Provider 失败", {
+        error: formatted.raw,
+        error_code: formatted.error_code ?? undefined,
+      });
+      if (formatted.error_code === "CODEX_PROVIDER_SYNC_PROCESS_RUNNING") {
+        toast("Codex App 正在运行，请先关闭 Codex App 后重试");
+        return;
+      }
+      toast(formatted.toast);
+    }
+  }
+
   async function persistClaudeSettings(patch: ClaudeSettingsPatch) {
     if (claudeSettingsSaving) return;
     if (claudeAvailable !== "available") return;
@@ -672,6 +696,7 @@ export function useCliManagerPageDataModel() {
       codexConfigSaving,
       codexConfigTomlLoading,
       codexConfigTomlSaving,
+      codexProviderSyncing,
       codexInfo,
       codexConfig,
       codexConfigToml,
@@ -687,6 +712,7 @@ export function useCliManagerPageDataModel() {
       openCodexConfigDir,
       persistCodexConfig,
       persistCodexConfigToml,
+      syncCodexProvider,
       persistCommonSettings,
       persistCodexReasoningGuardSettings,
       persistCodexHomeSettings,

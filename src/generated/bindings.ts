@@ -325,6 +325,14 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async cliManagerCodexProviderSync(): Promise<Result<CodexProviderSyncResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("cli_manager_codex_provider_sync") };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async cliManagerGeminiInfoGet(): Promise<Result<SimpleCliInfo, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("cli_manager_gemini_info_get") };
@@ -2342,6 +2350,18 @@ export type CodexConfigTomlValidationResult = {
   error: CodexConfigTomlValidationError | null;
 };
 export type CodexHomeMode = "user_home_default" | "follow_codex_home" | "custom";
+export type CodexProviderSyncResult = {
+  status: string;
+  target_provider: string;
+  trigger: string;
+  backup_dir: string | null;
+  changed_session_files: string[];
+  sqlite_provider_rows_updated: number;
+  sqlite_user_event_rows_updated: number;
+  sqlite_cwd_rows_updated: number;
+  updated_workspace_roots: string[];
+  warning: string | null;
+};
 export type CodexReasoningGuardCompareMode = "equals" | "less_than_or_equal";
 export type CodexReasoningGuardExhaustedAction = "return_error" | "switch_provider";
 export type CodexReasoningGuardModelRule = {

@@ -55,6 +55,7 @@ macro_rules! generated_command_registry {
             cli_manager_codex_config_toml_get => crate::commands::cli_manager::cli_manager_codex_config_toml_get,
             cli_manager_codex_config_toml_validate => crate::commands::cli_manager::cli_manager_codex_config_toml_validate,
             cli_manager_codex_config_toml_set => crate::commands::cli_manager::cli_manager_codex_config_toml_set,
+            cli_manager_codex_provider_sync => crate::commands::cli_manager::cli_manager_codex_provider_sync,
             cli_manager_gemini_info_get => crate::commands::cli_manager::cli_manager_gemini_info_get,
             cli_manager_gemini_config_get => crate::commands::cli_manager::cli_manager_gemini_config_get,
             cli_manager_gemini_config_set => crate::commands::cli_manager::cli_manager_gemini_config_set,

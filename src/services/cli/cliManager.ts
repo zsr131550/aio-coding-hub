@@ -17,6 +17,7 @@ import {
   type SimpleCliInfo as GeneratedSimpleCliInfo,
 } from "../../generated/bindings";
 import { invokeGeneratedIpc, type GeneratedCommandResult } from "../generatedIpc";
+import { invokeTauriOrNull } from "../tauriInvoke";
 
 export type ClaudeCliInfo = GeneratedClaudeCliInfo;
 export type SimpleCliInfo = GeneratedSimpleCliInfo;
@@ -36,6 +37,18 @@ export type GeminiConfigPatch = Partial<GeneratedGeminiConfigPatch>;
 export type ClaudeEnvSetInput = {
   mcpTimeoutMs: number | null;
   disableErrorReporting: boolean;
+};
+export type CodexProviderSyncResult = {
+  status: string;
+  target_provider: string;
+  trigger: string;
+  backup_dir: string | null;
+  changed_session_files: string[];
+  sqlite_provider_rows_updated: number;
+  sqlite_user_event_rows_updated: number;
+  sqlite_cwd_rows_updated: number;
+  updated_workspace_roots: string[];
+  warning: string | null;
 };
 
 const DEFAULT_CODEX_CONFIG_PATCH = {
@@ -209,6 +222,19 @@ export async function cliManagerCodexConfigTomlSet(toml: string) {
       commands.cliManagerCodexConfigTomlSet(toml) as Promise<
         GeneratedCommandResult<CodexConfigState>
       >,
+  });
+}
+
+export async function cliManagerCodexProviderSync() {
+  return invokeGeneratedIpc<CodexProviderSyncResult>({
+    title: "同步 Codex Provider 失败",
+    cmd: "cli_manager_codex_provider_sync",
+    invoke: async () =>
+      (await invokeTauriOrNull<CodexProviderSyncResult>(
+        "cli_manager_codex_provider_sync",
+        undefined,
+        { timeoutMs: 0 }
+      )) ?? null,
   });
 }
 

@@ -2017,6 +2017,19 @@ DROP TABLE plugins;
             .collect()
     }
 
+    fn installed_dir_ends_with(path: Option<&str>, plugin_id: &str, version: &str) -> bool {
+        let Some(path) = path else {
+            return false;
+        };
+        let path = std::path::Path::new(path);
+        path.ends_with(
+            std::path::Path::new("plugins")
+                .join("installed")
+                .join(plugin_id)
+                .join(version),
+        )
+    }
+
     #[test]
     fn plugin_local_install_installs_package_into_cache_and_installed_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -2038,10 +2051,11 @@ DROP TABLE plugins;
         assert_eq!(detail.summary.plugin_id, "local.safe");
         assert_eq!(detail.install_source, PluginInstallSource::Local);
         assert_eq!(detail.summary.status, PluginStatus::Disabled);
-        assert!(detail
-            .installed_dir
-            .as_deref()
-            .is_some_and(|path| path.ends_with("plugins/installed/local.safe/1.0.0")));
+        assert!(installed_dir_ends_with(
+            detail.installed_dir.as_deref(),
+            "local.safe",
+            "1.0.0"
+        ));
         assert!(installed_dir
             .join("local.safe")
             .join("1.0.0")
@@ -2183,10 +2197,11 @@ DROP TABLE plugins;
 
         assert_eq!(detail.summary.plugin_id, "local.signed-valid");
         assert_eq!(detail.summary.status, PluginStatus::Disabled);
-        assert!(detail
-            .installed_dir
-            .as_deref()
-            .is_some_and(|path| path.ends_with("plugins/installed/local.signed-valid/1.0.0")));
+        assert!(installed_dir_ends_with(
+            detail.installed_dir.as_deref(),
+            "local.signed-valid",
+            "1.0.0"
+        ));
     }
 
     #[test]
@@ -2734,9 +2749,10 @@ INSERT INTO plugin_market_sources(
             rolled_back.summary.current_version.as_deref(),
             Some("1.0.0")
         );
-        assert!(rolled_back
-            .installed_dir
-            .as_deref()
-            .is_some_and(|path| path.ends_with("plugins/installed/local.manual/1.0.0")));
+        assert!(installed_dir_ends_with(
+            rolled_back.installed_dir.as_deref(),
+            "local.manual",
+            "1.0.0"
+        ));
     }
 }

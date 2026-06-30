@@ -1,6 +1,9 @@
 //! Usage: CLI environment / integration related Tauri commands.
 
-use crate::{blocking, claude_hooks, claude_settings, cli_manager, codex_config, gemini_config};
+use crate::{
+    blocking, claude_hooks, claude_settings, cli_manager, codex_config, codex_provider_sync,
+    gemini_config,
+};
 
 #[tauri::command]
 #[specta::specta]
@@ -83,6 +86,18 @@ pub(crate) async fn cli_manager_codex_config_toml_set(
 ) -> Result<codex_config::CodexConfigState, String> {
     blocking::run("cli_manager_codex_config_toml_set", move || {
         codex_config::codex_config_toml_set_raw(&app, toml)
+    })
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn cli_manager_codex_provider_sync(
+    app: tauri::AppHandle,
+) -> Result<codex_provider_sync::CodexProviderSyncResult, String> {
+    blocking::run("cli_manager_codex_provider_sync", move || {
+        codex_provider_sync::codex_provider_sync_current(&app, "manual")
     })
     .await
     .map_err(Into::into)

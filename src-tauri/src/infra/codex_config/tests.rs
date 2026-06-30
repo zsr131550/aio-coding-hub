@@ -681,3 +681,31 @@ base_url = "http://127.0.0.1:37124/v1"
     assert!(s.contains("name = \"OpenAI\""), "{s}");
     assert!(!s.contains("[model_providers.aio]"), "{s}");
 }
+
+#[test]
+fn raw_toml_target_provider_accepts_only_managed_targets() {
+    assert_eq!(
+        crate::infra::codex_provider_sync::codex_provider_target_from_config_text(
+            "model_provider = \"aio\"\n[model_providers.aio]\nname = \"aio\"\n"
+        )
+        .expect("aio target"),
+        "aio"
+    );
+    assert_eq!(
+        crate::infra::codex_provider_sync::codex_provider_target_from_config_text(
+            "model_provider = \"OpenAI\"\n[model_providers.OpenAI]\nname = \"OpenAI\"\n"
+        )
+        .expect("OpenAI target"),
+        "OpenAI"
+    );
+
+    let err = crate::infra::codex_provider_sync::codex_provider_target_from_config_text(
+        "model_provider = \"Anthropic\"\n[model_providers.Anthropic]\nname = \"Anthropic\"\n",
+    )
+    .expect_err("unsupported target should fail");
+    assert!(
+        err.to_string()
+            .contains("CODEX_PROVIDER_SYNC_INVALID_TARGET"),
+        "{err}"
+    );
+}

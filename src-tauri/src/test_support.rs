@@ -208,6 +208,30 @@ pub fn codex_config_toml_raw_set<R: tauri::Runtime>(
     crate::infra::codex_config::codex_config_toml_set_raw(app, toml).map(|_| ())
 }
 
+pub fn codex_provider_sync_current_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::shared::error::AppResult<serde_json::Value> {
+    let result = crate::infra::codex_provider_sync::codex_provider_sync_current(app, "manual")?;
+    serialize_json(result)
+}
+
+pub fn codex_provider_sync_from_config_bytes_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    trigger: &str,
+    config_bytes: Vec<u8>,
+) -> crate::shared::error::AppResult<serde_json::Value> {
+    let result = crate::infra::codex_provider_sync::codex_provider_sync_from_config_bytes(
+        app,
+        trigger,
+        config_bytes,
+    )?;
+    serialize_json(result)
+}
+
+pub fn codex_provider_sync_set_running_override_for_tests(running: Option<bool>) {
+    crate::infra::codex_provider_sync::set_codex_app_running_override_for_tests(running);
+}
+
 pub fn codex_config_get_json<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::shared::error::AppResult<serde_json::Value> {

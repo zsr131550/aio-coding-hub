@@ -82,7 +82,10 @@ fn return_to_local_resolves_symlink_entries_inside_ssot_dir() {
 
     let external_file = app.home_dir().join("external.txt");
     std::fs::write(&external_file, "external\n").expect("write external file");
-    symlink_file(&external_file, &fix.ssot_skill_dir.join("linked.txt")).expect("create symlink");
+    if let Err(err) = symlink_file(&external_file, &fix.ssot_skill_dir.join("linked.txt")) {
+        eprintln!("skipping symlink return_to_local test: symlink creation unavailable: {err}");
+        return;
+    }
 
     let ok = aio_coding_hub_lib::test_support::skill_return_to_local(
         &handle,

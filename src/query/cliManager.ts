@@ -9,6 +9,7 @@ import {
   cliManagerCodexConfigSet,
   cliManagerCodexConfigTomlGet,
   cliManagerCodexConfigTomlSet,
+  cliManagerCodexProviderSync,
   cliManagerCodexInfoGet,
   cliManagerGeminiConfigGet,
   cliManagerGeminiConfigSet,
@@ -130,6 +131,18 @@ export function useCliManagerCodexConfigTomlSetMutation() {
       if (!next) return;
       queryClient.setQueryData<CodexConfigState | null>(cliManagerKeys.codexConfig(), next);
     },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
+      queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+    },
+  });
+}
+
+export function useCliManagerCodexProviderSyncMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => cliManagerCodexProviderSync(),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
