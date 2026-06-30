@@ -1,11 +1,10 @@
-//! Usage: Official native privacy filter plugin runtime.
+//! Usage: Host privacy redaction service for Extension Host plugins.
 
 use super::privacy_filter::{PrivacyFilter, PrivacyFilterError, PrivacyFilterOptions};
 use super::runtime_cache::{runtime_cache_key, RuntimeCacheKeyInput};
 use super::runtime_lifecycle::PluginRuntimeCache;
-use crate::gateway::plugins::context::{GatewayHookResult, GatewayVisibleHookContext};
-use crate::gateway::plugins::permissions::GatewayPluginError;
 use crate::plugins::PluginDetail;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -13,32 +12,51 @@ use std::sync::{Arc, Mutex};
 
 pub(crate) const MAX_PRIVACY_FILTER_RULE_FILE_BYTES: usize = 1024 * 1024;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PrivacyRedactionOutput {
+    pub(crate) hit: bool,
+    pub(crate) count: usize,
+    pub(crate) redacted: String,
+}
+
 #[derive(Default)]
-pub(crate) struct OfficialPrivacyFilterRuntime {
+pub(crate) struct PrivacyRedactionService {
     cache: Mutex<HashMap<String, Arc<PrivacyFilter>>>,
 }
 
-impl OfficialPrivacyFilterRuntime {
-    pub(crate) fn execute_plugin(
+impl PrivacyRedactionService {
+    pub(crate) fn redact_text(
         &self,
         plugin: &PluginDetail,
-        context: GatewayVisibleHookContext,
-    ) -> Result<GatewayHookResult, GatewayPluginError> {
+        text: &str,
+        options: &Value,
+    ) -> Result<PrivacyRedactionOutput, PrivacyFilterError> {
         let filter = self.get_or_load_privacy_filter(plugin)?;
-        execute_official_privacy_filter_hook(&filter, &context, &plugin.config)
-            .map_err(to_privacy_filter_error)
+        let options = privacy_filter_options_from_config(options);
+        let redacted = filter.redact_with_options(text, &options);
+        Ok(PrivacyRedactionOutput {
+            hit: redacted.hit,
+            count: redacted.count,
+            redacted: redacted.redacted,
+        })
     }
 
-    pub(crate) fn retain_runtime_caches_for_plugins(&self, plugins: &[PluginDetail]) {
-        let privacy_keys: HashSet<String> = plugins
-            .iter()
-            .filter(|plugin| plugin.summary.plugin_id == "official.privacy-filter")
-            .map(privacy_filter_cache_key)
-            .collect();
-        self.cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .retain(|key, _| privacy_keys.contains(key));
+    pub(crate) fn redact_request_body(
+        &self,
+        plugin: &PluginDetail,
+        body: &str,
+        options: &Value,
+    ) -> Result<PrivacyRedactionOutput, PrivacyFilterError> {
+        let filter = self.get_or_load_privacy_filter(plugin)?;
+        let filter_options = privacy_filter_options_from_config(options);
+        let scopes = privacy_filter_redaction_scopes_from_config(options);
+        let redacted = redact_request_body_strings(&filter, body, &filter_options, &scopes)?;
+        Ok(redacted.unwrap_or_else(|| PrivacyRedactionOutput {
+            hit: false,
+            count: 0,
+            redacted: body.to_string(),
+        }))
     }
 
     #[allow(dead_code)]
@@ -52,24 +70,17 @@ impl OfficialPrivacyFilterRuntime {
     fn get_or_load_privacy_filter(
         &self,
         plugin: &PluginDetail,
-    ) -> Result<Arc<PrivacyFilter>, GatewayPluginError> {
+    ) -> Result<Arc<PrivacyFilter>, PrivacyFilterError> {
         let cache_key = privacy_filter_cache_key(plugin);
-        {
-            let cache = self
-                .cache
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(filter) = cache.get(&cache_key) {
-                return Ok(Arc::clone(filter));
-            }
-        }
-
-        let filter =
-            Arc::new(load_official_privacy_filter(plugin).map_err(to_privacy_filter_error)?);
         let mut cache = self
             .cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(filter) = cache.get(&cache_key) {
+            return Ok(Arc::clone(filter));
+        }
+
+        let filter = Arc::new(load_privacy_filter(plugin)?);
         Ok(Arc::clone(
             cache
                 .entry(cache_key)
@@ -83,14 +94,44 @@ impl OfficialPrivacyFilterRuntime {
     }
 }
 
-impl PluginRuntimeCache for OfficialPrivacyFilterRuntime {
+impl PluginRuntimeCache for PrivacyRedactionService {
     fn retain_for_plugins(&self, plugins: &[PluginDetail]) {
-        self.retain_runtime_caches_for_plugins(plugins);
+        let privacy_plugins = plugins
+            .iter()
+            .filter(|plugin| has_privacy_redact_capability(plugin))
+            .collect::<Vec<_>>();
+        let privacy_keys = privacy_plugins
+            .iter()
+            .map(|plugin| privacy_filter_cache_key(plugin))
+            .collect::<HashSet<_>>();
+
+        for plugin in privacy_plugins {
+            if let Err(err) = self.get_or_load_privacy_filter(plugin) {
+                tracing::warn!(
+                    plugin_id = %plugin.summary.plugin_id,
+                    error = %err,
+                    "failed to prewarm privacy redaction service"
+                );
+            }
+        }
+
+        self.cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|key, _| privacy_keys.contains(key));
     }
 
     fn clear_all(&self) {
         self.clear_runtime_caches();
     }
+}
+
+fn has_privacy_redact_capability(plugin: &PluginDetail) -> bool {
+    plugin
+        .manifest
+        .capabilities
+        .iter()
+        .any(|capability| capability == "privacy.redact")
 }
 
 fn privacy_filter_cache_key(plugin: &PluginDetail) -> String {
@@ -106,13 +147,11 @@ fn privacy_filter_cache_key(plugin: &PluginDetail) -> String {
         version,
         installed_dir,
         updated_at,
-        runtime_key: "native:privacyFilter",
+        runtime_key: "privacy.redact",
     })
 }
 
-fn load_official_privacy_filter(
-    plugin: &PluginDetail,
-) -> Result<PrivacyFilter, PrivacyFilterError> {
+fn load_privacy_filter(plugin: &PluginDetail) -> Result<PrivacyFilter, PrivacyFilterError> {
     let root_dir = plugin.installed_dir.as_deref().ok_or_else(|| {
         PrivacyFilterError::new(format!(
             "plugin {} has no installed_dir for privacy-filter rule loading",
@@ -138,43 +177,6 @@ fn load_official_privacy_filter(
         ))
     })?;
     PrivacyFilter::from_gitleaks_toml(&raw)
-}
-
-fn execute_official_privacy_filter_hook(
-    filter: &PrivacyFilter,
-    context: &GatewayVisibleHookContext,
-    config: &Value,
-) -> Result<GatewayHookResult, PrivacyFilterError> {
-    let mut result = GatewayHookResult::continue_unchanged();
-    let options = privacy_filter_options_from_config(config);
-    let scopes = privacy_filter_redaction_scopes_from_config(config);
-    match context.hook_name.as_str() {
-        "gateway.request.afterBodyRead" | "gateway.request.beforeSend" => {
-            if config.get("redactBeforeUpstream") != Some(&Value::Bool(true)) {
-                return Ok(result);
-            }
-            let Some(body) = context.request.body.as_deref() else {
-                return Ok(result);
-            };
-            if let Some(next_body) = redact_request_body_strings(filter, body, &options, &scopes)? {
-                result.request_body = Some(next_body);
-            }
-        }
-        "log.beforePersist" => {
-            if config.get("redactLogs") != Some(&Value::Bool(true)) {
-                return Ok(result);
-            }
-            let Some(message) = context.log.message.as_deref() else {
-                return Ok(result);
-            };
-            let redacted = filter.redact_with_options(message, &options);
-            if redacted.hit {
-                result.log_message = Some(redacted.redacted);
-            }
-        }
-        _ => {}
-    }
-    Ok(result)
 }
 
 fn privacy_filter_options_from_config(config: &Value) -> PrivacyFilterOptions {
@@ -261,22 +263,31 @@ fn redact_request_body_strings(
     body: &str,
     options: &PrivacyFilterOptions,
     scopes: &PrivacyFilterRedactionScopes,
-) -> Result<Option<String>, PrivacyFilterError> {
+) -> Result<Option<PrivacyRedactionOutput>, PrivacyFilterError> {
     let Ok(mut root) = serde_json::from_str::<Value>(body) else {
         if !scopes.legacy_prompt {
             return Ok(None);
         }
         let redacted = filter.redact_with_options(body, options);
-        return Ok(redacted.hit.then_some(redacted.redacted));
+        return Ok(redacted.hit.then_some(PrivacyRedactionOutput {
+            hit: true,
+            count: redacted.count,
+            redacted: redacted.redacted,
+        }));
     };
     let mut matched = false;
     redact_request_json_allowlist(&mut root, filter, options, scopes, &mut matched);
     if !matched {
         return Ok(None);
     }
-    serde_json::to_string(&root)
-        .map(Some)
-        .map_err(|err| PrivacyFilterError::new(format!("failed to serialize redacted JSON: {err}")))
+    let redacted = serde_json::to_string(&root).map_err(|err| {
+        PrivacyFilterError::new(format!("failed to serialize redacted JSON: {err}"))
+    })?;
+    Ok(Some(PrivacyRedactionOutput {
+        hit: true,
+        count: 1,
+        redacted,
+    }))
 }
 
 fn redact_request_json_allowlist(
@@ -564,60 +575,18 @@ fn redact_text_value(
     }
 }
 
-fn to_privacy_filter_error(err: PrivacyFilterError) -> GatewayPluginError {
-    GatewayPluginError::new("PLUGIN_PRIVACY_FILTER_FAILED", err.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::plugins::context::{
-        GatewayVisibleHookContext, GatewayVisibleLogContext, GatewayVisibleRequestContext,
-        GatewayVisibleResponseContext, GatewayVisibleStreamContext,
-    };
+    use crate::app::plugins::runtime_lifecycle::PluginRuntimeCache;
     use crate::plugins::{
         PluginDetail, PluginInstallSource, PluginPermissionRisk, PluginStatus, PluginSummary,
     };
     use serde_json::json;
 
-    fn context_for_request_body_text(body: impl Into<String>) -> GatewayVisibleHookContext {
-        GatewayVisibleHookContext {
-            hook_name: "gateway.request.afterBodyRead".to_string(),
-            trace_id: "trace-privacy-filter-test".to_string(),
-            request: GatewayVisibleRequestContext {
-                cli_key: Some("codex".to_string()),
-                method: Some("POST".to_string()),
-                path: Some("/v1/chat/completions".to_string()),
-                query: None,
-                headers: None,
-                body: Some(body.into()),
-                requested_model: Some("gpt-test".to_string()),
-                ..GatewayVisibleRequestContext::default()
-            },
-            response: GatewayVisibleResponseContext::default(),
-            stream: GatewayVisibleStreamContext::default(),
-            log: GatewayVisibleLogContext::default(),
-        }
-    }
-
-    fn context_for_log_message(message: &str) -> GatewayVisibleHookContext {
-        GatewayVisibleHookContext {
-            hook_name: "log.beforePersist".to_string(),
-            trace_id: "trace-privacy-filter-test".to_string(),
-            request: GatewayVisibleRequestContext::default(),
-            response: GatewayVisibleResponseContext::default(),
-            stream: GatewayVisibleStreamContext::default(),
-            log: GatewayVisibleLogContext {
-                message: Some(message.to_string()),
-                ..GatewayVisibleLogContext::default()
-            },
-        }
-    }
-
-    fn official_privacy_filter_detail(config: serde_json::Value) -> PluginDetail {
+    fn privacy_filter_detail(config: serde_json::Value) -> PluginDetail {
         let fixture = crate::app::plugins::official::official_plugin("official.privacy-filter")
             .expect("official privacy filter fixture");
-        let permissions = fixture.manifest.permissions.clone();
         PluginDetail {
             summary: PluginSummary {
                 id: 1,
@@ -625,7 +594,7 @@ mod tests {
                 name: fixture.manifest.name.clone(),
                 current_version: Some(fixture.manifest.version.clone()),
                 status: PluginStatus::Enabled,
-                runtime: "native:privacyFilter".to_string(),
+                runtime: "extensionHost".to_string(),
                 permission_risk: PluginPermissionRisk::High,
                 update_available: false,
                 last_error: None,
@@ -636,7 +605,7 @@ mod tests {
             install_source: PluginInstallSource::Official,
             installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
             config,
-            granted_permissions: permissions,
+            granted_permissions: vec![],
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
@@ -644,29 +613,30 @@ mod tests {
         }
     }
 
-    fn official_privacy_filter_plugin_detail_with_dir(
+    fn privacy_filter_plugin_detail_with_dir(
         installed_dir: String,
         config: serde_json::Value,
     ) -> PluginDetail {
-        let mut plugin = official_privacy_filter_detail(config);
+        let mut plugin = privacy_filter_detail(config);
         plugin.installed_dir = Some(installed_dir);
         plugin
     }
 
-    fn execute_official_privacy_filter_request(
+    fn execute_privacy_filter_request(
         config: serde_json::Value,
         body: impl Into<String>,
     ) -> serde_json::Value {
-        let executor = OfficialPrivacyFilterRuntime::default();
-        let plugin = official_privacy_filter_detail(config);
-        let result = executor
-            .execute_plugin(&plugin, context_for_request_body_text(body))
-            .expect("privacy filter request hook");
-        let output = result
-            .request_body
-            .expect("request body should be redacted");
-        serde_json::from_str(&output).unwrap_or_else(|err| {
-            panic!("redacted request body should remain valid JSON: {err}; body={output}")
+        let service = PrivacyRedactionService::default();
+        let plugin = privacy_filter_detail(json!({}));
+        let output = service
+            .redact_request_body(&plugin, &body.into(), &config)
+            .expect("privacy filter request redaction");
+        assert!(output.hit, "request body should be redacted");
+        serde_json::from_str(&output.redacted).unwrap_or_else(|err| {
+            panic!(
+                "redacted request body should remain valid JSON: {err}; body={}",
+                output.redacted
+            )
         })
     }
 
@@ -678,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn official_privacy_filter_rejects_rule_file_over_byte_limit() {
+    fn privacy_redaction_service_rejects_rule_file_over_byte_limit() {
         let dir = tempfile::tempdir().expect("temp plugin dir");
         let rules_dir = dir.path().join("rules");
         std::fs::create_dir_all(&rules_dir).expect("rules dir");
@@ -691,23 +661,42 @@ mod tests {
         )
         .expect("rules file");
 
-        let plugin = official_privacy_filter_plugin_detail_with_dir(
+        let plugin = privacy_filter_plugin_detail_with_dir(
             dir.path().to_string_lossy().to_string(),
             serde_json::json!({ "redactLogs": true }),
         );
 
-        let err = load_official_privacy_filter(&plugin).expect_err("oversized rules should fail");
+        let err = load_privacy_filter(&plugin).expect_err("oversized rules should fail");
 
         assert!(err.to_string().contains("privacy filter rule file exceeds"));
     }
 
     #[test]
-    fn official_privacy_filter_redacts_phone_numbers_in_provider_request_shapes() {
-        let executor = OfficialPrivacyFilterRuntime::default();
-        let plugin = official_privacy_filter_detail(json!({
-            "redactBeforeUpstream": true,
-            "redactLogs": true
-        }));
+    fn privacy_redaction_service_retain_prewarms_and_prunes_privacy_redact_plugins() {
+        let dir = tempfile::tempdir().expect("temp plugin dir");
+        let rules_dir = dir.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).expect("rules dir");
+        std::fs::write(rules_dir.join("gitleaks.toml"), "").expect("rules file");
+        let plugin = privacy_filter_plugin_detail_with_dir(
+            dir.path().to_string_lossy().to_string(),
+            json!({}),
+        );
+        let service = PrivacyRedactionService::default();
+
+        service.retain_for_plugins(&[plugin]);
+
+        assert_eq!(service.cache_size_for_tests(), 1);
+
+        service.retain_for_plugins(&[]);
+
+        assert_eq!(service.cache_size_for_tests(), 0);
+    }
+
+    #[test]
+    fn privacy_redaction_service_redacts_phone_numbers_in_provider_request_shapes() {
+        let service = PrivacyRedactionService::default();
+        let plugin = privacy_filter_detail(json!({}));
+        let config = json!({});
 
         for (name, body) in [
             (
@@ -724,13 +713,10 @@ mod tests {
             ),
             ("raw_text", "phone 13344441520"),
         ] {
-            let context = context_for_request_body_text(body);
-            let result = executor
-                .execute_plugin(&plugin, context)
-                .unwrap_or_else(|err| panic!("{name} privacy filter failed: {err}"));
-            let output = result
-                .request_body
-                .expect("request body should be redacted");
+            let output = service
+                .redact_request_body(&plugin, body, &config)
+                .unwrap_or_else(|err| panic!("{name} privacy filter failed: {err}"))
+                .redacted;
             assert!(
                 !output.contains("13344441520"),
                 "{name} leaked phone number: {output}"
@@ -739,33 +725,26 @@ mod tests {
     }
 
     #[test]
-    fn official_privacy_filter_redacts_before_send_request_bodies() {
-        let executor = OfficialPrivacyFilterRuntime::default();
-        let plugin = official_privacy_filter_detail(json!({
-            "redactBeforeUpstream": true,
-            "redactLogs": true
-        }));
+    fn privacy_redaction_service_redacts_before_send_request_bodies() {
+        let service = PrivacyRedactionService::default();
+        let plugin = privacy_filter_detail(json!({}));
 
-        let mut context = context_for_request_body_text(
-            r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"phone 13344441520"}]}]}"#,
-        );
-        context.hook_name = "gateway.request.beforeSend".to_string();
-
-        let result = executor
-            .execute_plugin(&plugin, context)
-            .expect("privacy filter beforeSend hook");
-
-        let output = result
-            .request_body
-            .expect("request body should be redacted");
+        let output = service
+            .redact_request_body(
+                &plugin,
+                r#"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"phone 13344441520"}]}]}"#,
+                &json!({}),
+            )
+            .expect("privacy filter request body redaction")
+            .redacted;
         assert!(output.contains("[电话]"));
         assert!(!output.contains("13344441520"));
     }
 
     #[test]
-    fn official_privacy_filter_redacts_only_claude_allowlisted_fields() {
+    fn privacy_redaction_service_redacts_only_claude_allowlisted_fields() {
         let tool_use_id = "toolu_123";
-        let output = execute_official_privacy_filter_request(
+        let output = execute_privacy_filter_request(
             default_privacy_filter_config(),
             json!({
                 "system": [
@@ -844,8 +823,8 @@ mod tests {
     }
 
     #[test]
-    fn official_privacy_filter_respects_disabled_tool_result_scope() {
-        let output = execute_official_privacy_filter_request(
+    fn privacy_redaction_service_respects_disabled_tool_result_scope() {
+        let output = execute_privacy_filter_request(
             json!({
                 "redactBeforeUpstream": true,
                 "redactLogs": true,
@@ -880,8 +859,8 @@ mod tests {
     }
 
     #[test]
-    fn official_privacy_filter_redacts_only_openai_responses_allowlisted_fields() {
-        let output = execute_official_privacy_filter_request(
+    fn privacy_redaction_service_redacts_only_openai_responses_allowlisted_fields() {
+        let output = execute_privacy_filter_request(
             default_privacy_filter_config(),
             json!({
                 "instructions": "系统邮箱 sys@example.com",
@@ -949,8 +928,8 @@ mod tests {
     }
 
     #[test]
-    fn official_privacy_filter_redacts_codex_responses_payload_shape() {
-        let output = execute_official_privacy_filter_request(
+    fn privacy_redaction_service_redacts_codex_responses_payload_shape() {
+        let output = execute_privacy_filter_request(
             default_privacy_filter_config(),
             json!({
                 "model": "gpt-5.5",
@@ -1033,8 +1012,8 @@ mod tests {
     }
 
     #[test]
-    fn official_privacy_filter_redacts_only_chat_allowlisted_fields() {
-        let output = execute_official_privacy_filter_request(
+    fn privacy_redaction_service_redacts_only_chat_allowlisted_fields() {
+        let output = execute_privacy_filter_request(
             default_privacy_filter_config(),
             json!({
                 "messages": [
@@ -1102,57 +1081,49 @@ mod tests {
     }
 
     #[test]
-    fn official_privacy_filter_respects_legacy_prompt_scope_for_raw_text() {
-        let executor = OfficialPrivacyFilterRuntime::default();
-        let plugin = official_privacy_filter_detail(json!({
-            "redactBeforeUpstream": true,
-            "redactLogs": true,
-            "redactionScopes": ["system_instructions", "user_prompts", "tool_results"]
-        }));
+    fn privacy_redaction_service_respects_legacy_prompt_scope_for_raw_text() {
+        let service = PrivacyRedactionService::default();
+        let plugin = privacy_filter_detail(json!({}));
 
-        let result = executor
-            .execute_plugin(
+        let result = service
+            .redact_request_body(
                 &plugin,
-                context_for_request_body_text("raw email raw@example.com"),
+                "raw email raw@example.com",
+                &json!({
+                    "redactionScopes": ["system_instructions", "user_prompts", "tool_results"]
+                }),
             )
-            .expect("privacy filter request hook");
+            .expect("privacy filter request redaction");
 
-        assert!(
-            result.request_body.is_none(),
-            "raw text should not be redacted when legacy_prompt scope is disabled"
-        );
+        assert!(!result.hit);
+        assert_eq!(result.redacted, "raw email raw@example.com");
     }
 
     #[test]
-    fn official_privacy_filter_log_redaction_ignores_request_redaction_scopes() {
-        let executor = OfficialPrivacyFilterRuntime::default();
-        let plugin = official_privacy_filter_detail(json!({
-            "redactBeforeUpstream": true,
-            "redactLogs": true,
-            "redactionScopes": []
-        }));
-        let context = context_for_log_message("trace email log@example.com");
+    fn privacy_redaction_service_log_redaction_ignores_request_redaction_scopes() {
+        let service = PrivacyRedactionService::default();
+        let plugin = privacy_filter_detail(json!({}));
 
-        let result = executor
-            .execute_plugin(&plugin, context)
-            .expect("privacy filter log hook");
+        let result = service
+            .redact_text(
+                &plugin,
+                "trace email log@example.com",
+                &json!({ "redactionScopes": [] }),
+            )
+            .expect("privacy filter log redaction");
 
-        let message = result.log_message.expect("log message should be redacted");
-        assert!(message.contains("[邮箱]"));
-        assert!(!message.contains("log@example.com"));
+        assert!(result.redacted.contains("[邮箱]"));
+        assert!(!result.redacted.contains("log@example.com"));
     }
 
     #[test]
-    fn official_privacy_filter_preserves_claude_tool_use_protocol_ids() {
-        let executor = OfficialPrivacyFilterRuntime::default();
-        let plugin = official_privacy_filter_detail(json!({
-            "redactBeforeUpstream": true,
-            "redactLogs": true
-        }));
+    fn privacy_redaction_service_preserves_claude_tool_use_protocol_ids() {
+        let service = PrivacyRedactionService::default();
+        let plugin = privacy_filter_detail(json!({}));
         let tool_use_id = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ";
         let tool_use_input_phone = "13344441520";
         let tool_result_phone = "13344441521";
-        let context = context_for_request_body_text(
+        let body =
             json!({
                 "messages": [
                     {
@@ -1178,16 +1149,12 @@ mod tests {
                     }
                 ]
             })
-            .to_string(),
-        );
+            .to_string();
 
-        let result = executor
-            .execute_plugin(&plugin, context)
-            .expect("privacy filter request hook");
-
-        let output = result
-            .request_body
-            .expect("request body should be redacted");
+        let output = service
+            .redact_request_body(&plugin, &body, &json!({}))
+            .expect("privacy filter request redaction")
+            .redacted;
         assert!(
             output.contains(tool_use_id),
             "tool id was changed: {output}"
@@ -1201,43 +1168,30 @@ mod tests {
     }
 
     #[test]
-    fn official_privacy_filter_redacts_log_messages_after_request_redaction() {
-        let executor = OfficialPrivacyFilterRuntime::default();
-        let plugin = official_privacy_filter_detail(json!({
-            "redactBeforeUpstream": true,
-            "redactLogs": true
-        }));
-        let context = context_for_log_message("trace log 13344441520");
+    fn privacy_redaction_service_redacts_log_messages_after_request_redaction() {
+        let service = PrivacyRedactionService::default();
+        let plugin = privacy_filter_detail(json!({}));
 
-        let result = executor
-            .execute_plugin(&plugin, context)
-            .expect("privacy filter log hook");
+        let result = service
+            .redact_text(&plugin, "trace log 13344441520", &json!({}))
+            .expect("privacy filter log redaction");
 
-        let message = result.log_message.expect("log message should be redacted");
-        assert!(!message.contains("13344441520"));
+        assert!(!result.redacted.contains("13344441520"));
     }
 
     #[test]
-    fn official_privacy_filter_respects_sensitive_types_config() {
-        let executor = OfficialPrivacyFilterRuntime::default();
-        let plugin = official_privacy_filter_detail(json!({
-            "redactBeforeUpstream": true,
-            "redactLogs": true,
-            "sensitiveTypes": ["email"]
-        }));
+    fn privacy_redaction_service_respects_sensitive_types_config() {
+        let service = PrivacyRedactionService::default();
+        let plugin = privacy_filter_detail(json!({}));
 
-        let result = executor
-            .execute_plugin(
+        let output = service
+            .redact_request_body(
                 &plugin,
-                context_for_request_body_text(
-                    r#"{"messages":[{"role":"user","content":"email test@example.com phone 13344441520"}]}"#,
-                ),
+                r#"{"messages":[{"role":"user","content":"email test@example.com phone 13344441520"}]}"#,
+                &json!({ "sensitiveTypes": ["email"] }),
             )
-            .expect("privacy filter request hook");
-
-        let output = result
-            .request_body
-            .expect("request body should be redacted");
+            .expect("privacy filter request redaction")
+            .redacted;
         assert!(output.contains("[邮箱]"));
         assert!(!output.contains("test@example.com"));
         assert!(
@@ -1247,26 +1201,22 @@ mod tests {
     }
 
     #[test]
-    fn official_privacy_filter_allows_disabling_all_sensitive_types() {
-        let executor = OfficialPrivacyFilterRuntime::default();
-        let plugin = official_privacy_filter_detail(json!({
-            "redactBeforeUpstream": true,
-            "redactLogs": true,
-            "sensitiveTypes": []
-        }));
+    fn privacy_redaction_service_allows_disabling_all_sensitive_types() {
+        let service = PrivacyRedactionService::default();
+        let plugin = privacy_filter_detail(json!({}));
 
-        let result = executor
-            .execute_plugin(
+        let result = service
+            .redact_request_body(
                 &plugin,
-                context_for_request_body_text(
-                    r#"{"messages":[{"role":"user","content":"email test@example.com phone 13344441520"}]}"#,
-                ),
+                r#"{"messages":[{"role":"user","content":"email test@example.com phone 13344441520"}]}"#,
+                &json!({ "sensitiveTypes": [] }),
             )
-            .expect("privacy filter request hook");
+            .expect("privacy filter request redaction");
 
-        assert!(
-            result.request_body.is_none(),
-            "empty sensitiveTypes should disable every configured strategy"
+        assert!(!result.hit);
+        assert_eq!(
+            result.redacted,
+            r#"{"messages":[{"role":"user","content":"email test@example.com phone 13344441520"}]}"#
         );
     }
 }

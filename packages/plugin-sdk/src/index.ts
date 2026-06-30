@@ -78,6 +78,7 @@ export type PluginCapability =
   | "commands.execute"
   | "storage.plugin"
   | "diagnostics.read"
+  | "privacy.redact"
   | "provider.extensionValues"
   | "provider.requestPreparation"
   | "provider.modelDiscovery"
@@ -239,6 +240,34 @@ export type PluginHookResult =
       audit?: JsonValue[];
     };
 
+export type PrivacyRedactionOptions = {
+  sensitiveTypes?: string[];
+  redactionScopes?: string[];
+};
+
+export type PrivacyRedactionOutput = {
+  hit: boolean;
+  count: number;
+  redacted: string;
+};
+
+export type PrivacyApi = {
+  redactText(text: string, options?: PrivacyRedactionOptions): PrivacyRedactionOutput;
+  redactRequestBody(body: string, options?: PrivacyRedactionOptions): PrivacyRedactionOutput;
+};
+
+export type GatewayApi = {
+  registerHook(
+    name: ActiveGatewayHookName,
+    handler: (context: PluginHookContext) => PluginHookResult
+  ): void;
+};
+
+export type PluginApi = {
+  gateway?: GatewayApi;
+  privacy?: PrivacyApi;
+};
+
 export type ValidationResult =
   | { ok: true }
   | { ok: false; error: { code: string; message: string } };
@@ -300,6 +329,7 @@ const KNOWN_CAPABILITIES = new Set<PluginCapability>([
   "commands.execute",
   "storage.plugin",
   "diagnostics.read",
+  "privacy.redact",
   "provider.extensionValues",
   "provider.requestPreparation",
   "provider.modelDiscovery",

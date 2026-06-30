@@ -55,6 +55,17 @@ pub(crate) fn official_plugin_ids() -> &'static [&'static str] {
     &["official.privacy-filter"]
 }
 
+pub(crate) fn official_default_permissions(plugin_id: &str) -> Vec<String> {
+    match plugin_id {
+        "official.privacy-filter" => vec![
+            "request.body.read".to_string(),
+            "request.body.write".to_string(),
+            "log.redact".to_string(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 pub(crate) fn official_source_resource_root() -> PathBuf {
     PathBuf::from(OFFICIAL_SOURCE_RESOURCE_ROOT)
 }
@@ -117,6 +128,7 @@ mod tests {
     use crate::domain::plugins::{PluginInstallSource, PluginRuntime, PluginStatus};
     use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayRequestHookInput};
     use crate::gateway::plugins::pipeline::{GatewayPluginPipeline, GatewayPluginPipelineConfig};
+    use crate::infra::plugins::repository::{self, InsertPluginInput};
     use axum::body::Bytes;
     use axum::http::{HeaderMap, Method};
     use serde_json::json;
@@ -124,7 +136,7 @@ mod tests {
 
     fn enabled_official_plugin(plugin_id: &str) -> crate::domain::plugins::PluginDetail {
         let fixture = official_plugin(plugin_id).expect("official plugin fixture");
-        let permissions = fixture.manifest.permissions.clone();
+        let permissions = official_default_permissions(plugin_id);
         let runtime = match &fixture.manifest.runtime {
             PluginRuntime::ExtensionHost { .. } => "extensionHost".to_string(),
             PluginRuntime::Native { engine } => format!("native:{engine}"),
@@ -153,6 +165,46 @@ mod tests {
             runtime_failures: vec![],
             rollback_versions: vec![],
         }
+    }
+
+    fn official_privacy_filter_pipeline() -> (tempfile::TempDir, GatewayPluginPipeline) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::init_for_tests(&temp.path().join("official-privacy-filter.db"))
+            .expect("init db");
+        let plugin = enabled_official_plugin("official.privacy-filter");
+        repository::insert_plugin(
+            &db,
+            InsertPluginInput {
+                manifest: plugin.manifest.clone(),
+                install_source: PluginInstallSource::Official,
+                status: PluginStatus::Enabled,
+                installed_dir: plugin.installed_dir.clone(),
+            },
+        )
+        .expect("insert official plugin");
+        repository::save_plugin_config(
+            &db,
+            &plugin.summary.plugin_id,
+            plugin.manifest.config_version.unwrap_or(1),
+            &plugin.config,
+            &[],
+        )
+        .expect("save official plugin config");
+        repository::save_plugin_permissions(
+            &db,
+            &plugin.summary.plugin_id,
+            &plugin.granted_permissions,
+            &[],
+        )
+        .expect("save official plugin permissions");
+        let plugin = repository::get_plugin(&db, &plugin.summary.plugin_id)
+            .expect("reload official plugin detail from db");
+        let pipeline = GatewayPluginPipeline::for_tests(
+            vec![plugin],
+            Arc::new(RuntimeGatewayPluginExecutor::with_db(db)),
+            GatewayPluginPipelineConfig::default(),
+        );
+        (temp, pipeline)
     }
 
     #[test]
@@ -215,12 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn official_privacy_filter_plugin_redacts_pii_and_secrets_before_upstream_and_logs() {
-        let plugin = enabled_official_plugin("official.privacy-filter");
-        let pipeline = GatewayPluginPipeline::for_tests(
-            vec![plugin],
-            Arc::new(RuntimeGatewayPluginExecutor::default()),
-            GatewayPluginPipelineConfig::default(),
-        );
+        let (_temp, pipeline) = official_privacy_filter_pipeline();
 
         let request = pipeline
             .run_request_hook(GatewayRequestHookInput {
@@ -285,12 +332,7 @@ mod tests {
 
     #[tokio::test]
     async fn official_privacy_filter_plugin_redacts_responses_input_text_parts() {
-        let plugin = enabled_official_plugin("official.privacy-filter");
-        let pipeline = GatewayPluginPipeline::for_tests(
-            vec![plugin],
-            Arc::new(RuntimeGatewayPluginExecutor::default()),
-            GatewayPluginPipelineConfig::default(),
-        );
+        let (_temp, pipeline) = official_privacy_filter_pipeline();
 
         let request = pipeline
             .run_request_hook(GatewayRequestHookInput {
@@ -326,12 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn official_privacy_filter_plugin_matches_upstream_algorithmic_behavior() {
-        let plugin = enabled_official_plugin("official.privacy-filter");
-        let pipeline = GatewayPluginPipeline::for_tests(
-            vec![plugin],
-            Arc::new(RuntimeGatewayPluginExecutor::default()),
-            GatewayPluginPipelineConfig::default(),
-        );
+        let (_temp, pipeline) = official_privacy_filter_pipeline();
 
         let request = pipeline
             .run_request_hook(GatewayRequestHookInput {

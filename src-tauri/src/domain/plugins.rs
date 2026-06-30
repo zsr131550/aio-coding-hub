@@ -554,16 +554,8 @@ pub fn validate_manifest_for_official_plugin(
         PluginRuntime::ExtensionHost { language } => {
             validate_extension_host_manifest(manifest, language)?;
         }
-        PluginRuntime::Native { engine }
-            if manifest.id == "official.privacy-filter" && engine == "privacyFilter" =>
-        {
-            validate_hooks(&manifest.hooks)?;
-            validate_permissions(&manifest.permissions)?;
-            validate_hook_permissions(&manifest.hooks, &manifest.permissions)?;
-            validate_permission_scope(&manifest.hooks, &manifest.permissions)?;
-        }
         PluginRuntime::Native { .. } => {
-            return unsupported_runtime("native runtime is reserved for official plugins");
+            return unsupported_runtime("native runtime is not supported");
         }
     }
     validate_config_schema(manifest.config_schema.as_ref())?;
@@ -1351,7 +1343,7 @@ mod tests {
         raw["id"] = serde_json::json!("community.privacy-filter");
         raw["runtime"] = serde_json::json!({
             "kind": "native",
-            "engine": "privacyFilter"
+            "engine": "hostPrivateRedactor"
         });
 
         assert_manifest_validation_error(raw, "PLUGIN_UNSUPPORTED_RUNTIME");
@@ -1804,32 +1796,45 @@ mod tests {
     }
 
     #[test]
-    fn manifest_allows_only_official_privacy_filter_native_runtime() {
+    fn official_privacy_filter_extension_host_manifest_uses_normal_validation() {
+        let manifest: PluginManifest = serde_json::from_value(serde_json::json!({
+            "id": "official.privacy-filter",
+            "name": "Privacy Filter",
+            "version": "1.0.0",
+            "apiVersion": "1.0.0",
+            "runtime": { "kind": "extensionHost", "language": "typescript" },
+            "main": "dist/extension.js",
+            "capabilities": ["gateway.hooks", "privacy.redact"],
+            "contributes": {
+                "gatewayHooks": [
+                    { "name": "gateway.request.afterBodyRead", "priority": 5, "failurePolicy": "fail-closed" },
+                    { "name": "gateway.request.beforeSend", "priority": 5, "failurePolicy": "fail-closed" },
+                    { "name": "log.beforePersist", "priority": 1, "failurePolicy": "fail-closed" }
+                ]
+            },
+            "hostCompatibility": { "app": ">=0.60.0 <1.0.0", "pluginApi": "^1.0.0" }
+        }))
+        .unwrap();
+
+        validate_manifest(&manifest, "0.62.0")
+            .expect("official privacy filter should be a normal extension host manifest");
+        validate_manifest_for_official_plugin(&manifest, "0.62.0")
+            .expect("official validation should also accept normal extension host manifest");
+    }
+
+    #[test]
+    fn official_privacy_filter_native_runtime_is_rejected() {
         let mut official = valid_manifest();
         official["id"] = serde_json::json!("official.privacy-filter");
         official["runtime"] = serde_json::json!({
             "kind": "native",
-            "engine": "privacyFilter"
+            "engine": "hostPrivateRedactor"
         });
-        official["hooks"] = serde_json::json!([{
-            "name": "gateway.request.afterBodyRead",
-            "priority": 100,
-            "failurePolicy": "fail-open"
-        }]);
-        official["permissions"] = serde_json::json!(["request.body.read"]);
         let manifest: PluginManifest = serde_json::from_value(official).unwrap();
-        validate_manifest_for_official_plugin(&manifest, "0.62.0").unwrap();
-        let err = validate_manifest(&manifest, "0.62.0").unwrap_err();
-        assert_eq!(err.code, "PLUGIN_UNSUPPORTED_RUNTIME");
 
-        let mut local = valid_manifest();
-        local["id"] = serde_json::json!("local.privacy-filter");
-        local["runtime"] = serde_json::json!({
-            "kind": "native",
-            "engine": "privacyFilter"
-        });
-        let manifest: PluginManifest = serde_json::from_value(local).unwrap();
-        let err = validate_manifest(&manifest, "0.62.0").unwrap_err();
+        let err = validate_manifest_for_official_plugin(&manifest, "0.62.0")
+            .expect_err("official native privacy filter runtime must not be allowed");
+
         assert_eq!(err.code, "PLUGIN_UNSUPPORTED_RUNTIME");
     }
 
@@ -1839,7 +1844,7 @@ mod tests {
         raw["id"] = serde_json::json!("community.privacy-filter");
         raw["runtime"] = serde_json::json!({
             "kind": "native",
-            "engine": "privacyFilter"
+            "engine": "hostPrivateRedactor"
         });
         let manifest: PluginManifest = serde_json::from_value(raw).unwrap();
 

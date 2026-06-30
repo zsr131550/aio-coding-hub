@@ -225,6 +225,7 @@ impl GatewayPluginPipeline {
         executor: Arc<dyn GatewayPluginExecutor>,
         config: GatewayPluginPipelineConfig,
     ) -> Self {
+        executor.retain_runtime_caches_for_plugins(&plugins);
         Self {
             plugins: RwLock::new(Arc::new(build_plugin_snapshot(plugins))),
             executor,
@@ -238,6 +239,7 @@ impl GatewayPluginPipeline {
         executor: Arc<dyn GatewayPluginExecutor>,
         config: GatewayPluginPipelineConfig,
     ) -> Self {
+        executor.retain_runtime_caches_for_plugins(&plugins);
         Self {
             plugins: RwLock::new(Arc::new(build_plugin_snapshot(plugins))),
             executor,
@@ -2141,6 +2143,18 @@ mod tests {
         ) -> GatewayHookFuture {
             Box::pin(async { Ok(GatewayHookResult::continue_unchanged()) })
         }
+    }
+
+    #[test]
+    fn for_tests_notifies_executor_to_retain_initial_runtime_caches() {
+        let executor = Arc::new(PruneRecordingExecutor::default());
+        let _pipeline = GatewayPluginPipeline::for_tests_shared(
+            vec![plugin("acme.a", 1, vec!["request.body.read"])],
+            executor.clone(),
+            GatewayPluginPipelineConfig::default(),
+        );
+
+        assert_eq!(executor.last_retain_ids(), vec!["acme.a"]);
     }
 
     #[test]

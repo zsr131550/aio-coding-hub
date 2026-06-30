@@ -175,11 +175,12 @@ const requiredDocs = [
     phrases: [
       "official.privacy-filter",
       "packyme/privacy-filter",
-      "host-owned built-in",
-      "社区插件不能使用 `native:privacyFilter`",
       "Extension Host",
+      "privacy.redact",
+      "api.privacy.redactRequestBody",
       "已移除的内置示例",
     ],
+    forbiddenPhrases: ["native:privacyFilter", "host-owned built-in"],
   },
   {
     path: "docs/plugins/examples/README.md",

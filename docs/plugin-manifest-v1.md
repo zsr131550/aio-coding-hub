@@ -2,7 +2,7 @@
 
 `plugin.json` 是插件与 AIO Coding Hub 之间稳定的 package contract。Plugin API v1 的社区插件只有一种公开运行时：Extension Host。社区插件必须提供 `main`，声明 `runtime.kind = "extensionHost"`，并把 TypeScript 或 JavaScript 源码打包成宿主可加载的 JavaScript 输出。
 
-Official Privacy Filter 仍然保留为 host-owned built-in。它不是第三方 runtime，也不是社区插件可以选择的运行方式。
+Official Privacy Filter 也使用同一套 Extension Host manifest、capability、hook 和 lifecycle 规则。官方身份只体现在 bundled 分发、默认配置和默认授权上，不体现在独立 runtime 或宿主特例上。
 
 ## 1. 必填字段
 
@@ -67,18 +67,7 @@ Extension Host 是唯一 community runtime：
 
 `main` 必须是包内相对路径，指向 `.js` 或 `.cjs` 文件。推荐源码使用 TypeScript 或 JavaScript，发布包只携带打包后的 JavaScript 输出。宿主负责加载、激活、超时控制、失败策略和 dispose；插件不能直接创建或持有宿主 runtime 实例。
 
-旧的 WASM、process 和第三方 native 运行时属于 unsupported pre-release legacy runtime。公开社区插件不能声明这些运行时；迁移到 Extension Host 后通过 `contributes.gatewayHooks` 和 `api.gateway.registerHook` 实现网关扩展。
-
-Official-only host-owned built-in runtime：
-
-```json
-{
-  "kind": "native",
-  "engine": "privacyFilter"
-}
-```
-
-`native:privacyFilter` 只用于 `official.privacy-filter`，由宿主持有和发布。第三方包不能声明 host-native engines。
+旧的 WASM、process 和 native 运行时属于 unsupported pre-release legacy runtime。公开插件和官方 bundled 插件都不能声明这些运行时；迁移到 Extension Host 后通过 `contributes.gatewayHooks` 和 `api.gateway.registerHook` 实现网关扩展。
 
 ## 5. Host Compatibility
 
@@ -290,7 +279,7 @@ module.exports.activate = function(api) {
 
 ## 12. Manifest 示例：Privacy Filter
 
-`official.privacy-filter` 是 host-owned built-in。它保留在 manifest contract 中是为了让宿主官方插件可被同一套安装、配置和审计 UI 描述，不表示第三方插件可以使用该 runtime。
+`official.privacy-filter` 是 bundled official Extension Host 插件。它使用普通插件 manifest、普通 gateway hook 生命周期和普通 Extension Host disposal；官方身份只提供默认安装源、默认配置和默认授权。
 
 ```json
 {
@@ -299,7 +288,7 @@ module.exports.activate = function(api) {
   "version": "1.0.0",
   "apiVersion": "1.0.0",
   "category": "privacy",
-  "description": "Official host-owned privacy filter aligned with packyme/privacy-filter for pre-upstream prompt and log redaction.",
+  "description": "Official Extension Host privacy filter aligned with packyme/privacy-filter for pre-upstream prompt and log redaction.",
   "homepage": "https://github.com/packyme/privacy-filter",
   "repository": {
     "type": "git",
@@ -307,8 +296,22 @@ module.exports.activate = function(api) {
   },
   "license": "MIT",
   "runtime": {
-    "kind": "native",
-    "engine": "privacyFilter"
+    "kind": "extensionHost",
+    "language": "typescript"
+  },
+  "main": "dist/extension.js",
+  "activationEvents": [
+    "onGatewayHook:gateway.request.afterBodyRead",
+    "onGatewayHook:gateway.request.beforeSend",
+    "onGatewayHook:log.beforePersist"
+  ],
+  "capabilities": ["gateway.hooks", "privacy.redact"],
+  "contributes": {
+    "gatewayHooks": [
+      { "name": "gateway.request.afterBodyRead", "priority": 5, "failurePolicy": "fail-closed" },
+      { "name": "gateway.request.beforeSend", "priority": 5, "failurePolicy": "fail-closed" },
+      { "name": "log.beforePersist", "priority": 1, "failurePolicy": "fail-closed" }
+    ]
   },
   "hostCompatibility": {
     "app": ">=0.60.0 <1.0.0",

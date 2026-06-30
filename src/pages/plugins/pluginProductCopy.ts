@@ -116,13 +116,6 @@ export function describePluginPermission(permission: string): PermissionDescript
 }
 
 export function describePluginRuntime(runtime: string): RuntimeDescription {
-  if (runtime === "native:privacyFilter") {
-    return {
-      label: "内置隐私过滤引擎",
-      detail: "由 AIO Coding Hub 宿主持有，只用于官方内置隐私过滤。",
-    };
-  }
-
   if (runtime === "extensionHost") {
     return {
       label: "扩展主机插件",

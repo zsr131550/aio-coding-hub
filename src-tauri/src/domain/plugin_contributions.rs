@@ -28,6 +28,7 @@ const ACTIVE_CAPABILITIES: &[&str] = &[
     "provider.healthCheck",
     "protocol.bridge",
     "gateway.hooks",
+    "privacy.redact",
 ];
 
 pub fn is_known_ui_slot(slot: &str) -> bool {

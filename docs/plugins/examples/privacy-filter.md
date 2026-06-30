@@ -18,9 +18,9 @@ Plugins 页面也会展示 `examples/prompt-helper`、`examples/redactor` 和 `e
 
 ID: `official.privacy-filter`
 
-Runtime: `native:privacyFilter`
+Runtime: `extensionHost`
 
-它是 host-owned built-in，对齐 [packyme/privacy-filter](https://github.com/packyme/privacy-filter) 的核心 redaction behavior。
+它是 bundled official Extension Host 插件，对齐 [packyme/privacy-filter](https://github.com/packyme/privacy-filter) 的核心 redaction behavior。
 
 它展示了 prompts 和 request logs 的 pre-upstream privacy filtering。
 
@@ -32,8 +32,10 @@ Hooks：
 - `gateway.request.beforeSend`
 - `log.beforePersist`
 
-Internal host-mediated labels for the official runtime：
+Capabilities and host-mediated labels：
 
+- `gateway.hooks`
+- `privacy.redact`
 - `request.body.read`
 - `request.body.write`
 - `log.redact`
@@ -51,7 +53,7 @@ Provider request shapes：
 
 Gateway boundary note：Privacy Filter 会接收原始 client-to-gateway body，因为 gateway 必须先看到 prompt 才能脱敏。它的保护保证是：当插件启用并选中匹配策略和处理范围后，gateway-to-upstream provider request body 中的白名单字段和 persisted request logs 会被脱敏。日志脱敏由 `redactLogs` 和 `sensitiveTypes` 控制，不受 request `redactionScopes` 影响。如果你检查 hook 执行前的本地 client request，仍可能看到原始输入。
 
-Official privacy filter rules are loaded under a 1 MiB host byte budget。社区插件不能使用 `native:privacyFilter`；community redaction plugins should use Extension Host gateway hooks.
+Official privacy filter rules are loaded under a 1 MiB host byte budget。`official.privacy-filter` 通过 `api.privacy.redactRequestBody` 和 `api.privacy.redactText` 调用宿主脱敏服务；community redaction plugins should use Extension Host gateway hooks and ordinary host APIs.
 
 重要限制：
 
@@ -66,7 +68,7 @@ Official privacy filter rules are loaded under a 1 MiB host byte budget。社区
 - 一个 Codex/OpenAI Responses input fixture。
 - 一个 host replay/export 验证说明。
 - 一个 package command。
-- 精确列出它依赖的 capabilities，以及官方 runtime 使用的内部 context/mutation labels。
+- 精确列出它依赖的 capabilities，以及 host-mediated context/mutation labels。
 - 简短说明哪些行为是 intentionally unsupported。
 - 能被宿主导出的 trace replay fixture 覆盖至少一个正常路径和一个边界路径。
 - 能通过 `pnpm --filter create-aio-plugin cli publish-check` 生成市场发布 metadata。

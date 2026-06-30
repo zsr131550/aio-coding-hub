@@ -558,6 +558,30 @@ impl WorkerState {
                         .map_err(js_runtime_error)?;
                 }
 
+                if capabilities.contains("privacy.redact") {
+                    let privacy_source = format!(
+                        r#"
+                        ({{
+                          redactText(text, options) {{
+                            return globalThis.__aioHostApi(
+                              "privacy.redactText",
+                              {{ pluginId: {plugin_id_json}, text, options: options || {{}} }}
+                            );
+                          }},
+                          redactRequestBody(body, options) {{
+                            return globalThis.__aioHostApi(
+                              "privacy.redactRequestBody",
+                              {{ pluginId: {plugin_id_json}, body, options: options || {{}} }}
+                            );
+                          }}
+                        }})
+                        "#
+                    );
+                    let privacy: Object =
+                        ctx.eval(privacy_source.as_str()).map_err(js_runtime_error)?;
+                    api.set("privacy", privacy).map_err(js_runtime_error)?;
+                }
+
                 let module: Object = globals.get("module").map_err(js_runtime_error)?;
                 let exports: Object = module.get("exports").map_err(js_runtime_error)?;
                 if !exports.contains_key("activate").map_err(js_runtime_error)? {

@@ -57,11 +57,11 @@ mod tests {
             version: "1.0.0",
             installed_dir: "/plugins/alpha",
             updated_at: 10,
-            runtime_key: "native:privacyFilter",
+            runtime_key: "native:hostPrivateRedactor",
         });
 
         assert_ne!(rule_key, native_key);
         assert!(rule_key.ends_with("\u{1e}rules/a.json\u{1f}rules/b.json"));
-        assert!(native_key.ends_with("\u{1e}native:privacyFilter"));
+        assert!(native_key.ends_with("\u{1e}native:hostPrivateRedactor"));
     }
 }

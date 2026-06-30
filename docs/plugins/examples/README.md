@@ -2,13 +2,13 @@
 
 这里放官方示例和推荐社区插件形态。示例的目标是展示插件系统应该怎样被使用，而不是扩展宿主内置插件数量。
 
-- [Privacy Filter](./privacy-filter.md)：当前唯一内置官方 host-owned plugin `official.privacy-filter`，对齐 `packyme/privacy-filter` 的核心脱敏能力。
+- [Privacy Filter](./privacy-filter.md)：当前唯一内置官方 Extension Host 插件 `official.privacy-filter`，对齐 `packyme/privacy-filter` 的核心脱敏能力。
 
 ## 示例清单
 
 | 示例 ID | 生成模板 | 目标 | Hooks | Capabilities | Fixtures / 覆盖路径 |
 | --- | --- | --- | --- | --- | --- |
-| `official.privacy-filter` | 内置官方插件 | 请求和日志脱敏 | `gateway.request.afterBodyRead`, `gateway.request.beforeSend`, `log.beforePersist` | host-owned built-in | 官方 fixture 存在于宿主资源目录；覆盖配置 UI、request replay export 和日志脱敏边界 |
+| `official.privacy-filter` | 内置官方插件 | 请求和日志脱敏 | `gateway.request.afterBodyRead`, `gateway.request.beforeSend`, `log.beforePersist` | `gateway.hooks`, `privacy.redact` | 官方 fixture 存在于宿主资源目录；覆盖配置 UI、request replay export 和日志脱敏边界 |
 | `examples/prompt-helper` | `example:prompt-helper` | 在请求进入 provider 前补充提示词约束 | `gateway.request.afterBodyRead` | `gateway.hooks` | 包含 `fixtures/claude-request.json` 和 `fixtures/codex-request.json`；覆盖 Claude messages 和 Codex/OpenAI Responses request mutation |
 | `examples/redactor` | `example:redactor` | 展示 Extension Host gateway hook 脱敏形态 | `gateway.request.beforeSend`, `log.beforePersist` | `gateway.hooks` | 包含 request hit/miss 和 log redact fixtures；覆盖 pack、publish-check 和市场安装元数据 |
 | `examples/response-guard` | `example:response-guard` | 在 non-stream 响应返回后做轻量检查或标记 | `gateway.response.after` | `gateway.hooks` | 包含 `fixtures/response-warn.json` 和 `fixtures/response-pass.json`；覆盖响应 mutation 和 pass 路径 |

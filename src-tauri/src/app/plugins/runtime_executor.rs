@@ -3,7 +3,7 @@
 use crate::app::plugins::extension_host_registry::{
     ExtensionHostInstanceLifecycleRegistry, ExtensionHostInstanceRegistry,
 };
-use crate::app::plugins::official_privacy_filter_runtime::OfficialPrivacyFilterRuntime;
+use crate::app::plugins::privacy_redaction_service::PrivacyRedactionService;
 use crate::app::plugins::runtime_lifecycle::RuntimeLifecycleRegistry;
 use crate::app::plugins::runtime_manager::{PluginRuntimeManager, RuntimeDispatch};
 use crate::db;
@@ -19,33 +19,40 @@ use std::time::Duration;
 const EXTENSION_HOST_GATEWAY_TIMEOUT_GRACE: Duration = Duration::from_secs(1);
 
 pub(crate) struct RuntimeGatewayPluginExecutor {
-    privacy_filter_runtime: Arc<OfficialPrivacyFilterRuntime>,
     lifecycle: RuntimeLifecycleRegistry,
     extension_host_registry: Option<Arc<ExtensionHostInstanceRegistry>>,
 }
 
 impl RuntimeGatewayPluginExecutor {
     pub(crate) fn new() -> Self {
-        Self::with_extension_host_registry(None)
+        Self::with_extension_host_registry(None, Arc::new(PrivacyRedactionService::default()))
     }
 
     pub(crate) fn with_db(db: db::Db) -> Self {
-        Self::with_extension_host_registry(Some(Arc::new(ExtensionHostInstanceRegistry::new(db))))
+        let privacy_redaction = Arc::new(PrivacyRedactionService::default());
+        Self::with_extension_host_registry(
+            Some(Arc::new(
+                ExtensionHostInstanceRegistry::new_with_privacy_redaction(
+                    db,
+                    privacy_redaction.clone(),
+                ),
+            )),
+            privacy_redaction,
+        )
     }
 
     fn with_extension_host_registry(
         extension_host_registry: Option<Arc<ExtensionHostInstanceRegistry>>,
+        privacy_redaction: Arc<PrivacyRedactionService>,
     ) -> Self {
-        let privacy_filter_runtime = Arc::new(OfficialPrivacyFilterRuntime::default());
         let lifecycle = RuntimeLifecycleRegistry::default();
-        lifecycle.register_cache(privacy_filter_runtime.clone());
+        lifecycle.register_cache(privacy_redaction.clone());
         if let Some(registry) = extension_host_registry.clone() {
             lifecycle.register_instance_registry(Arc::new(
                 ExtensionHostInstanceLifecycleRegistry::new(registry),
             ));
         }
         Self {
-            privacy_filter_runtime,
             lifecycle,
             extension_host_registry,
         }
@@ -55,7 +62,10 @@ impl RuntimeGatewayPluginExecutor {
     fn for_tests_with_extension_host_registry(
         extension_host_registry: Arc<ExtensionHostInstanceRegistry>,
     ) -> Self {
-        Self::with_extension_host_registry(Some(extension_host_registry))
+        Self::with_extension_host_registry(
+            Some(extension_host_registry),
+            Arc::new(PrivacyRedactionService::default()),
+        )
     }
 
     #[cfg(test)]
@@ -70,14 +80,11 @@ impl RuntimeGatewayPluginExecutor {
     pub(crate) fn execute_plugin_sync(
         &self,
         plugin: &PluginDetail,
-        context: GatewayVisibleHookContext,
+        _context: GatewayVisibleHookContext,
     ) -> Result<GatewayHookResult, GatewayPluginError> {
         let manager = PluginRuntimeManager::new();
 
         match manager.runtime_dispatch(&plugin.summary.plugin_id, &plugin.manifest.runtime)? {
-            RuntimeDispatch::NativePrivacyFilter => {
-                self.privacy_filter_runtime.execute_plugin(plugin, context)
-            }
             RuntimeDispatch::ExtensionHost => {
                 ensure_gateway_hooks_capability(plugin)?;
                 Err(GatewayPluginError::new(
@@ -95,10 +102,6 @@ impl RuntimeGatewayPluginExecutor {
     ) -> GatewayHookFuture {
         let manager = PluginRuntimeManager::new();
         match manager.runtime_dispatch(&plugin.summary.plugin_id, &plugin.manifest.runtime) {
-            Ok(RuntimeDispatch::NativePrivacyFilter) => {
-                let result = self.privacy_filter_runtime.execute_plugin(plugin, context);
-                Box::pin(async move { result })
-            }
             Ok(RuntimeDispatch::ExtensionHost) => {
                 if let Err(err) = ensure_gateway_hooks_capability(plugin) {
                     return Box::pin(async move { Err(err) });
@@ -124,13 +127,9 @@ impl RuntimeGatewayPluginExecutor {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn dispose_runtime_caches_for_tests(&self) {
         self.lifecycle.dispose_all();
-    }
-
-    #[cfg(test)]
-    fn privacy_filter_cache_size_for_tests(&self) -> usize {
-        self.privacy_filter_runtime.cache_size_for_tests()
     }
 }
 
@@ -414,9 +413,9 @@ mod tests {
         let plugin = plugin_detail(
             "example.privacy-filter",
             PluginRuntime::Native {
-                engine: "privacyFilter".to_string(),
+                engine: "hostPrivateRedactor".to_string(),
             },
-            "native:privacyFilter".to_string(),
+            "native:hostPrivateRedactor".to_string(),
             None,
         );
         let context = hook_context("gateway.request.afterBodyRead", "trace-native");
@@ -428,46 +427,8 @@ mod tests {
         assert_eq!(err.code(), "PLUGIN_UNSUPPORTED_RUNTIME");
         assert_eq!(
             err.to_string(),
-            "PLUGIN_UNSUPPORTED_RUNTIME: unsupported native plugin runtime engine: privacyFilter"
+            "PLUGIN_UNSUPPORTED_RUNTIME: unsupported native plugin runtime engine: hostPrivateRedactor"
         );
-    }
-
-    #[test]
-    fn runtime_executor_retain_prunes_official_privacy_filter_runtime_cache() {
-        let executor = executor();
-        let plugin = official_privacy_filter_plugin_detail(json!({
-            "redactBeforeUpstream": true,
-            "redactLogs": true
-        }));
-        let context = hook_context("log.beforePersist", "trace-privacy");
-
-        executor
-            .execute_plugin_sync(&plugin, context)
-            .expect("official privacy filter runtime executes");
-        assert_eq!(executor.privacy_filter_cache_size_for_tests(), 1);
-
-        executor.retain_runtime_caches_for_plugins(&[]);
-
-        assert_eq!(executor.privacy_filter_cache_size_for_tests(), 0);
-    }
-
-    #[test]
-    fn runtime_executor_disposes_registered_runtime_caches() {
-        let executor = executor();
-        let privacy_plugin = official_privacy_filter_plugin_detail(serde_json::json!({
-            "redactBeforeUpstream": true,
-            "redactLogs": true
-        }));
-        let privacy_context = hook_context("log.beforePersist", "trace-dispose");
-
-        executor
-            .execute_plugin_sync(&privacy_plugin, privacy_context)
-            .expect("official privacy filter runtime executes");
-        assert_eq!(executor.privacy_filter_cache_size_for_tests(), 1);
-
-        executor.dispose_runtime_caches_for_tests();
-
-        assert_eq!(executor.privacy_filter_cache_size_for_tests(), 0);
     }
 
     fn executor() -> RuntimeGatewayPluginExecutor {
@@ -559,36 +520,6 @@ mod tests {
             ),
         )
         .expect("write extension");
-    }
-
-    fn official_privacy_filter_plugin_detail(config: serde_json::Value) -> PluginDetail {
-        let fixture = crate::app::plugins::official::official_plugin("official.privacy-filter")
-            .expect("official privacy filter fixture");
-        let permissions = fixture.manifest.permissions.clone();
-        PluginDetail {
-            summary: PluginSummary {
-                id: 1,
-                plugin_id: fixture.manifest.id.clone(),
-                name: fixture.manifest.name.clone(),
-                current_version: Some(fixture.manifest.version.clone()),
-                status: PluginStatus::Enabled,
-                runtime: "native:privacyFilter".to_string(),
-                permission_risk: PluginPermissionRisk::High,
-                update_available: false,
-                last_error: None,
-                created_at: 1,
-                updated_at: 1,
-            },
-            manifest: fixture.manifest,
-            install_source: PluginInstallSource::Official,
-            installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
-            config,
-            granted_permissions: permissions,
-            pending_permissions: vec![],
-            audit_logs: vec![],
-            runtime_failures: vec![],
-            rollback_versions: vec![],
-        }
     }
 
     fn plugin_detail(

@@ -123,19 +123,28 @@ function officialPrivacyFilterDetail(): PluginDetail {
     summary: summary({
       plugin_id: "official.privacy-filter",
       name: "Privacy Filter",
-      runtime: "native:privacyFilter",
+      runtime: "extensionHost",
     }),
     manifest: {
       id: "official.privacy-filter",
       name: "Privacy Filter",
       version: "1.0.0",
       apiVersion: "1.0.0",
-      runtime: { kind: "native", engine: "privacyFilter" },
-      hooks: [
-        { name: "gateway.request.afterBodyRead", priority: 10 },
-        { name: "log.beforePersist", priority: 10 },
+      runtime: { kind: "extensionHost", language: "typescript" },
+      main: "dist/extension.js",
+      activationEvents: [
+        "onGatewayHook:gateway.request.afterBodyRead",
+        "onGatewayHook:gateway.request.beforeSend",
+        "onGatewayHook:log.beforePersist",
       ],
-      permissions: ["request.body.read", "request.body.write", "log.redact"],
+      capabilities: ["gateway.hooks", "privacy.redact"],
+      contributes: {
+        gatewayHooks: [
+          { name: "gateway.request.afterBodyRead", priority: 5, failurePolicy: "fail-closed" },
+          { name: "gateway.request.beforeSend", priority: 5, failurePolicy: "fail-closed" },
+          { name: "log.beforePersist", priority: 1, failurePolicy: "fail-closed" },
+        ],
+      },
       hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
     },
     install_source: "official",

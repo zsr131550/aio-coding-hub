@@ -7,7 +7,7 @@
 ## 先读什么
 
 - [插件开发总指南](./developer-guide.md)：唯一主线入口，从创建 Extension Host 插件到本地回放、配置表单、打包和发布。
-- [Privacy Filter 示例](./examples/privacy-filter.md)：查看官方 host-owned built-in 插件如何说明隐私过滤边界。
+- [Privacy Filter 示例](./examples/privacy-filter.md)：查看官方 Extension Host 插件如何说明隐私过滤边界。
 - [插件 API 参考](./reference/README.md)：查 `plugin.json`、hooks、capabilities、host-mediated context labels、config schema、SDK 和发布规则。
 
 ## 按目标查找
@@ -27,7 +27,7 @@
 ## 目录结构
 
 - `developer-guide.md`：开发者主线手册。
-- `examples/`：官方 host-owned 插件说明和社区 Extension Host 示例方向。
+- `examples/`：官方 Extension Host 插件说明和社区示例方向。
 - `reference/`：稳定 API 契约和工具链说明。
 - `runtime/`：Extension Host lifecycle、流式响应，以及旧 WASM/process notes。
 - `architecture/`：维护者视角的安全、隔离、性能和稳定性说明。

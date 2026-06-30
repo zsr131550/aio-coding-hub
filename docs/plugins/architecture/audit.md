@@ -4,7 +4,7 @@
 
 ## 决策
 
-只保留 `official.privacy-filter` 作为 bundled official host-owned plugin。
+只保留 `official.privacy-filter` 作为 bundled official Extension Host plugin。
 
 移除之前官方 catalog 中的 built-in prompt optimizer、safety detector 和 generic redactor examples。它们仍然是有效扩展场景，但应通过 Extension Host gateway hooks 作为社区插件实现。
 
@@ -23,13 +23,13 @@ AIO Coding Hub 采用同样形态：
 - `plugin.json` 声明 ID、`main`、Extension Host runtime、contributions、capabilities、config schema 和 host compatibility。
 - Hooks 是明确的 gateway/log extension points，带有 bounded timeouts 和 host-trimmed contexts。
 - 社区代码执行不会进入 Rust main process 和 WebView。
-- `official.privacy-filter` 是 host-owned built-in。第三方包不能声明 host-native engines。
+- `official.privacy-filter` 使用普通 Extension Host runtime。第三方包和官方插件都不能声明 legacy native engines；官方身份只体现在 bundled 分发、默认配置和默认授权。
 
 ## 信任边界
 
 当前 host trust boundary：
 
-- Trusted：Rust host、gateway pipeline、database、packaged official privacy engine。
+- Trusted：Rust host、gateway pipeline、database、packaged official privacy redaction service。
 - Semi-trusted：signed marketplace metadata 和 package checksums。
 - Untrusted by default：local packages、marketplace packages、GitHub release packages、Extension Host bundled JavaScript output、legacy rule files、legacy WASM bytecode、legacy process runtime binaries。
 
@@ -55,7 +55,7 @@ Gateway hooks 必须使用 `contributes.gatewayHooks` 与 `api.gateway.registerH
 - 按 plugin ID、version 和 runtime key 缓存 Extension Host worker state。
 - 对非安全增强使用 fail open；只对用户明确启用的 security/privacy gates 使用 fail closed。
 - 记录 runtime failures 和 circuit-open skips，避免坏插件持续拖慢 gateway。
-- official host-owned engines 要少而聚焦，控制 host startup、binary size 和维护风险。
+- official bundled plugins 要少而聚焦，控制 host startup、binary size 和维护风险。
 
 ## v1.1 Performance Budgets
 
@@ -69,7 +69,7 @@ Gateway hooks 必须使用 `contributes.gatewayHooks` 与 `api.gateway.registerH
 
 Bundled official plugin：
 
-- `official.privacy-filter`：与 `packyme/privacy-filter` 对齐的 host-owned engine，用于 irreversible pre-upstream privacy redaction 和 log redaction。
+- `official.privacy-filter`：与 `packyme/privacy-filter` 对齐的 Extension Host 插件，通过 `privacy.redact` 调用宿主脱敏服务，用于 irreversible pre-upstream privacy redaction 和 log redaction。
 
 开放给社区的能力：
 

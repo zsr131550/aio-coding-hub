@@ -369,19 +369,11 @@ fn is_missing_plugin_table_error(err: &AppError) -> bool {
 }
 
 fn is_unsupported_legacy_runtime_summary(runtime: &str) -> bool {
-    matches!(runtime, "wasm" | "process" | "native")
-        || runtime.starts_with("native:") && runtime != "native:privacyFilter"
-}
-
-fn is_supported_official_native_privacy_filter_detail(detail: &PluginDetail) -> bool {
-    detail.install_source == PluginInstallSource::Official
-        && detail.summary.plugin_id == OFFICIAL_PRIVACY_FILTER_ID
-        && matches!(&detail.manifest.runtime, PluginRuntime::Native { engine } if engine == "privacyFilter")
+    matches!(runtime, "wasm" | "process" | "native") || runtime.starts_with("native:")
 }
 
 fn is_unsupported_native_runtime_detail(detail: &PluginDetail) -> bool {
     matches!(detail.manifest.runtime, PluginRuntime::Native { .. })
-        && !is_supported_official_native_privacy_filter_detail(detail)
 }
 
 fn is_unsupported_legacy_runtime_detail(detail: &PluginDetail) -> bool {
@@ -392,15 +384,10 @@ fn is_unsupported_legacy_runtime_detail(detail: &PluginDetail) -> bool {
 }
 
 fn normalize_unsupported_legacy_plugin_summary_for_list(
-    db: &crate::db::Db,
+    _db: &crate::db::Db,
     summary: crate::plugins::PluginSummary,
 ) -> AppResult<crate::plugins::PluginSummary> {
-    let summary = normalize_unsupported_legacy_plugin_summary(summary);
-    if summary.runtime == "native:privacyFilter" {
-        let detail = repository::get_plugin(db, &summary.plugin_id)?;
-        return Ok(normalize_unsupported_legacy_plugin_detail(detail).summary);
-    }
-    Ok(summary)
+    Ok(normalize_unsupported_legacy_plugin_summary(summary))
 }
 
 fn normalize_unsupported_legacy_plugin_summary(
@@ -459,8 +446,9 @@ pub(crate) fn install_official_plugin(
         &fixture.default_config,
         &[],
     )?;
-    let detail =
-        repository::save_plugin_permissions(db, plugin_id, &fixture.manifest.permissions, &[])?;
+    let default_permissions =
+        crate::app::plugins::official::official_default_permissions(plugin_id);
+    let detail = repository::save_plugin_permissions(db, plugin_id, &default_permissions, &[])?;
     append_audit(
         db,
         Some(plugin_id.to_string()),
@@ -761,7 +749,7 @@ fn compare_prerelease_identifiers(
 
 fn runtime_lifecycle_summary(
     manifest: &PluginManifest,
-    source: PluginInstallSource,
+    _source: PluginInstallSource,
 ) -> PluginRuntimeLifecycleSummary {
     match &manifest.runtime {
         PluginRuntime::ExtensionHost { .. } => PluginRuntimeLifecycleSummary {
@@ -770,18 +758,6 @@ fn runtime_lifecycle_summary(
             supported: true,
             blocking_reasons: Vec::new(),
         },
-        PluginRuntime::Native { engine }
-            if source == PluginInstallSource::Official
-                && manifest.id == OFFICIAL_PRIVACY_FILTER_ID
-                && engine == "privacyFilter" =>
-        {
-            PluginRuntimeLifecycleSummary {
-                kind: "native".to_string(),
-                label: format!("Native ({engine})"),
-                supported: true,
-                blocking_reasons: Vec::new(),
-            }
-        }
         PluginRuntime::Native { engine } => PluginRuntimeLifecycleSummary {
             kind: "native".to_string(),
             label: format!("Native ({engine})"),
@@ -2306,11 +2282,6 @@ fn ensure_required_permissions_granted(detail: &PluginDetail) -> AppResult<()> {
 fn ensure_runtime_enabled(manifest: &PluginManifest) -> AppResult<()> {
     match &manifest.runtime {
         PluginRuntime::ExtensionHost { .. } => Ok(()),
-        PluginRuntime::Native { engine }
-            if manifest.id == "official.privacy-filter" && engine == "privacyFilter" =>
-        {
-            Ok(())
-        }
         PluginRuntime::Native { .. } => Err(AppError::new(
             "PLUGIN_UNSUPPORTED_RUNTIME",
             "native runtime is reserved for official plugins",
@@ -2738,7 +2709,7 @@ mod tests {
         manifest.id = plugin_id.to_string();
         manifest.name = "Native Policy Plugin".to_string();
         manifest.runtime = PluginRuntime::Native {
-            engine: "privacyFilter".to_string(),
+            engine: "hostPrivateRedactor".to_string(),
         };
         manifest
     }
@@ -3493,7 +3464,7 @@ INSERT INTO plugins (
 
         let listed = list_plugins(&db).unwrap();
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].runtime, "native:privacyFilter");
+        assert_eq!(listed[0].runtime, "native:hostPrivateRedactor");
         assert_eq!(listed[0].status, PluginStatus::Disabled);
         assert!(listed[0]
             .last_error
@@ -3502,7 +3473,7 @@ INSERT INTO plugins (
 
         let detail = get_plugin_detail(&db, "acme.native-privacy-filter").unwrap();
         assert_eq!(detail.install_source, PluginInstallSource::Local);
-        assert_eq!(detail.summary.runtime, "native:privacyFilter");
+        assert_eq!(detail.summary.runtime, "native:hostPrivateRedactor");
         assert_eq!(detail.summary.status, PluginStatus::Disabled);
         assert!(detail
             .summary
@@ -3532,13 +3503,22 @@ INSERT INTO plugins (
 
         assert_eq!(installed.install_source, PluginInstallSource::Official);
         assert_eq!(installed.summary.status, PluginStatus::Disabled);
-        assert_eq!(installed.summary.runtime, "native:privacyFilter");
+        assert_eq!(installed.summary.runtime, "extensionHost");
         assert_eq!(
             installed.manifest.runtime,
-            crate::plugins::PluginRuntime::Native {
-                engine: "privacyFilter".to_string()
+            crate::plugins::PluginRuntime::ExtensionHost {
+                language: "typescript".to_string()
             }
         );
+        assert_eq!(
+            installed.manifest.main.as_deref(),
+            Some("dist/extension.js")
+        );
+        assert!(installed
+            .manifest
+            .capabilities
+            .iter()
+            .any(|capability| capability == "privacy.redact"));
         assert!(installed
             .installed_dir
             .as_deref()
@@ -3607,7 +3587,9 @@ INSERT INTO plugins (
         let pipeline = GatewayPluginPipeline::for_tests(
             active,
             Arc::new(
-                crate::app::plugins::runtime_executor::RuntimeGatewayPluginExecutor::default(),
+                crate::app::plugins::runtime_executor::RuntimeGatewayPluginExecutor::with_db(
+                    db.clone(),
+                ),
             ),
             GatewayPluginPipelineConfig::default(),
         );
@@ -3700,7 +3682,9 @@ INSERT INTO plugins (
         let pipeline = GatewayPluginPipeline::for_tests(
             active,
             Arc::new(
-                crate::app::plugins::runtime_executor::RuntimeGatewayPluginExecutor::default(),
+                crate::app::plugins::runtime_executor::RuntimeGatewayPluginExecutor::with_db(
+                    db.clone(),
+                ),
             ),
             GatewayPluginPipelineConfig::default(),
         );
@@ -3852,7 +3836,10 @@ INSERT INTO plugins (
             .unwrap()
             .manifest;
         legacy
-            .hooks
+            .contributes
+            .as_mut()
+            .expect("official manifest contributes")
+            .gateway_hooks
             .retain(|hook| hook.name != "gateway.request.beforeSend");
         repository::update_plugin_manifest(
             &db,
@@ -3867,7 +3854,10 @@ INSERT INTO plugins (
         assert_eq!(active.len(), 1);
         assert!(active[0]
             .manifest
-            .hooks
+            .contributes
+            .as_ref()
+            .expect("official manifest contributes")
+            .gateway_hooks
             .iter()
             .any(|hook| hook.name == "gateway.request.beforeSend"));
     }
@@ -3892,7 +3882,10 @@ INSERT INTO plugins (
             .unwrap()
             .manifest;
         legacy
-            .hooks
+            .contributes
+            .as_mut()
+            .expect("official manifest contributes")
+            .gateway_hooks
             .retain(|hook| hook.name != "gateway.request.beforeSend");
         repository::update_plugin_manifest(
             &db,
@@ -3908,7 +3901,10 @@ INSERT INTO plugins (
         for item in [&enabled, &detail] {
             assert!(item
                 .manifest
-                .hooks
+                .contributes
+                .as_ref()
+                .expect("official manifest contributes")
+                .gateway_hooks
                 .iter()
                 .any(|hook| hook.name == "gateway.request.beforeSend"));
             assert_eq!(item.config["redactBeforeUpstream"], true);
@@ -4921,7 +4917,7 @@ INSERT INTO plugins (
         let mut manifest = local_package_manifest("official.privacy-filter", "1.0.0");
         manifest["runtime"] = serde_json::json!({
             "kind": "native",
-            "engine": "privacyFilter"
+            "engine": "hostPrivateRedactor"
         });
         manifest["hooks"] = serde_json::json!([
             {
@@ -4967,7 +4963,7 @@ INSERT INTO plugins (
         let mut manifest = local_package_manifest("official.privacy-filter", "1.0.0");
         manifest["runtime"] = serde_json::json!({
             "kind": "native",
-            "engine": "privacyFilter"
+            "engine": "hostPrivateRedactor"
         });
         manifest["hooks"] = serde_json::json!([
             {

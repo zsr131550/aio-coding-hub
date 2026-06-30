@@ -36,12 +36,13 @@ function withContractDefaults(value) {
       supportedSourceLanguages: ["typescript", "javascript"],
       lifecycle: {
         gatewayRegistration: "api.gateway.registerHook",
+        privacyRedaction: "api.privacy.redactRequestBody",
       },
       status: "mainline-contract",
       ...(value.extensionHostContract ?? {}),
     },
     capabilities: mergeUnique(
-      ["gateway.hooks", "protocol.bridge", "commands.execute", "provider.extensionValues"],
+      ["gateway.hooks", "protocol.bridge", "commands.execute", "provider.extensionValues", "privacy.redact"],
       value.capabilities
     ),
     contributionPoints: mergeUnique(
@@ -150,9 +151,10 @@ function writePassingScaffold(root) {
       "requestBody responseBody streamChunk logMessage headers",
       'export type ExtensionRuntime = { kind: "extensionHost"; language: "typescript" };',
       "export type PluginRuntime = ExtensionRuntime;",
-      'export type PluginCapability = "gateway.hooks" | "protocol.bridge" | "commands.execute" | "provider.extensionValues";',
+      'export type PluginCapability = "gateway.hooks" | "protocol.bridge" | "commands.execute" | "provider.extensionValues" | "privacy.redact";',
       "export type GatewayHookContribution = { name: string };",
       "export type ProtocolBridgeContribution = { bridgeType: string };",
+      "export type PrivacyApi = { redactText(text: string): unknown; redactRequestBody(body: string): unknown };",
       "type PluginContributes = { commands?: unknown[]; providers?: unknown[]; gatewayHooks?: GatewayHookContribution[]; protocolBridges?: ProtocolBridgeContribution[]; ui?: Record<string, unknown[]> };",
       [
         "export type ActiveGatewayHookName =",
@@ -402,7 +404,6 @@ writeJson(extensionHostDependencyBaselineRoot, "docs/plugins/plugin-api-v1-contr
   },
   communityRuntimes: ["extensionHost"],
   unsupportedLegacyRuntimes: ["wasm", "process", "native"],
-  officialRuntimes: ["native:privacyFilter"],
 });
 writePassingScaffold(extensionHostDependencyBaselineRoot);
 
@@ -457,7 +458,6 @@ writeJson(protocolBridgeBoundaryDriftRoot, "docs/plugins/plugin-api-v1-contract.
   ).hookMatrix,
   communityRuntimes: ["extensionHost"],
   unsupportedLegacyRuntimes: ["wasm", "process", "native"],
-  officialRuntimes: ["native:privacyFilter"],
 });
 writePassingScaffold(protocolBridgeBoundaryDriftRoot);
 
@@ -519,7 +519,6 @@ writeJson(capabilityDependencyDriftRoot, "docs/plugins/plugin-api-v1-contract.js
       : {},
   communityRuntimes: ["extensionHost"],
   unsupportedLegacyRuntimes: ["wasm", "process", "native"],
-  officialRuntimes: ["native:privacyFilter"],
 });
 writePassingScaffold(capabilityDependencyDriftRoot);
 
@@ -553,7 +552,6 @@ writeJson(reservedHookRoot, "docs/plugins/plugin-api-v1-contract.json", {
   reservedPermissions: ["network.fetch"],
   communityRuntimes: ["extensionHost"],
   unsupportedLegacyRuntimes: ["wasm", "process", "native"],
-  officialRuntimes: ["native:privacyFilter"],
 });
 writeFileSync(
   join(reservedHookRoot, "packages/plugin-sdk/src/index.ts"),
@@ -617,7 +615,6 @@ writeJson(missingHookMetadataRoot, "docs/plugins/plugin-api-v1-contract.json", {
   },
   communityRuntimes: ["extensionHost"],
   unsupportedLegacyRuntimes: ["wasm", "process", "native"],
-  officialRuntimes: ["native:privacyFilter"],
 });
 writePassingScaffold(missingHookMetadataRoot);
 
@@ -665,7 +662,6 @@ writeJson(inconsistentHookMetadataRoot, "docs/plugins/plugin-api-v1-contract.jso
   },
   communityRuntimes: ["extensionHost"],
   unsupportedLegacyRuntimes: ["wasm", "process", "native"],
-  officialRuntimes: ["native:privacyFilter"],
 });
 writePassingScaffold(inconsistentHookMetadataRoot);
 
@@ -715,7 +711,6 @@ writeJson(duplicateHookMetadataRoot, "docs/plugins/plugin-api-v1-contract.json",
   },
   communityRuntimes: ["extensionHost"],
   unsupportedLegacyRuntimes: ["wasm", "process", "native"],
-  officialRuntimes: ["native:privacyFilter"],
 });
 writePassingScaffold(duplicateHookMetadataRoot);
 
@@ -759,7 +754,6 @@ writeJson(missingDevtoolsMetadataRoot, "docs/plugins/plugin-api-v1-contract.json
   },
   communityRuntimes: ["extensionHost"],
   unsupportedLegacyRuntimes: ["wasm", "process", "native"],
-  officialRuntimes: ["native:privacyFilter"],
 });
 writePassingScaffold(missingDevtoolsMetadataRoot);
 writeFileSync(
@@ -806,7 +800,6 @@ writeJson(partialDevtoolsMetadataRoot, "docs/plugins/plugin-api-v1-contract.json
   },
   communityRuntimes: ["extensionHost"],
   unsupportedLegacyRuntimes: ["wasm", "process", "native"],
-  officialRuntimes: ["native:privacyFilter"],
 });
 writePassingScaffold(partialDevtoolsMetadataRoot);
 writeFileSync(
@@ -912,7 +905,6 @@ writeJson(globalPermissionDependencyRoot, "docs/plugins/plugin-api-v1-contract.j
   },
   communityRuntimes: ["extensionHost"],
   unsupportedLegacyRuntimes: ["wasm", "process", "native"],
-  officialRuntimes: ["native:privacyFilter"],
 });
 writePassingScaffold(globalPermissionDependencyRoot);
 writeFileSync(

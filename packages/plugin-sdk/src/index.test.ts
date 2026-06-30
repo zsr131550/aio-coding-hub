@@ -3,6 +3,7 @@ import contract from "../../../docs/plugins/plugin-api-v1-contract.json";
 import {
   type PluginHookContext,
   type PluginHookResult,
+  type PluginApi,
   type PluginManifest,
   permissionRisk,
   validateManifest,
@@ -305,6 +306,21 @@ describe("validateManifest", () => {
     expect(validateManifest(manifest)).toEqual({ ok: true });
   });
 
+  test("validates privacy redaction capability for extension host plugins", () => {
+    const manifest: PluginManifest = {
+      ...openRouterManifest,
+      contributes: {
+        gatewayHooks: [
+          { name: "gateway.request.afterBodyRead", priority: 5, failurePolicy: "fail-closed" },
+          { name: "log.beforePersist", priority: 1, failurePolicy: "fail-closed" },
+        ],
+      },
+      capabilities: ["gateway.hooks", "privacy.redact"],
+    };
+
+    expect(validateManifest(manifest)).toEqual({ ok: true });
+  });
+
   test("rejects gatewayHooks with reserved or unknown hook", () => {
     const reservedHookManifest = {
       ...openRouterManifest,
@@ -597,6 +613,19 @@ describe("PluginHookContext", () => {
     };
 
     expect(context.context.request?.normalizedMessages?.[0]?.text).toBe("hello from codex");
+  });
+});
+
+describe("PluginApi", () => {
+  it("represents the host privacy redaction API", () => {
+    const api: PluginApi = {
+      privacy: {
+        redactText: (text) => ({ hit: true, count: 1, redacted: text.replace("secret", "[密钥]") }),
+        redactRequestBody: (body) => ({ hit: false, count: 0, redacted: body }),
+      },
+    };
+
+    expect(api.privacy?.redactText("secret").redacted).toBe("[密钥]");
   });
 });
 

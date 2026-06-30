@@ -1,6 +1,7 @@
 //! Usage: Managed Extension Host process instance reuse and disposal.
 
 use super::extension_host::ExtensionHostInstance;
+use super::privacy_redaction_service::PrivacyRedactionService;
 use crate::app::app_state::{ensure_db_ready, DbInitState};
 use crate::app::plugins::runtime_lifecycle::PluginRuntimeInstanceRegistry;
 use crate::db;
@@ -82,7 +83,9 @@ trait ExtensionHostFactory: Send + Sync {
 }
 
 #[allow(dead_code)]
-struct RealExtensionHostFactory;
+struct RealExtensionHostFactory {
+    privacy_redaction: Arc<PrivacyRedactionService>,
+}
 
 impl ExtensionHostFactory for RealExtensionHostFactory {
     fn start<'a>(
@@ -92,10 +95,11 @@ impl ExtensionHostFactory for RealExtensionHostFactory {
     ) -> BoxFuture<'a, AppResult<Box<dyn ExtensionHostProcess>>> {
         Box::pin(async move {
             let plugin_root = plugin_root(&detail)?;
-            let host = ExtensionHostInstance::start_with_host_api(
+            let host = ExtensionHostInstance::start_with_host_api_and_privacy_redaction(
                 detail.manifest.clone(),
                 plugin_root,
                 db,
+                self.privacy_redaction.clone(),
             )
             .await?;
             Ok(Box::new(RealExtensionHostProcess { host }) as Box<dyn ExtensionHostProcess>)
@@ -209,9 +213,16 @@ pub(crate) struct ExtensionHostInstanceRegistry {
 impl ExtensionHostInstanceRegistry {
     #[allow(dead_code)]
     pub(crate) fn new(db: db::Db) -> Self {
+        Self::new_with_privacy_redaction(db, Arc::new(PrivacyRedactionService::default()))
+    }
+
+    pub(crate) fn new_with_privacy_redaction(
+        db: db::Db,
+        privacy_redaction: Arc<PrivacyRedactionService>,
+    ) -> Self {
         Self::with_factory(
             db,
-            Arc::new(RealExtensionHostFactory),
+            Arc::new(RealExtensionHostFactory { privacy_redaction }),
             ExtensionHostRegistryLimits::default(),
         )
     }
@@ -321,6 +332,12 @@ impl ExtensionHostInstanceRegistry {
                 format!("failed to encode extension host gateway context: {err}"),
             )
         })?;
+        let payload = json!({
+            "hook": hook,
+            "traceId": context.trace_id.clone(),
+            "config": detail.config.clone(),
+            "context": context_value,
+        });
         let _operation_guard = self.operation_gate.read().await;
         let key = ExtensionHostInstanceKey::from_plugin_detail(&detail)
             .map_err(extension_host_gateway_error)?;
@@ -328,7 +345,7 @@ impl ExtensionHostInstanceRegistry {
         let _plugin_guard = plugin_lock.lock().await;
 
         if let Some(value) = self
-            .execute_gateway_hook_warm_instance(&key, hook, context_value.clone(), now)
+            .execute_gateway_hook_warm_instance(&key, hook, payload.clone(), now)
             .await
             .map_err(extension_host_gateway_error)?
         {
@@ -352,7 +369,7 @@ impl ExtensionHostInstanceRegistry {
             .start(detail, self.db.clone())
             .await
             .map_err(extension_host_gateway_error)?;
-        let value = match process.execute_gateway_hook(hook, context_value).await {
+        let value = match process.execute_gateway_hook(hook, payload).await {
             Ok(value) => value,
             Err(error) => {
                 process.dispose().await;

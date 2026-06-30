@@ -16,9 +16,6 @@
         "dispose": "host disposes worker state when plugin snapshot changes, disables, updates, or uninstalls"
       },
       "status": "contract"
-    },
-    "native:privacyFilter": {
-      "status": "official-host-owned"
     }
   },
   "activationEvents": [
@@ -32,6 +29,7 @@
     "commands.execute",
     "storage.plugin",
     "diagnostics.read",
+    "privacy.redact",
     "provider.extensionValues",
     "provider.requestPreparation",
     "provider.modelDiscovery",
@@ -256,6 +254,7 @@
     "lifecycle": {
       "activate": "module exports activate(api)",
       "gatewayRegistration": "api.gateway.registerHook",
+      "privacyRedaction": "api.privacy.redactText and api.privacy.redactRequestBody when privacy.redact is declared",
       "defaultHookTimeoutMs": 150,
       "defaultFailurePolicy": "fail-open",
       "dispose": "host-managed"
@@ -263,6 +262,5 @@
     "status": "mainline-contract"
   },
   "communityRuntimes": ["extensionHost"],
-  "unsupportedLegacyRuntimes": ["wasm", "process", "native"],
-  "officialRuntimes": ["native:privacyFilter"]
+  "unsupportedLegacyRuntimes": ["wasm", "process", "native"]
 }

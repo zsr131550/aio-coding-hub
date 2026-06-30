@@ -1,6 +1,7 @@
 import {
   type ActivationEvent,
   type GatewayHookName,
+  type PluginApi,
   type PluginCapability,
   type PluginContributes,
   type PluginHookResult,
@@ -16,6 +17,7 @@ const gatewayHook: GatewayHookName = "gateway.request.afterBodyRead";
 const permission: PluginPermission = "request.body.read";
 const activationEvent: ActivationEvent = "onProviderEditor:openrouter";
 const capability: PluginCapability = "provider.extensionValues";
+const privacyCapability: PluginCapability = "privacy.redact";
 const slot: UiContributionSlot = "providers.editor.sections";
 
 if (permissionRisk(permission) !== "high") {
@@ -91,7 +93,13 @@ const manifest: PluginManifest = {
       ],
     },
   },
-  capabilities: [capability, "commands.execute", "gateway.hooks", "protocol.bridge"],
+  capabilities: [
+    capability,
+    privacyCapability,
+    "commands.execute",
+    "gateway.hooks",
+    "protocol.bridge",
+  ],
   hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
 };
 
@@ -139,4 +147,15 @@ const replaceResponseHeadersResult: PluginHookResult = {
 
 if (replaceRequestResult.action !== "replace" || !replaceResponseHeadersResult.headers) {
   throw new Error("host mutation hook results should be representable");
+}
+
+const pluginApi: PluginApi = {
+  privacy: {
+    redactText: (text) => ({ hit: true, count: 1, redacted: text }),
+    redactRequestBody: (body) => ({ hit: false, count: 0, redacted: body }),
+  },
+};
+
+if (pluginApi.privacy?.redactText("secret").count !== 1) {
+  throw new Error("privacy API should be representable");
 }

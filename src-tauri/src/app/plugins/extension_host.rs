@@ -3,6 +3,7 @@
 use super::extension_host_worker::{
     ExtensionHostWorkerConfig, DEFAULT_EXTENSION_HOST_MAX_LINE_BYTES,
 };
+use super::privacy_redaction_service::PrivacyRedactionService;
 use super::process_runtime::{
     JsonRpcHostMethodHandler, JsonRpcProcessRuntime, ProcessRuntimeConfig,
 };
@@ -44,6 +45,22 @@ impl ExtensionHostInstance {
         plugin_root: PathBuf,
         db: db::Db,
     ) -> AppResult<Self> {
+        Self::start_with_host_api_and_privacy_redaction(
+            manifest,
+            plugin_root,
+            db,
+            Arc::new(PrivacyRedactionService::default()),
+        )
+        .await
+    }
+
+    pub(crate) async fn start_with_host_api_and_privacy_redaction(
+        manifest: PluginManifest,
+        plugin_root: PathBuf,
+        db: db::Db,
+        privacy_redaction: Arc<PrivacyRedactionService>,
+    ) -> AppResult<Self> {
+        let handler_plugin_root = plugin_root.clone();
         Self::start_with_timeout_and_host_handler(
             manifest.clone(),
             plugin_root,
@@ -51,7 +68,9 @@ impl ExtensionHostInstance {
             Some(Arc::new(ExtensionHostApiHandler {
                 db,
                 plugin_id: manifest.id,
+                plugin_root: handler_plugin_root,
                 capabilities: manifest.capabilities.into_iter().collect(),
+                privacy_redaction,
             })),
         )
         .await
@@ -310,7 +329,9 @@ pub(crate) type ExtensionHost = ExtensionHostInstance;
 struct ExtensionHostApiHandler {
     db: db::Db,
     plugin_id: String,
+    plugin_root: PathBuf,
     capabilities: BTreeSet<String>,
+    privacy_redaction: Arc<PrivacyRedactionService>,
 }
 
 impl JsonRpcHostMethodHandler for ExtensionHostApiHandler {
@@ -319,6 +340,8 @@ impl JsonRpcHostMethodHandler for ExtensionHostApiHandler {
             "storage.get" => self.storage_get(params),
             "storage.set" => self.storage_set(params),
             "diagnostics.getRuntimeReports" => self.diagnostics_get_runtime_reports(params),
+            "privacy.redactText" => self.privacy_redact_text(params),
+            "privacy.redactRequestBody" => self.privacy_redact_request_body(params),
             other => Err(AppError::new(
                 "PLUGIN_EXTENSION_HOST_METHOD_NOT_FOUND",
                 format!("unsupported extension host API method: {other}"),
@@ -417,6 +440,58 @@ impl ExtensionHostApiHandler {
                 format!("failed to encode runtime reports: {err}"),
             )
         })
+    }
+
+    fn privacy_redact_text(&self, params: Value) -> AppResult<Value> {
+        self.require_capability("privacy.redact")?;
+        let plugin_id = self.host_api_plugin_id(&params)?;
+        let text = required_string(&params, "text")?;
+        let options = params.get("options").cloned().unwrap_or_else(|| json!({}));
+        let plugin = self.plugin_detail_with_root(plugin_id)?;
+        let output = self
+            .privacy_redaction
+            .redact_text(&plugin, text, &options)
+            .map_err(|err| {
+                AppError::new(
+                    "PLUGIN_PRIVACY_REDACTION_FAILED",
+                    format!("privacy redaction failed: {err}"),
+                )
+            })?;
+        serde_json::to_value(output).map_err(|err| {
+            AppError::new(
+                "PLUGIN_PRIVACY_REDACTION_ENCODE_FAILED",
+                format!("failed to encode privacy redaction result: {err}"),
+            )
+        })
+    }
+
+    fn privacy_redact_request_body(&self, params: Value) -> AppResult<Value> {
+        self.require_capability("privacy.redact")?;
+        let plugin_id = self.host_api_plugin_id(&params)?;
+        let body = required_string(&params, "body")?;
+        let options = params.get("options").cloned().unwrap_or_else(|| json!({}));
+        let plugin = self.plugin_detail_with_root(plugin_id)?;
+        let output = self
+            .privacy_redaction
+            .redact_request_body(&plugin, body, &options)
+            .map_err(|err| {
+                AppError::new(
+                    "PLUGIN_PRIVACY_REDACTION_FAILED",
+                    format!("privacy request body redaction failed: {err}"),
+                )
+            })?;
+        serde_json::to_value(output).map_err(|err| {
+            AppError::new(
+                "PLUGIN_PRIVACY_REDACTION_ENCODE_FAILED",
+                format!("failed to encode privacy redaction result: {err}"),
+            )
+        })
+    }
+
+    fn plugin_detail_with_root(&self, plugin_id: &str) -> AppResult<crate::plugins::PluginDetail> {
+        let mut detail = repository::get_plugin(&self.db, plugin_id)?;
+        detail.installed_dir = Some(self.plugin_root.to_string_lossy().to_string());
+        Ok(detail)
     }
 
     fn host_api_plugin_id<'a>(&self, params: &'a Value) -> AppResult<&'a str> {
@@ -918,6 +993,81 @@ mod tests {
             .execute_command("acme.echo", json!({}))
             .await
             .expect_err("diagnostics API without capability should fail");
+
+        assert_eq!(err.code(), "PLUGIN_EXTENSION_HOST_FORBIDDEN");
+        host.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn extension_host_privacy_api_redacts_text_with_capability() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("rules")).expect("rules dir");
+        std::fs::write(temp.path().join("rules/gitleaks.toml"), "").expect("rules file");
+        write_extension_plugin_with_capabilities(
+            temp.path(),
+            r#"
+            module.exports.activate = function(api) {
+              api.commands.registerCommand("acme.echo", function() {
+                return api.privacy.redactText("email a@example.com", { sensitiveTypes: ["email"] });
+              });
+            };
+            "#,
+            &["commands.execute", "privacy.redact"],
+        );
+        let db = init_test_db(temp.path());
+        let manifest = install_extension_plugin(&db, temp.path());
+
+        let mut host =
+            super::ExtensionHost::start_with_host_api(manifest, temp.path().to_path_buf(), db)
+                .await
+                .expect("start extension host");
+
+        let result = host
+            .execute_command("acme.echo", json!({}))
+            .await
+            .expect("execute privacy command");
+
+        assert_eq!(
+            result.get("hit").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            result.get("redacted").and_then(serde_json::Value::as_str),
+            Some("email [邮箱]")
+        );
+        host.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn extension_host_privacy_api_rejects_missing_capability() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("rules")).expect("rules dir");
+        std::fs::write(temp.path().join("rules/gitleaks.toml"), "").expect("rules file");
+        write_extension_plugin(
+            temp.path(),
+            r#"
+            module.exports.activate = function(api) {
+              api.commands.registerCommand("acme.echo", function() {
+                return globalThis.__aioHostApi(
+                  "privacy.redactText",
+                  { pluginId: "acme.echo", text: "email a@example.com", options: { sensitiveTypes: ["email"] } }
+                );
+              });
+            };
+            "#,
+        );
+        let db = init_test_db(temp.path());
+        let manifest = install_extension_plugin(&db, temp.path());
+
+        let mut host =
+            super::ExtensionHost::start_with_host_api(manifest, temp.path().to_path_buf(), db)
+                .await
+                .expect("start extension host");
+
+        let err = host
+            .execute_command("acme.echo", json!({}))
+            .await
+            .expect_err("privacy API without capability should fail");
 
         assert_eq!(err.code(), "PLUGIN_EXTENSION_HOST_FORBIDDEN");
         host.dispose().await;

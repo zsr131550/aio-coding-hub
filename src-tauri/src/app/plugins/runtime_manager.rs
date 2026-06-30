@@ -5,7 +5,6 @@ use crate::gateway::plugins::permissions::GatewayPluginError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeDispatch {
-    NativePrivacyFilter,
     ExtensionHost,
 }
 
@@ -23,16 +22,11 @@ impl PluginRuntimeManager {
 
     pub(crate) fn runtime_dispatch(
         &self,
-        plugin_id: &str,
+        _plugin_id: &str,
         runtime: &PluginRuntime,
     ) -> Result<RuntimeDispatch, GatewayPluginError> {
         match runtime {
             PluginRuntime::ExtensionHost { .. } => Ok(RuntimeDispatch::ExtensionHost),
-            PluginRuntime::Native { engine }
-                if plugin_id == "official.privacy-filter" && engine == "privacyFilter" =>
-            {
-                Ok(RuntimeDispatch::NativePrivacyFilter)
-            }
             PluginRuntime::Native { engine } => Err(GatewayPluginError::new(
                 "PLUGIN_UNSUPPORTED_RUNTIME",
                 format!("unsupported native plugin runtime engine: {engine}"),
@@ -50,7 +44,7 @@ mod tests {
     fn runtime_manager_rejects_non_extension_host_community_runtime() {
         let manager = PluginRuntimeManager::for_tests();
         let runtime = PluginRuntime::Native {
-            engine: "privacyFilter".to_string(),
+            engine: "hostPrivateRedactor".to_string(),
         };
 
         let err = manager
@@ -64,18 +58,32 @@ mod tests {
     fn runtime_manager_rejects_non_official_native_privacy_filter() {
         let manager = PluginRuntimeManager::for_tests();
         let runtime = PluginRuntime::Native {
-            engine: "privacyFilter".to_string(),
+            engine: "hostPrivateRedactor".to_string(),
         };
 
         let err = manager
             .runtime_dispatch("example.privacy-filter", &runtime)
-            .expect_err("non-official native privacyFilter should be rejected by the manager");
+            .expect_err("native runtime should be rejected by the manager");
 
         assert_eq!(err.code(), "PLUGIN_UNSUPPORTED_RUNTIME");
         assert_eq!(
             err.to_string(),
-            "PLUGIN_UNSUPPORTED_RUNTIME: unsupported native plugin runtime engine: privacyFilter"
+            "PLUGIN_UNSUPPORTED_RUNTIME: unsupported native plugin runtime engine: hostPrivateRedactor"
         );
+    }
+
+    #[test]
+    fn runtime_manager_rejects_all_native_runtimes_without_official_exceptions() {
+        let manager = PluginRuntimeManager::for_tests();
+        let runtime = PluginRuntime::Native {
+            engine: "hostPrivateRedactor".to_string(),
+        };
+
+        let err = manager
+            .runtime_dispatch("official.privacy-filter", &runtime)
+            .expect_err("official plugin native runtime should be rejected");
+
+        assert_eq!(err.code(), "PLUGIN_UNSUPPORTED_RUNTIME");
     }
 
     #[test]

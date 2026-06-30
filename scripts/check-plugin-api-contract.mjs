@@ -123,10 +123,6 @@ function requireOneOf(path, value, allowed) {
   }
 }
 
-function officialRuntimeTokens(contract) {
-  return contract.officialRuntimes.flatMap((runtime) => runtime.split(":"));
-}
-
 const contractPath = "docs/plugins/plugin-api-v1-contract.json";
 const contract = readJson(contractPath);
 
@@ -172,7 +168,13 @@ if (contract) {
     requireIncludes(
       `${contractPath}.extensionHostContract`,
       JSON.stringify(extensionHostContract),
-      ["entryField", "mainOutput", "supportedSourceLanguages", "api.gateway.registerHook"],
+      [
+        "entryField",
+        "mainOutput",
+        "supportedSourceLanguages",
+        "api.gateway.registerHook",
+        "api.privacy.redactRequestBody",
+      ],
       "Extension Host contract fields"
     );
   }
@@ -197,6 +199,7 @@ if (contract) {
     "protocol.bridge",
     "commands.execute",
     "provider.extensionValues",
+    "privacy.redact",
   ]) {
     if (!capabilities.includes(capability)) {
       failures.push(`${contractPath}.capabilities must include ${capability}`);
@@ -319,9 +322,11 @@ if (contract) {
       "export type PluginRuntime = ExtensionRuntime",
       "export type PluginCapability",
       '"gateway.hooks"',
+      '"privacy.redact"',
       '"protocol.bridge"',
       "export type GatewayHookContribution",
       "export type ProtocolBridgeContribution",
+      "export type PrivacyApi",
       "gatewayHooks?: GatewayHookContribution[]",
       "protocolBridges?: ProtocolBridgeContribution[]",
       "validateCapabilityDependencies",
@@ -452,7 +457,7 @@ if (contract) {
   requireIncludesCaseInsensitive(
     "src-tauri/src/domain/plugins.rs",
     rust,
-    ["extensionHost", ...officialRuntimeTokens(contract)],
+    ["extensionHost"],
     "runtime"
   );
   requireIncludes(

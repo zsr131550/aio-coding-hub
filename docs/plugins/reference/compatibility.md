@@ -41,7 +41,7 @@ Scaffold and pack flow create Extension Host packages with `main`, `runtime.kind
 - `hostCompatibility.app` 必须匹配当前 AIO Coding Hub 版本。
 - `hostCompatibility.pluginApi` 必须匹配当前 Plugin API v1。
 - `hostCompatibility.platforms` 如果存在，必须包含当前桌面平台。
-- runtime 必须是 Extension Host 或 host-owned official built-in。
+- runtime 必须是 Extension Host。
 - contribution 必须有对应 capability。
 
 Quarantined 和 incompatible 插件不能启用。更新新增的 capabilities 会进入 pending，不会静默继承用户确认。

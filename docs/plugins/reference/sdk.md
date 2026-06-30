@@ -37,6 +37,8 @@ TypeScript SDK 导出：
 - `PluginCapability`
 - `PluginHookContext`
 - `PluginHookResult`
+- `PluginApi`
+- `PrivacyApi`
 
 同时导出辅助函数：
 
@@ -141,6 +143,8 @@ module.exports.activate = function(api) {
 | `protocolBridges` | `protocol.bridge` |
 
 `providers.card.badges` 和 `providers.card.actions` 当前不是 capability dependency trigger。
+
+`privacy.redact` 是宿主提供的脱敏 API capability。声明后，Extension Host 入口可以通过 `api.privacy.redactText` 和 `api.privacy.redactRequestBody` 调用宿主脱敏服务；它不自动声明 gateway hook，仍需要和 `gateway.hooks`、`contributes.gatewayHooks` 配合使用。
 
 ## SDK 边界
 

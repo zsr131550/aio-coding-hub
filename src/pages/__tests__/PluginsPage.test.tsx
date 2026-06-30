@@ -897,7 +897,7 @@ describe("pages/PluginsPage", () => {
           plugin_id: "official.privacy-filter",
           name: "Privacy Filter",
           current_version: "1.0.0",
-          runtime: "native:privacyFilter",
+          runtime: "extensionHost",
         }),
       ],
       isLoading: false,
@@ -909,13 +909,27 @@ describe("pages/PluginsPage", () => {
         summary: summary({
           plugin_id: "official.privacy-filter",
           name: "Privacy Filter",
-          runtime: "native:privacyFilter",
+          runtime: "extensionHost",
         }),
         manifest: {
           ...detail().manifest,
           id: "official.privacy-filter",
           name: "Privacy Filter",
-          runtime: { kind: "native", engine: "privacyFilter" },
+          runtime: { kind: "extensionHost", language: "typescript" },
+          main: "dist/extension.js",
+          activationEvents: [
+            "onGatewayHook:gateway.request.afterBodyRead",
+            "onGatewayHook:gateway.request.beforeSend",
+            "onGatewayHook:log.beforePersist",
+          ],
+          capabilities: ["gateway.hooks", "privacy.redact"],
+          contributes: {
+            gatewayHooks: [
+              { name: "gateway.request.afterBodyRead", priority: 5, failurePolicy: "fail-closed" },
+              { name: "gateway.request.beforeSend", priority: 5, failurePolicy: "fail-closed" },
+              { name: "log.beforePersist", priority: 1, failurePolicy: "fail-closed" },
+            ],
+          },
         },
       }),
       isLoading: false,
@@ -1143,7 +1157,7 @@ describe("pages/PluginsPage", () => {
         summary({
           plugin_id: "official.privacy-filter",
           name: "Privacy Filter",
-          runtime: "native:privacyFilter",
+          runtime: "extensionHost",
         }),
       ],
       isLoading: false,
@@ -1155,14 +1169,27 @@ describe("pages/PluginsPage", () => {
         summary: summary({
           plugin_id: "official.privacy-filter",
           name: "Privacy Filter",
-          runtime: "native:privacyFilter",
+          runtime: "extensionHost",
         }),
         manifest: {
           ...detail().manifest,
           id: "official.privacy-filter",
           name: "Privacy Filter",
-          runtime: { kind: "native", engine: "privacyFilter" },
-          permissions: ["request.body.read", "request.body.write", "log.redact"],
+          runtime: { kind: "extensionHost", language: "typescript" },
+          main: "dist/extension.js",
+          activationEvents: [
+            "onGatewayHook:gateway.request.afterBodyRead",
+            "onGatewayHook:gateway.request.beforeSend",
+            "onGatewayHook:log.beforePersist",
+          ],
+          capabilities: ["gateway.hooks", "privacy.redact"],
+          contributes: {
+            gatewayHooks: [
+              { name: "gateway.request.afterBodyRead", priority: 5, failurePolicy: "fail-closed" },
+              { name: "gateway.request.beforeSend", priority: 5, failurePolicy: "fail-closed" },
+              { name: "log.beforePersist", priority: 1, failurePolicy: "fail-closed" },
+            ],
+          },
           configSchema: {
             type: "object",
             "x-aio-ui": {

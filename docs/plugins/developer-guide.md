@@ -315,7 +315,7 @@ Warnings do not fail the command in 0.62.1; any `error` severity diagnostic retu
 这个示例说明了三件事：
 
 - 插件页面可以完全根据 `configSchema` 和 `x-aio-ui` 渲染配置，而不是写专用页面。
-- 官方 host-owned 引擎应少而聚焦，避免扩大宿主维护面。
+- 官方 bundled 插件应少而聚焦，避免扩大宿主维护面。
 - 社区版同类插件应使用 Extension Host gateway hooks，而不是请求第三方 native 能力。
 
 ## Legacy runtime 迁移说明

@@ -14,7 +14,7 @@ function summary(overrides: Partial<PluginSummary> = {}): PluginSummary {
     name: "Privacy Filter",
     current_version: "1.0.0",
     status: "enabled",
-    runtime: "native:privacyFilter",
+    runtime: "extensionHost",
     permission_risk: "high",
     update_available: false,
     last_error: null,
