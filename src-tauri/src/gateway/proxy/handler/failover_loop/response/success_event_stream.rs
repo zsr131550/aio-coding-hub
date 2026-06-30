@@ -800,14 +800,17 @@ where
             } {
                 let budget_decision = codex_reasoning_guard::budget_decision(
                     retry_state.codex_reasoning_guard_hits,
-                    common.codex_reasoning_guard_immediate_retry_budget,
-                    common.codex_reasoning_guard_delayed_retry_budget,
-                    common.codex_reasoning_guard_delayed_retry_ms,
-                    common.codex_reasoning_guard_exhausted_action,
-                    common.codex_reasoning_guard_retry_policy,
-                    common.codex_reasoning_guard_concurrent_max,
-                    common.codex_reasoning_guard_concurrent_interval_ms,
-                    common.codex_reasoning_guard_concurrent_max_attempts,
+                    codex_reasoning_guard::CodexReasoningGuardBudgetConfig {
+                        immediate_budget: common.codex_reasoning_guard_immediate_retry_budget,
+                        delayed_budget: common.codex_reasoning_guard_delayed_retry_budget,
+                        delayed_retry_ms: common.codex_reasoning_guard_delayed_retry_ms,
+                        exhausted_action: common.codex_reasoning_guard_exhausted_action,
+                        retry_policy: common.codex_reasoning_guard_retry_policy,
+                        concurrent_max: common.codex_reasoning_guard_concurrent_max,
+                        concurrent_interval_ms: common.codex_reasoning_guard_concurrent_interval_ms,
+                        concurrent_max_attempts: common
+                            .codex_reasoning_guard_concurrent_max_attempts,
+                    },
                 );
                 codex_reasoning_guard::push_special_setting(
                     &common.special_settings,

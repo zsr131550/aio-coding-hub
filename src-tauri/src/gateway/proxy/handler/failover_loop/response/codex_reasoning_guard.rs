@@ -228,41 +228,48 @@ pub(super) struct CodexReasoningGuardBudgetDecision {
     pub(super) action_taken: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CodexReasoningGuardBudgetConfig {
+    pub(super) immediate_budget: u32,
+    pub(super) delayed_budget: u32,
+    pub(super) delayed_retry_ms: u32,
+    pub(super) exhausted_action: CodexReasoningGuardExhaustedAction,
+    pub(super) retry_policy: CodexReasoningGuardRetryPolicy,
+    pub(super) concurrent_max: u32,
+    pub(super) concurrent_interval_ms: u32,
+    pub(super) concurrent_max_attempts: u32,
+}
+
 pub(super) fn budget_decision(
     current_hits: u32,
-    immediate_budget: u32,
-    delayed_budget: u32,
-    delayed_retry_ms: u32,
-    exhausted_action: CodexReasoningGuardExhaustedAction,
-    retry_policy: CodexReasoningGuardRetryPolicy,
-    concurrent_max: u32,
-    concurrent_interval_ms: u32,
-    concurrent_max_attempts: u32,
+    config: CodexReasoningGuardBudgetConfig,
 ) -> CodexReasoningGuardBudgetDecision {
     let hit_number = current_hits.saturating_add(1);
-    let total_budget = immediate_budget.saturating_add(delayed_budget);
+    let total_budget = config
+        .immediate_budget
+        .saturating_add(config.delayed_budget);
     let wave = retry_wave(
         current_hits,
-        retry_policy,
-        concurrent_max,
-        concurrent_interval_ms,
-        concurrent_max_attempts,
+        config.retry_policy,
+        config.concurrent_max,
+        config.concurrent_interval_ms,
+        config.concurrent_max_attempts,
     );
-    let exhausted_action_label = match exhausted_action {
+    let exhausted_action_label = match config.exhausted_action {
         CodexReasoningGuardExhaustedAction::ReturnError => "return_error",
         CodexReasoningGuardExhaustedAction::SwitchProvider => "switch_provider",
         CodexReasoningGuardExhaustedAction::SwitchModel => "switch_model",
     };
 
-    if hit_number <= immediate_budget && !wave.exhausted {
+    if hit_number <= config.immediate_budget && !wave.exhausted {
         return CodexReasoningGuardBudgetDecision {
             action: CodexReasoningGuardBudgetAction::RetrySameProvider,
             hit_number,
             phase: "immediate",
             delay_ms: 0,
             retry_wave: Some(wave),
-            immediate_budget,
-            delayed_budget,
+            immediate_budget: config.immediate_budget,
+            delayed_budget: config.delayed_budget,
             total_budget,
             remaining_budget: total_budget.saturating_sub(hit_number),
             exhausted_action: exhausted_action_label,
@@ -275,10 +282,10 @@ pub(super) fn budget_decision(
             action: CodexReasoningGuardBudgetAction::RetrySameProvider,
             hit_number,
             phase: "delayed",
-            delay_ms: delayed_retry_ms,
+            delay_ms: config.delayed_retry_ms,
             retry_wave: Some(wave),
-            immediate_budget,
-            delayed_budget,
+            immediate_budget: config.immediate_budget,
+            delayed_budget: config.delayed_budget,
             total_budget,
             remaining_budget: total_budget.saturating_sub(hit_number),
             exhausted_action: exhausted_action_label,
@@ -286,15 +293,15 @@ pub(super) fn budget_decision(
         };
     }
 
-    match exhausted_action {
+    match config.exhausted_action {
         CodexReasoningGuardExhaustedAction::ReturnError => CodexReasoningGuardBudgetDecision {
             action: CodexReasoningGuardBudgetAction::ReturnError,
             hit_number,
             phase: "exhausted",
             delay_ms: 0,
             retry_wave: Some(wave),
-            immediate_budget,
-            delayed_budget,
+            immediate_budget: config.immediate_budget,
+            delayed_budget: config.delayed_budget,
             total_budget,
             remaining_budget: 0,
             exhausted_action: exhausted_action_label,
@@ -306,8 +313,8 @@ pub(super) fn budget_decision(
             phase: "exhausted",
             delay_ms: 0,
             retry_wave: Some(wave),
-            immediate_budget,
-            delayed_budget,
+            immediate_budget: config.immediate_budget,
+            delayed_budget: config.delayed_budget,
             total_budget,
             remaining_budget: 0,
             exhausted_action: exhausted_action_label,
@@ -319,8 +326,8 @@ pub(super) fn budget_decision(
             phase: "exhausted",
             delay_ms: 0,
             retry_wave: Some(wave),
-            immediate_budget,
-            delayed_budget,
+            immediate_budget: config.immediate_budget,
+            delayed_budget: config.delayed_budget,
             total_budget,
             remaining_budget: 0,
             exhausted_action: exhausted_action_label,
@@ -463,14 +470,16 @@ mod tests {
     ) -> CodexReasoningGuardBudgetDecision {
         budget_decision(
             current_hits,
-            immediate_budget,
-            delayed_budget,
-            delayed_retry_ms,
-            exhausted_action,
-            CodexReasoningGuardRetryPolicy::Single,
-            5,
-            1_000,
-            10,
+            CodexReasoningGuardBudgetConfig {
+                immediate_budget,
+                delayed_budget,
+                delayed_retry_ms,
+                exhausted_action,
+                retry_policy: CodexReasoningGuardRetryPolicy::Single,
+                concurrent_max: 5,
+                concurrent_interval_ms: 1_000,
+                concurrent_max_attempts: 10,
+            },
         )
     }
 
@@ -608,14 +617,16 @@ mod tests {
     fn budget_decision_exhausts_when_concurrent_max_attempts_is_reached() {
         let decision = budget_decision(
             3,
-            10,
-            10,
-            1_000,
-            CodexReasoningGuardExhaustedAction::SwitchProvider,
-            CodexReasoningGuardRetryPolicy::Concurrent,
-            5,
-            1_000,
-            3,
+            CodexReasoningGuardBudgetConfig {
+                immediate_budget: 10,
+                delayed_budget: 10,
+                delayed_retry_ms: 1_000,
+                exhausted_action: CodexReasoningGuardExhaustedAction::SwitchProvider,
+                retry_policy: CodexReasoningGuardRetryPolicy::Concurrent,
+                concurrent_max: 5,
+                concurrent_interval_ms: 1_000,
+                concurrent_max_attempts: 3,
+            },
         );
 
         assert_eq!(

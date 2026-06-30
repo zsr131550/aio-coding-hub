@@ -47,10 +47,12 @@ where
                 input,
                 prepared,
                 &retry_state,
-                retry_index,
-                attempt_index,
-                wave.concurrency,
-                wave.interval_ms,
+                codex_reasoning_guard_concurrent::GuardRetryWaveConfig {
+                    retry_index,
+                    attempt_index_start: attempt_index,
+                    concurrency: wave.concurrency,
+                    interval_ms: wave.interval_ms,
+                },
             )
             .await
             {
@@ -59,7 +61,7 @@ where
                     send_outcome,
                 } => {
                     *prepared = *winner_prepared;
-                    send_outcome
+                    *send_outcome
                 }
                 codex_reasoning_guard_concurrent::ConcurrentProbeOutcome::Exhausted => {
                     attempt_executor::execute_attempt(

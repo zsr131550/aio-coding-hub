@@ -18,14 +18,27 @@ const MAX_CONCURRENT_PROBES: u32 = 5;
 pub(super) enum ConcurrentProbeOutcome {
     Winner {
         prepared: Box<PreparedProvider>,
-        send_outcome: AttemptSendOutcome,
+        send_outcome: Box<AttemptSendOutcome>,
     },
     Exhausted,
 }
 
 enum ProbeAttemptOutcome {
-    Send(AttemptSendOutcome),
+    Send(Box<AttemptSendOutcome>),
     GuardMatched,
+}
+
+impl ProbeAttemptOutcome {
+    fn send(outcome: AttemptSendOutcome) -> Self {
+        Self::Send(Box::new(outcome))
+    }
+}
+
+pub(super) struct GuardRetryWaveConfig {
+    pub(super) retry_index: u32,
+    pub(super) attempt_index_start: u32,
+    pub(super) concurrency: u32,
+    pub(super) interval_ms: u32,
 }
 
 pub(super) async fn run_guard_retry_wave<R>(
@@ -33,25 +46,22 @@ pub(super) async fn run_guard_retry_wave<R>(
     input: &RequestContext<R>,
     prepared: &PreparedProvider,
     retry_state: &RetryLoopState,
-    retry_index: u32,
-    attempt_index_start: u32,
-    concurrency: u32,
-    interval_ms: u32,
+    config: GuardRetryWaveConfig,
 ) -> ConcurrentProbeOutcome
 where
     R: tauri::Runtime + 'static,
     R::Handle: Unpin,
 {
-    let concurrency = concurrency.clamp(2, MAX_CONCURRENT_PROBES);
+    let concurrency = config.concurrency.clamp(2, MAX_CONCURRENT_PROBES);
     let mut join_set = JoinSet::new();
     for lane in 0..concurrency {
         let owned_ctx = ProbeCtx::from_common(ctx);
         let input = input.clone_for_concurrent_probe();
         let mut lane_prepared = prepared.clone();
         let lane_retry_state = retry_state.clone();
-        let lane_retry_index = retry_index.saturating_add(lane);
-        let lane_attempt_index = attempt_index_start.saturating_add(lane);
-        let delay = Duration::from_millis(interval_ms as u64).saturating_mul(lane);
+        let lane_retry_index = config.retry_index.saturating_add(lane);
+        let lane_attempt_index = config.attempt_index_start.saturating_add(lane);
+        let delay = Duration::from_millis(config.interval_ms as u64).saturating_mul(lane);
         join_set.spawn(async move {
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
@@ -72,7 +82,7 @@ where
     while let Some(joined) = join_set.join_next().await {
         match joined {
             Ok((lane_prepared, ProbeAttemptOutcome::Send(send_outcome)))
-                if is_winning_outcome(&send_outcome) =>
+                if is_winning_outcome(send_outcome.as_ref()) =>
             {
                 join_set.abort_all();
                 return ConcurrentProbeOutcome::Winner {
@@ -202,7 +212,7 @@ where
     ) {
         Ok(url) => url,
         Err(err) => {
-            return ProbeAttemptOutcome::Send(AttemptSendOutcome::PluginBlocked(format!(
+            return ProbeAttemptOutcome::send(AttemptSendOutcome::PluginBlocked(format!(
                 "invalid upstream URL: {err}"
             )));
         }
@@ -233,7 +243,7 @@ where
     )
     .is_err()
     {
-        return ProbeAttemptOutcome::Send(AttemptSendOutcome::OAuthInjectFailed);
+        return ProbeAttemptOutcome::send(AttemptSendOutcome::OAuthInjectFailed);
     }
 
     let clean_outcome = request_sanitizer::clean_body(input, prepared);
@@ -265,7 +275,7 @@ where
                 output.audit_events.clone(),
             );
             if let Some(blocked) = output.blocked {
-                return ProbeAttemptOutcome::Send(AttemptSendOutcome::PluginBlocked(
+                return ProbeAttemptOutcome::send(AttemptSendOutcome::PluginBlocked(
                     blocked.reason,
                 ));
             }
@@ -278,7 +288,7 @@ where
                 &input.trace_id,
                 &mut err,
             );
-            return ProbeAttemptOutcome::Send(AttemptSendOutcome::PluginBlocked(format!(
+            return ProbeAttemptOutcome::send(AttemptSendOutcome::PluginBlocked(format!(
                 "gateway plugin request hook failed: {err}"
             )));
         }
@@ -292,9 +302,9 @@ where
         send::SendResult::Ok(resp) => {
             classify_probe_response(ctx, input, retry_state, resp, timing).await
         }
-        send::SendResult::Timeout => ProbeAttemptOutcome::Send(AttemptSendOutcome::Timeout(timing)),
+        send::SendResult::Timeout => ProbeAttemptOutcome::send(AttemptSendOutcome::Timeout(timing)),
         send::SendResult::Err(err) => {
-            ProbeAttemptOutcome::Send(AttemptSendOutcome::ReqwestError(err, timing))
+            ProbeAttemptOutcome::send(AttemptSendOutcome::ReqwestError(err, timing))
         }
     }
 }
@@ -311,19 +321,19 @@ where
 {
     let status = resp.status();
     if !status.is_success() {
-        return ProbeAttemptOutcome::Send(AttemptSendOutcome::Response(resp, timing));
+        return ProbeAttemptOutcome::send(AttemptSendOutcome::Response(resp, timing));
     }
 
     let headers = resp.headers().clone();
     if is_event_stream(&headers) || has_non_identity_content_encoding(&headers) {
-        return ProbeAttemptOutcome::Send(AttemptSendOutcome::Response(resp, timing));
+        return ProbeAttemptOutcome::send(AttemptSendOutcome::Response(resp, timing));
     }
 
     let provider_ttfb_ms = Some(timing.attempt_started.elapsed().as_millis());
     let body = match resp.bytes().await {
         Ok(body) => body,
         Err(err) => {
-            return ProbeAttemptOutcome::Send(AttemptSendOutcome::ReqwestError(err, timing))
+            return ProbeAttemptOutcome::send(AttemptSendOutcome::ReqwestError(err, timing))
         }
     };
 
@@ -331,7 +341,7 @@ where
         return ProbeAttemptOutcome::GuardMatched;
     }
 
-    ProbeAttemptOutcome::Send(AttemptSendOutcome::BufferedNonStreamResponse {
+    ProbeAttemptOutcome::send(AttemptSendOutcome::BufferedNonStreamResponse {
         status,
         headers,
         body,
