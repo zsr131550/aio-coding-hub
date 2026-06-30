@@ -92,6 +92,11 @@ pub(crate) struct SettingsUpdate {
     pub codex_reasoning_guard_delayed_retry_ms: Option<u32>,
     pub codex_reasoning_guard_exhausted_action:
         Option<settings::CodexReasoningGuardExhaustedAction>,
+    pub codex_reasoning_guard_retry_policy: Option<settings::CodexReasoningGuardRetryPolicy>,
+    pub codex_reasoning_guard_concurrent_max: Option<u32>,
+    pub codex_reasoning_guard_concurrent_interval_ms: Option<u32>,
+    pub codex_reasoning_guard_concurrent_max_attempts: Option<u32>,
+    pub codex_reasoning_guard_model_fallbacks: Option<Vec<String>>,
     pub codex_reasoning_guard_backoff_after_hits: Option<u32>,
     pub codex_reasoning_guard_backoff_ms: Option<u32>,
     #[serde(rename = "cx2CcFallbackModelOpus")]
@@ -167,6 +172,11 @@ pub(crate) struct SettingsView {
     pub codex_reasoning_guard_delayed_retry_budget: u32,
     pub codex_reasoning_guard_delayed_retry_ms: u32,
     pub codex_reasoning_guard_exhausted_action: settings::CodexReasoningGuardExhaustedAction,
+    pub codex_reasoning_guard_retry_policy: settings::CodexReasoningGuardRetryPolicy,
+    pub codex_reasoning_guard_concurrent_max: u32,
+    pub codex_reasoning_guard_concurrent_interval_ms: u32,
+    pub codex_reasoning_guard_concurrent_max_attempts: u32,
+    pub codex_reasoning_guard_model_fallbacks: Vec<String>,
     pub codex_reasoning_guard_backoff_after_hits: u32,
     pub codex_reasoning_guard_backoff_ms: u32,
     pub auto_start: bool,
@@ -302,6 +312,15 @@ impl From<&settings::AppSettings> for SettingsView {
                 .codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms: value.codex_reasoning_guard_delayed_retry_ms,
             codex_reasoning_guard_exhausted_action: value.codex_reasoning_guard_exhausted_action,
+            codex_reasoning_guard_retry_policy: value.codex_reasoning_guard_retry_policy,
+            codex_reasoning_guard_concurrent_max: value.codex_reasoning_guard_concurrent_max,
+            codex_reasoning_guard_concurrent_interval_ms: value
+                .codex_reasoning_guard_concurrent_interval_ms,
+            codex_reasoning_guard_concurrent_max_attempts: value
+                .codex_reasoning_guard_concurrent_max_attempts,
+            codex_reasoning_guard_model_fallbacks: value
+                .codex_reasoning_guard_model_fallbacks
+                .clone(),
             codex_reasoning_guard_backoff_after_hits: value
                 .codex_reasoning_guard_backoff_after_hits,
             codex_reasoning_guard_backoff_ms: value.codex_reasoning_guard_backoff_ms,
@@ -629,6 +648,11 @@ pub(crate) async fn settings_set_impl(
         codex_reasoning_guard_delayed_retry_budget,
         codex_reasoning_guard_delayed_retry_ms,
         codex_reasoning_guard_exhausted_action,
+        codex_reasoning_guard_retry_policy,
+        codex_reasoning_guard_concurrent_max,
+        codex_reasoning_guard_concurrent_interval_ms,
+        codex_reasoning_guard_concurrent_max_attempts,
+        codex_reasoning_guard_model_fallbacks,
         codex_reasoning_guard_backoff_after_hits,
         codex_reasoning_guard_backoff_ms,
         cx2cc_fallback_model_opus,
@@ -720,6 +744,22 @@ pub(crate) async fn settings_set_impl(
             let codex_reasoning_guard_exhausted_action =
                 codex_reasoning_guard_exhausted_action
                     .unwrap_or(previous.codex_reasoning_guard_exhausted_action);
+            let codex_reasoning_guard_retry_policy = codex_reasoning_guard_retry_policy
+                .unwrap_or(previous.codex_reasoning_guard_retry_policy);
+            let codex_reasoning_guard_concurrent_max = codex_reasoning_guard_concurrent_max
+                .unwrap_or(previous.codex_reasoning_guard_concurrent_max);
+            let codex_reasoning_guard_concurrent_interval_ms =
+                codex_reasoning_guard_concurrent_interval_ms
+                    .unwrap_or(previous.codex_reasoning_guard_concurrent_interval_ms);
+            let codex_reasoning_guard_concurrent_max_attempts =
+                codex_reasoning_guard_concurrent_max_attempts
+                    .unwrap_or(previous.codex_reasoning_guard_concurrent_max_attempts);
+            let codex_reasoning_guard_model_fallbacks =
+                codex_reasoning_guard_model_fallbacks
+                    .unwrap_or(previous.codex_reasoning_guard_model_fallbacks.clone())
+                    .into_iter()
+                    .map(|model| model.trim().to_string())
+                    .collect();
             let codex_reasoning_guard_backoff_after_hits =
                 codex_reasoning_guard_backoff_after_hits
                     .unwrap_or(previous.codex_reasoning_guard_backoff_after_hits);
@@ -859,6 +899,11 @@ pub(crate) async fn settings_set_impl(
                 codex_reasoning_guard_delayed_retry_budget,
                 codex_reasoning_guard_delayed_retry_ms,
                 codex_reasoning_guard_exhausted_action,
+                codex_reasoning_guard_retry_policy,
+                codex_reasoning_guard_concurrent_max,
+                codex_reasoning_guard_concurrent_interval_ms,
+                codex_reasoning_guard_concurrent_max_attempts,
+                codex_reasoning_guard_model_fallbacks,
                 codex_reasoning_guard_backoff_after_hits,
                 codex_reasoning_guard_backoff_ms,
                 auto_start: next_auto_start,

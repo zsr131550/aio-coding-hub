@@ -19,6 +19,18 @@ fn default_codex_reasoning_guard_delayed_retry_ms() -> u32 {
     DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS
 }
 
+fn default_codex_reasoning_guard_concurrent_max() -> u32 {
+    DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX
+}
+
+fn default_codex_reasoning_guard_concurrent_interval_ms() -> u32 {
+    DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS
+}
+
+fn default_codex_reasoning_guard_concurrent_max_attempts() -> u32 {
+    DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayListenMode {
@@ -77,6 +89,15 @@ pub enum CodexReasoningGuardExhaustedAction {
     #[default]
     ReturnError,
     SwitchProvider,
+    SwitchModel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexReasoningGuardRetryPolicy {
+    #[default]
+    Single,
+    Concurrent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]
@@ -200,6 +221,16 @@ pub struct AppSettings {
     pub codex_reasoning_guard_delayed_retry_ms: u32,
     #[serde(default)]
     pub codex_reasoning_guard_exhausted_action: CodexReasoningGuardExhaustedAction,
+    #[serde(default)]
+    pub codex_reasoning_guard_retry_policy: CodexReasoningGuardRetryPolicy,
+    #[serde(default = "default_codex_reasoning_guard_concurrent_max")]
+    pub codex_reasoning_guard_concurrent_max: u32,
+    #[serde(default = "default_codex_reasoning_guard_concurrent_interval_ms")]
+    pub codex_reasoning_guard_concurrent_interval_ms: u32,
+    #[serde(default = "default_codex_reasoning_guard_concurrent_max_attempts")]
+    pub codex_reasoning_guard_concurrent_max_attempts: u32,
+    #[serde(default)]
+    pub codex_reasoning_guard_model_fallbacks: Vec<String>,
     // Deprecated compatibility fields. Runtime guard budget decisions use the
     // explicit budget fields above as the single source of truth.
     pub codex_reasoning_guard_backoff_after_hits: u32,
@@ -300,6 +331,13 @@ impl Default for AppSettings {
                 DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
             codex_reasoning_guard_delayed_retry_ms: DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
             codex_reasoning_guard_exhausted_action: CodexReasoningGuardExhaustedAction::default(),
+            codex_reasoning_guard_retry_policy: CodexReasoningGuardRetryPolicy::default(),
+            codex_reasoning_guard_concurrent_max: DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX,
+            codex_reasoning_guard_concurrent_interval_ms:
+                DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
+            codex_reasoning_guard_concurrent_max_attempts:
+                DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
+            codex_reasoning_guard_model_fallbacks: Vec::new(),
             codex_reasoning_guard_backoff_after_hits:
                 DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS,
             codex_reasoning_guard_backoff_ms: DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS,

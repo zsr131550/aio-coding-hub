@@ -22,16 +22,25 @@ import type {
   CodexReasoningGuardCompareMode,
   CodexReasoningGuardExhaustedAction,
   CodexReasoningGuardModelRule,
+  CodexReasoningGuardRetryPolicy,
 } from "../../../services/settings/settings";
 import {
+  DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
+  DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX,
+  DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
   DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
   DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
   DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION,
   DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
   DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS,
+  DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY,
+  MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
+  MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX,
+  MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
   MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
   MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
   MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
+  MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN,
   MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN,
   MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN,
   MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN,
@@ -53,6 +62,7 @@ import { Input } from "../../../ui/Input";
 import { Select } from "../../../ui/Select";
 import { Switch } from "../../../ui/Switch";
 import { RadioGroup } from "../../../ui/RadioGroup";
+import { Textarea } from "../../../ui/Textarea";
 import {
   AlertTriangle,
   BarChart3,
@@ -116,6 +126,26 @@ function formatCodexReasoningGuardRuleLabel(
 
 function formatCodexReasoningGuardHitRate(value: number | null | undefined) {
   return CODEX_REASONING_GUARD_PERCENT_FORMATTER.format(value ?? 0);
+}
+
+function formatCodexReasoningGuardExhaustedActionLabel(action: CodexReasoningGuardExhaustedAction) {
+  switch (action) {
+    case "switch_provider":
+      return "切换供应商";
+    case "switch_model":
+      return "切换模型";
+    case "return_error":
+    default:
+      return "返回错误";
+  }
+}
+
+function formatCodexReasoningGuardRetryPolicyLabel(policy: CodexReasoningGuardRetryPolicy) {
+  return policy === "concurrent" ? "并发重试" : "单路重试";
+}
+
+function formatCodexReasoningGuardModelFallbacks(models: string[] | null | undefined) {
+  return (models ?? []).join("\n");
 }
 
 function formatLocalDateInputValue(date: Date) {
@@ -296,6 +326,11 @@ export type CliManagerCodexTabProps = {
         | "codex_reasoning_guard_delayed_retry_budget"
         | "codex_reasoning_guard_delayed_retry_ms"
         | "codex_reasoning_guard_exhausted_action"
+        | "codex_reasoning_guard_retry_policy"
+        | "codex_reasoning_guard_concurrent_max"
+        | "codex_reasoning_guard_concurrent_interval_ms"
+        | "codex_reasoning_guard_concurrent_max_attempts"
+        | "codex_reasoning_guard_model_fallbacks"
       >
     >
   ) => Promise<boolean> | boolean;
@@ -400,9 +435,26 @@ export function CliManagerCodexTab({
   );
   const [codexReasoningGuardExhaustedAction, setCodexReasoningGuardExhaustedAction] =
     useState<CodexReasoningGuardExhaustedAction>(DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION);
+  const [codexReasoningGuardRetryPolicy, setCodexReasoningGuardRetryPolicy] =
+    useState<CodexReasoningGuardRetryPolicy>(DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY);
+  const [codexReasoningGuardConcurrentMaxText, setCodexReasoningGuardConcurrentMaxText] = useState(
+    String(DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX)
+  );
+  const [
+    codexReasoningGuardConcurrentIntervalMsText,
+    setCodexReasoningGuardConcurrentIntervalMsText,
+  ] = useState(String(DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS));
+  const [
+    codexReasoningGuardConcurrentMaxAttemptsText,
+    setCodexReasoningGuardConcurrentMaxAttemptsText,
+  ] = useState(String(DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS));
+  const [codexReasoningGuardModelFallbacksText, setCodexReasoningGuardModelFallbacksText] =
+    useState("");
   const [codexReasoningGuardBudgetError, setCodexReasoningGuardBudgetError] = useState<
     string | null
   >(null);
+  const [codexReasoningGuardModelFallbacksError, setCodexReasoningGuardModelFallbacksError] =
+    useState<string | null>(null);
   const [codexReasoningGuardDetailsOpen, setCodexReasoningGuardDetailsOpen] = useState(false);
   const [codexReasoningGuardDetailsTab, setCodexReasoningGuardDetailsTab] =
     useState<CodexReasoningGuardDetailsTab>("rules");
@@ -518,8 +570,33 @@ export function CliManagerCodexTab({
         source?.codex_reasoning_guard_exhausted_action ??
           DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION
       );
+      setCodexReasoningGuardRetryPolicy(
+        source?.codex_reasoning_guard_retry_policy ?? DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY
+      );
+      setCodexReasoningGuardConcurrentMaxText(
+        String(
+          source?.codex_reasoning_guard_concurrent_max ??
+            DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX
+        )
+      );
+      setCodexReasoningGuardConcurrentIntervalMsText(
+        String(
+          source?.codex_reasoning_guard_concurrent_interval_ms ??
+            DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS
+        )
+      );
+      setCodexReasoningGuardConcurrentMaxAttemptsText(
+        String(
+          source?.codex_reasoning_guard_concurrent_max_attempts ??
+            DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
+        )
+      );
+      setCodexReasoningGuardModelFallbacksText(
+        formatCodexReasoningGuardModelFallbacks(source?.codex_reasoning_guard_model_fallbacks)
+      );
       setCodexReasoningGuardValuesError(null);
       setCodexReasoningGuardBudgetError(null);
+      setCodexReasoningGuardModelFallbacksError(null);
       setCodexReasoningGuardModelRuleDrafts(
         buildCodexReasoningGuardModelRuleDrafts(source?.codex_reasoning_guard_model_rules)
       );
@@ -946,7 +1023,8 @@ export function CliManagerCodexTab({
   function parseCodexReasoningGuardInteger(
     raw: string,
     label: string,
-    max: number
+    max: number,
+    min = 0
   ): { ok: true; value: number } | { ok: false; message: string } {
     const valueText = raw.trim();
     if (!valueText) {
@@ -956,10 +1034,49 @@ export function CliManagerCodexTab({
       return { ok: false, message: `${label}必须是非负整数。` };
     }
     const value = Number(valueText);
-    if (!Number.isSafeInteger(value) || value < 0 || value > max) {
-      return { ok: false, message: `${label}必须在 0 到 ${max} 之间。` };
+    if (!Number.isSafeInteger(value) || value < min || value > max) {
+      return { ok: false, message: `${label}必须在 ${min} 到 ${max} 之间。` };
     }
     return { ok: true, value };
+  }
+
+  function parseCodexReasoningGuardModelFallbacks(raw: string):
+    | { ok: true; models: string[] }
+    | {
+        ok: false;
+        message: string;
+      } {
+    const rawModels = raw
+      .split(/\r?\n|,/u)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const models: string[] = [];
+    const seenModels = new Set<string>();
+    for (const model of rawModels) {
+      if (seenModels.has(model)) continue;
+      seenModels.add(model);
+      models.push(model);
+    }
+    if (models.length > MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN) {
+      return {
+        ok: false,
+        message: `最多支持 ${MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN} 个回退模型。`,
+      };
+    }
+
+    for (const model of models) {
+      if (model.length > MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN) {
+        return {
+          ok: false,
+          message: `模型名必须 <= ${MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN} 字符。`,
+        };
+      }
+      if (/[\u0000-\u001f\u007f-\u009f]/u.test(model)) {
+        return { ok: false, message: "模型名不能包含控制字符。" };
+      }
+    }
+
+    return { ok: true, models };
   }
 
   function updateCodexReasoningGuardModelRuleDraft(
@@ -1063,6 +1180,45 @@ export function CliManagerCodexTab({
       return;
     }
 
+    const parsedConcurrentMax = parseCodexReasoningGuardInteger(
+      codexReasoningGuardConcurrentMaxText,
+      "并发数量",
+      MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX,
+      1
+    );
+    if (!parsedConcurrentMax.ok) {
+      setCodexReasoningGuardBudgetError(parsedConcurrentMax.message);
+      return;
+    }
+
+    const parsedConcurrentIntervalMs = parseCodexReasoningGuardInteger(
+      codexReasoningGuardConcurrentIntervalMsText,
+      "并发间隔",
+      MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS
+    );
+    if (!parsedConcurrentIntervalMs.ok) {
+      setCodexReasoningGuardBudgetError(parsedConcurrentIntervalMs.message);
+      return;
+    }
+
+    const parsedConcurrentMaxAttempts = parseCodexReasoningGuardInteger(
+      codexReasoningGuardConcurrentMaxAttemptsText,
+      "并发最大尝试次数",
+      MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
+    );
+    if (!parsedConcurrentMaxAttempts.ok) {
+      setCodexReasoningGuardBudgetError(parsedConcurrentMaxAttempts.message);
+      return;
+    }
+
+    const parsedFallbackModels = parseCodexReasoningGuardModelFallbacks(
+      codexReasoningGuardModelFallbacksText
+    );
+    if (!parsedFallbackModels.ok) {
+      setCodexReasoningGuardModelFallbacksError(parsedFallbackModels.message);
+      return;
+    }
+
     const nextRuleErrors: Record<number, string> = {};
     const nextModelRules: CodexReasoningGuardModelRule[] = [];
     const seenModels = new Set<string>();
@@ -1108,11 +1264,18 @@ export function CliManagerCodexTab({
 
     setCodexReasoningGuardValuesError(null);
     setCodexReasoningGuardBudgetError(null);
+    setCodexReasoningGuardModelFallbacksError(null);
     setCodexReasoningGuardModelRuleErrors({});
     setCodexReasoningGuardValuesText(parsedGlobalValues.values.join(", "));
     setCodexReasoningGuardImmediateBudgetText(String(parsedImmediateBudget.value));
     setCodexReasoningGuardDelayedBudgetText(String(parsedDelayedBudget.value));
     setCodexReasoningGuardDelayedMsText(String(parsedDelayedMs.value));
+    setCodexReasoningGuardConcurrentMaxText(String(parsedConcurrentMax.value));
+    setCodexReasoningGuardConcurrentIntervalMsText(String(parsedConcurrentIntervalMs.value));
+    setCodexReasoningGuardConcurrentMaxAttemptsText(String(parsedConcurrentMaxAttempts.value));
+    setCodexReasoningGuardModelFallbacksText(
+      formatCodexReasoningGuardModelFallbacks(parsedFallbackModels.models)
+    );
     setCodexReasoningGuardModelRuleDrafts(buildCodexReasoningGuardModelRuleDrafts(nextModelRules));
 
     const saved = await persistCodexReasoningGuardSettings({
@@ -1123,6 +1286,11 @@ export function CliManagerCodexTab({
       codex_reasoning_guard_delayed_retry_budget: parsedDelayedBudget.value,
       codex_reasoning_guard_delayed_retry_ms: parsedDelayedMs.value,
       codex_reasoning_guard_exhausted_action: codexReasoningGuardExhaustedAction,
+      codex_reasoning_guard_retry_policy: codexReasoningGuardRetryPolicy,
+      codex_reasoning_guard_concurrent_max: parsedConcurrentMax.value,
+      codex_reasoning_guard_concurrent_interval_ms: parsedConcurrentIntervalMs.value,
+      codex_reasoning_guard_concurrent_max_attempts: parsedConcurrentMaxAttempts.value,
+      codex_reasoning_guard_model_fallbacks: parsedFallbackModels.models,
     });
     if (!saved) {
       syncCodexReasoningGuardDrafts(appSettings);
@@ -1665,15 +1833,33 @@ export function CliManagerCodexTab({
                       </span>
                     </div>
                     <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-                      <span>Guard 预算</span>
+                      <span>Guard 策略</span>
                       <span className="font-mono text-secondary-foreground">
-                        {`${appSettings.codex_reasoning_guard_immediate_retry_budget}+${appSettings.codex_reasoning_guard_delayed_retry_budget} / ${appSettings.codex_reasoning_guard_delayed_retry_ms}ms / ${
-                          appSettings.codex_reasoning_guard_exhausted_action === "switch_provider"
-                            ? "切换供应商"
-                            : "返回错误"
-                        }`}
+                        {`${formatCodexReasoningGuardRetryPolicyLabel(
+                          appSettings.codex_reasoning_guard_retry_policy
+                        )} / ${appSettings.codex_reasoning_guard_immediate_retry_budget}+${appSettings.codex_reasoning_guard_delayed_retry_budget} / ${appSettings.codex_reasoning_guard_delayed_retry_ms}ms / ${formatCodexReasoningGuardExhaustedActionLabel(
+                          appSettings.codex_reasoning_guard_exhausted_action
+                        )}`}
                       </span>
                     </div>
+                    {appSettings.codex_reasoning_guard_retry_policy === "concurrent" ? (
+                      <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                        <span>并发重试</span>
+                        <span className="font-mono text-secondary-foreground">
+                          {`max=${appSettings.codex_reasoning_guard_concurrent_max} / interval=${appSettings.codex_reasoning_guard_concurrent_interval_ms}ms / attempts=${appSettings.codex_reasoning_guard_concurrent_max_attempts}`}
+                        </span>
+                      </div>
+                    ) : null}
+                    {appSettings.codex_reasoning_guard_exhausted_action === "switch_model" ? (
+                      <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                        <span>模型回退</span>
+                        <span className="font-mono text-secondary-foreground">
+                          {appSettings.codex_reasoning_guard_model_fallbacks.length > 0
+                            ? appSettings.codex_reasoning_guard_model_fallbacks.join(" -> ")
+                            : "未配置"}
+                        </span>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -1885,10 +2071,33 @@ export function CliManagerCodexTab({
                     </div>
 
                     <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
-                      <div className="text-sm font-semibold text-foreground">完整重试预算</div>
+                      <div className="text-sm font-semibold text-foreground">重试策略与预算</div>
                       <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        每个 provider
-                        独立计算预算：先立即重试，再按等待时间重试；预算耗尽后按配置返回错误或切换下一个供应商。
+                        每个 provider 独立计算预算。默认单路重试保持旧行为；并发重试会在连续命中后按
+                        1、2、3... 动态扩到最大并发数。
+                      </div>
+                      <div className="mt-4 grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
+                        <label className="text-xs font-medium text-secondary-foreground">
+                          <span className="block">重试策略</span>
+                          <Select
+                            value={codexReasoningGuardRetryPolicy}
+                            onChange={(e) =>
+                              setCodexReasoningGuardRetryPolicy(
+                                e.currentTarget.value as CodexReasoningGuardRetryPolicy
+                              )
+                            }
+                            disabled={reasoningGuardControlsDisabled}
+                            className="mt-3 font-mono text-xs"
+                          >
+                            <option value="single">单路重试</option>
+                            <option value="concurrent">并发重试</option>
+                          </Select>
+                        </label>
+                        <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-[11px] leading-relaxed text-muted-foreground">
+                          {codexReasoningGuardRetryPolicy === "concurrent"
+                            ? `遇到降智命中后先走 1 路；如果仍然命中，下一轮升到 2 路，直到最大 ${MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX} 路。任一路拿到非降智响应后继续，其他路会被丢弃。`
+                            : "完全沿用现有行为：每次只发起一路重试，按立即预算和等待预算顺序执行。"}
+                        </div>
                       </div>
                       <div className="mt-4 grid gap-3 lg:grid-cols-4">
                         <label className="text-xs font-medium text-secondary-foreground">
@@ -1970,9 +2179,116 @@ export function CliManagerCodexTab({
                           >
                             <option value="return_error">返回错误</option>
                             <option value="switch_provider">切换供应商</option>
+                            <option value="switch_model">切换模型</option>
                           </Select>
                         </label>
                       </div>
+                      {codexReasoningGuardRetryPolicy === "concurrent" ? (
+                        <div className="mt-4 grid gap-3 rounded-lg border border-border/70 bg-background/60 p-3 lg:grid-cols-3">
+                          <label className="text-xs font-medium text-secondary-foreground">
+                            <span className="block">最大并发数</span>
+                            <Input
+                              type="number"
+                              min={1}
+                              max={MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX}
+                              step={1}
+                              value={codexReasoningGuardConcurrentMaxText}
+                              onChange={(e) => {
+                                setCodexReasoningGuardConcurrentMaxText(e.currentTarget.value);
+                                setCodexReasoningGuardBudgetError(null);
+                              }}
+                              placeholder={String(DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX)}
+                              className={cn(
+                                "mt-3 font-mono text-xs",
+                                codexReasoningGuardBudgetError &&
+                                  "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                              )}
+                              disabled={reasoningGuardControlsDisabled}
+                            />
+                          </label>
+                          <label className="text-xs font-medium text-secondary-foreground">
+                            <span className="block">并发启动间隔 ms</span>
+                            <Input
+                              type="number"
+                              min={0}
+                              max={MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS}
+                              step={100}
+                              value={codexReasoningGuardConcurrentIntervalMsText}
+                              onChange={(e) => {
+                                setCodexReasoningGuardConcurrentIntervalMsText(
+                                  e.currentTarget.value
+                                );
+                                setCodexReasoningGuardBudgetError(null);
+                              }}
+                              placeholder={String(
+                                DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS
+                              )}
+                              className={cn(
+                                "mt-3 font-mono text-xs",
+                                codexReasoningGuardBudgetError &&
+                                  "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                              )}
+                              disabled={reasoningGuardControlsDisabled}
+                            />
+                          </label>
+                          <label className="text-xs font-medium text-secondary-foreground">
+                            <span className="block">最大尝试次数</span>
+                            <Input
+                              type="number"
+                              min={0}
+                              max={MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS}
+                              step={1}
+                              value={codexReasoningGuardConcurrentMaxAttemptsText}
+                              onChange={(e) => {
+                                setCodexReasoningGuardConcurrentMaxAttemptsText(
+                                  e.currentTarget.value
+                                );
+                                setCodexReasoningGuardBudgetError(null);
+                              }}
+                              placeholder={String(
+                                DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
+                              )}
+                              className={cn(
+                                "mt-3 font-mono text-xs",
+                                codexReasoningGuardBudgetError &&
+                                  "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                              )}
+                              disabled={reasoningGuardControlsDisabled}
+                            />
+                          </label>
+                        </div>
+                      ) : null}
+                      {codexReasoningGuardExhaustedAction === "switch_model" ? (
+                        <label className="mt-4 block text-xs font-medium text-secondary-foreground">
+                          <span className="block">模型回退优先级</span>
+                          <Textarea
+                            aria-label="模型回退优先级"
+                            value={codexReasoningGuardModelFallbacksText}
+                            onChange={(e) => {
+                              setCodexReasoningGuardModelFallbacksText(e.currentTarget.value);
+                              setCodexReasoningGuardModelFallbacksError(null);
+                            }}
+                            placeholder={"gpt-5.4\ngpt-5.4-mini"}
+                            className={cn(
+                              "mt-3 min-h-24 font-mono text-xs",
+                              codexReasoningGuardModelFallbacksError &&
+                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                            )}
+                            disabled={reasoningGuardControlsDisabled}
+                          />
+                          <span
+                            className={cn(
+                              "mt-2 block text-[11px] leading-relaxed",
+                              codexReasoningGuardModelFallbacksError
+                                ? "text-rose-600 dark:text-rose-400"
+                                : "text-muted-foreground"
+                            )}
+                          >
+                            {codexReasoningGuardModelFallbacksError ??
+                              `每行一个模型，按从高到低优先级切换；最多 ${MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN} 个。切换仅影响当前请求，下一次请求仍使用原模型。`}
+                          </span>
+                        </label>
+                      ) : null}
                       <div
                         className={cn(
                           "mt-2 text-[11px] leading-relaxed",

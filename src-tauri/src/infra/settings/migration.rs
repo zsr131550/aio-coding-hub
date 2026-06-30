@@ -138,6 +138,59 @@ pub(super) fn sanitize_codex_reasoning_guard_model_rules(settings: &mut AppSetti
     changed
 }
 
+pub(super) fn sanitize_codex_reasoning_guard_runtime_settings(settings: &mut AppSettings) -> bool {
+    let mut changed = false;
+
+    if settings.codex_reasoning_guard_concurrent_max == 0 {
+        settings.codex_reasoning_guard_concurrent_max =
+            DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX;
+        changed = true;
+    }
+    if settings.codex_reasoning_guard_concurrent_max > MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX {
+        settings.codex_reasoning_guard_concurrent_max = MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX;
+        changed = true;
+    }
+    if settings.codex_reasoning_guard_concurrent_interval_ms
+        > MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS
+    {
+        settings.codex_reasoning_guard_concurrent_interval_ms =
+            MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS;
+        changed = true;
+    }
+    if settings.codex_reasoning_guard_concurrent_max_attempts
+        > MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
+    {
+        settings.codex_reasoning_guard_concurrent_max_attempts =
+            MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS;
+        changed = true;
+    }
+
+    let mut seen_models = HashSet::new();
+    let mut normalized = Vec::with_capacity(settings.codex_reasoning_guard_model_fallbacks.len());
+    for model in &settings.codex_reasoning_guard_model_fallbacks {
+        let model = model.trim().to_string();
+        if model.is_empty() {
+            changed = true;
+            continue;
+        }
+        if !seen_models.insert(model.clone()) {
+            changed = true;
+            continue;
+        }
+        normalized.push(model);
+    }
+    if normalized.len() > MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN {
+        normalized.truncate(MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN);
+        changed = true;
+    }
+    if settings.codex_reasoning_guard_model_fallbacks != normalized {
+        settings.codex_reasoning_guard_model_fallbacks = normalized;
+        changed = true;
+    }
+
+    changed
+}
+
 pub(super) fn sanitize_failover_settings(settings: &mut AppSettings) -> bool {
     let mut changed = false;
 
@@ -903,9 +956,31 @@ fn migrate_add_codex_reasoning_guard_budget(
     true
 }
 
+fn migrate_add_codex_reasoning_guard_retry_policy(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RETRY_POLICY,
+    ) {
+        return false;
+    }
+
+    settings.codex_reasoning_guard_retry_policy = Default::default();
+    settings.codex_reasoning_guard_concurrent_max = DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX;
+    settings.codex_reasoning_guard_concurrent_interval_ms =
+        DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS;
+    settings.codex_reasoning_guard_concurrent_max_attempts =
+        DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS;
+    settings.codex_reasoning_guard_model_fallbacks = Vec::new();
+    true
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
-const SETTINGS_MIGRATIONS: [SettingsMigration; 36] = [
+const SETTINGS_MIGRATIONS: [SettingsMigration; 37] = [
     migrate_disable_upstream_timeouts,
     migrate_add_gateway_rectifiers,
     migrate_add_circuit_breaker_notice,
@@ -942,6 +1017,7 @@ const SETTINGS_MIGRATIONS: [SettingsMigration; 36] = [
     migrate_add_codex_reasoning_guard_backoff,
     migrate_update_codex_reasoning_guard_defaults,
     migrate_add_codex_reasoning_guard_budget,
+    migrate_add_codex_reasoning_guard_retry_policy,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -969,6 +1045,7 @@ pub(super) fn repair_settings(
     repaired |= sanitize_codex_home_override(settings);
     repaired |= sanitize_codex_provider_test_model(settings);
     repaired |= sanitize_codex_reasoning_guard_model_rules(settings);
+    repaired |= sanitize_codex_reasoning_guard_runtime_settings(settings);
     repaired |= sanitize_cli_priority_order(settings);
     let canonical = super::persistence::canonical_settings_json(settings)?;
     repaired |= raw_settings_json != &canonical;

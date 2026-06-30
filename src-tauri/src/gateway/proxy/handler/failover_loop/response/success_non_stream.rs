@@ -7,6 +7,7 @@ use super::upstream_retry_policy::{
 use super::*;
 use crate::domain::provider_oauth_limits;
 use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayResponseHookInput};
+use crate::gateway::proxy::request_context::RequestContext;
 use crate::gateway::proxy::{
     gemini_oauth, is_fake_200_non_stream_body, protocol_bridge, provider_router,
     upstream_client_error_rules, GatewayErrorCode,
@@ -371,6 +372,7 @@ fn translate_bridge_non_stream_body(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_success_non_stream<R>(
     ctx: CommonCtx<'_, R>,
+    input: &RequestContext<R>,
     provider_ctx: ProviderCtx<'_>,
     attempt_ctx: AttemptCtx<'_>,
     loop_state: LoopState<'_, R>,
@@ -946,7 +948,7 @@ where
         if let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
             if let Some(matched) = codex_reasoning_guard::detect_from_json(
                 common.cli_key.as_str(),
-                common.requested_model.as_deref(),
+                current_codex_reasoning_guard_model(input, retry_state),
                 &body_json,
                 common.codex_reasoning_guard_compare_mode,
                 common.codex_reasoning_guard_reasoning_equals.as_slice(),
@@ -958,6 +960,10 @@ where
                     common.codex_reasoning_guard_delayed_retry_budget,
                     common.codex_reasoning_guard_delayed_retry_ms,
                     common.codex_reasoning_guard_exhausted_action,
+                    common.codex_reasoning_guard_retry_policy,
+                    common.codex_reasoning_guard_concurrent_max,
+                    common.codex_reasoning_guard_concurrent_interval_ms,
+                    common.codex_reasoning_guard_concurrent_max_attempts,
                 );
                 codex_reasoning_guard::push_special_setting(
                     &common.special_settings,
@@ -993,6 +999,9 @@ where
                     codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
                         "codex_reasoning_guard_switch_provider"
                     }
+                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
+                        "codex_reasoning_guard_switch_model"
+                    }
                 };
                 emit_attempt_event_and_log(
                     ctx,
@@ -1013,6 +1022,8 @@ where
                         retry_state.codex_reasoning_guard_hits =
                             retry_state.codex_reasoning_guard_hits.saturating_add(1);
                         retry_state.allow_next_retry_beyond_max_attempts = true;
+                        retry_state
+                            .remember_codex_reasoning_guard_retry_wave(budget_decision.retry_wave);
                         codex_reasoning_guard::apply_delay_if_needed(budget_decision).await;
                         return LoopControl::ContinueRetry;
                     }
@@ -1074,6 +1085,66 @@ where
                             codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
                         ));
                         return LoopControl::BreakRetry;
+                    }
+                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
+                        retry_state.codex_reasoning_guard_next_retry_wave = None;
+                        let current_model = current_codex_reasoning_guard_model(input, retry_state);
+                        if let Some(next_model) = codex_reasoning_guard::select_next_model_fallback(
+                            current_model,
+                            common.codex_reasoning_guard_model_fallbacks.as_slice(),
+                        ) {
+                            return LoopControl::SwitchModel(next_model.to_string());
+                        }
+
+                        *last_outcome = Some(AttemptOutcome::new(
+                            ErrorCategory::SystemError.as_str(),
+                            codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                        ));
+                        let duration_ms = started.elapsed().as_millis();
+                        emit_request_event_and_enqueue_request_log(
+                            RequestEndArgs::from_context(RequestEndContextArgs {
+                                deps: RequestEndDeps::new(
+                                    &common.state.app,
+                                    &common.state.db,
+                                    &common.state.log_tx,
+                                    &common.state.plugin_pipeline,
+                                ),
+                                trace_id: common.trace_id.as_str(),
+                                cli_key: common.cli_key.as_str(),
+                                method: common.method_hint.as_str(),
+                                path: common.forwarded_path.as_str(),
+                                observe: common.observe,
+                                query: common.query.as_deref(),
+                                excluded_from_stats: false,
+                                duration_ms,
+                                attempts: attempts.as_slice(),
+                                special_settings_json: response_fixer::special_settings_json(
+                                    &common.special_settings,
+                                ),
+                                session_id: common.session_id.clone(),
+                                requested_model: common.requested_model.clone(),
+                                created_at_ms,
+                                created_at,
+                            })
+                            .with_completion(
+                                RequestCompletion::failure_with_visible_ttfb(
+                                    StatusCode::BAD_GATEWAY.as_u16(),
+                                    Some(ErrorCategory::SystemError.as_str()),
+                                    codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                    provider_ttfb_ms,
+                                    Some(duration_ms),
+                                ),
+                            ),
+                        )
+                        .await;
+                        abort_guard.disarm();
+                        return LoopControl::Return(error_response(
+                            StatusCode::BAD_GATEWAY,
+                            common.trace_id.clone(),
+                            codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                            "Codex reasoning guard model fallback exhausted".to_string(),
+                            attempts.clone(),
+                        ));
                     }
                 }
             }
@@ -1394,6 +1465,213 @@ where
     .await;
     abort_guard.disarm();
     LoopControl::Return(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn handle_success_non_stream_buffered<R>(
+    ctx: CommonCtx<'_, R>,
+    _input: &RequestContext<R>,
+    provider_ctx: ProviderCtx<'_>,
+    attempt_ctx: AttemptCtx<'_>,
+    loop_state: LoopState<'_, R>,
+    _retry_state: &mut RetryLoopState,
+    status: StatusCode,
+    mut response_headers: HeaderMap,
+    mut body_bytes: Bytes,
+    provider_ttfb_ms: Option<u128>,
+) -> LoopControl
+where
+    R: tauri::Runtime,
+    R::Handle: Unpin,
+{
+    let common = CommonCtxOwned::from(ctx);
+    let provider_ctx_owned = ProviderCtxOwned::from(provider_ctx);
+    let state = common.state;
+    let started = common.started;
+    let created_at_ms = common.created_at_ms;
+    let created_at = common.created_at;
+    let provider_id = provider_ctx_owned.provider_id;
+    let provider_index = provider_ctx_owned.provider_index;
+    let session_reuse = provider_ctx_owned.session_reuse;
+    let AttemptCtx {
+        retry_index,
+        attempt_started_ms,
+        attempt_started,
+        circuit_before,
+        ..
+    } = attempt_ctx;
+    let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
+    let reason_code = dc::success_reason_code(provider_index, retry_index);
+    let LoopState {
+        attempts,
+        failed_provider_ids: _,
+        last_outcome: _,
+        circuit_snapshot: _,
+        abort_guard,
+    } = loop_state;
+
+    strip_hop_headers(&mut response_headers);
+    response_headers.remove(header::CONTENT_LENGTH);
+
+    let outcome = "success".to_string();
+    attempts.push(FailoverAttempt {
+        provider_id,
+        provider_name: provider_ctx_owned.provider_name_base.clone(),
+        base_url: provider_ctx_owned.provider_base_url_base.clone(),
+        outcome: outcome.clone(),
+        status: Some(status.as_u16()),
+        provider_index: Some(provider_index),
+        retry_index: Some(retry_index),
+        session_reuse,
+        error_category: None,
+        error_code: None,
+        decision: Some("success"),
+        reason: None,
+        selection_method,
+        reason_code: Some(reason_code),
+        attempt_started_ms: Some(attempt_started_ms),
+        attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
+        circuit_state_before: Some(circuit_before.state.as_str()),
+        circuit_state_after: None,
+        circuit_failure_count: Some(circuit_before.failure_count),
+        circuit_failure_threshold: Some(circuit_before.failure_threshold),
+    });
+
+    emit_attempt_event_and_log_with_circuit_before(
+        ctx,
+        provider_ctx,
+        attempt_ctx,
+        outcome,
+        Some(status.as_u16()),
+    )
+    .await;
+
+    codex_service_tier::append_result_if_detected(
+        common.cli_key.as_str(),
+        common.introspection_body.as_slice(),
+        Some(body_bytes.as_ref()),
+        &common.special_settings,
+    );
+
+    let hook_input = GatewayResponseHookInput {
+        hook_name: GatewayPluginHookName::ResponseAfter,
+        trace_id: common.trace_id.clone(),
+        status: status.as_u16(),
+        headers: response_headers.clone(),
+        body: body_bytes.clone(),
+    };
+    match state.plugin_pipeline.run_response_hook(hook_input).await {
+        Ok(output) => {
+            crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+                &state.db,
+                &common.trace_id,
+                output.audit_events.clone(),
+            );
+            if let Some(blocked) = output.blocked {
+                abort_guard.disarm();
+                return LoopControl::Return(error_response(
+                    StatusCode::BAD_GATEWAY,
+                    common.trace_id.clone(),
+                    GatewayErrorCode::InternalError.as_str(),
+                    blocked.reason,
+                    attempts.clone(),
+                ));
+            }
+            response_headers = output.headers;
+            body_bytes = output.body;
+            response_headers.remove(header::CONTENT_LENGTH);
+        }
+        Err(mut err) => {
+            crate::gateway::plugins::audit::persist_gateway_plugin_error_audit_events(
+                &state.db,
+                &common.trace_id,
+                &mut err,
+            );
+            abort_guard.disarm();
+            return LoopControl::Return(error_response(
+                StatusCode::BAD_GATEWAY,
+                common.trace_id.clone(),
+                GatewayErrorCode::InternalError.as_str(),
+                format!("gateway plugin response hook failed: {err}"),
+                attempts.clone(),
+            ));
+        }
+    }
+
+    let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
+    let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
+    let requested_model_for_log = common.requested_model.clone().or_else(|| {
+        if body_bytes.is_empty() {
+            None
+        } else {
+            usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes)
+        }
+    });
+
+    let now_unix = now_unix_seconds() as i64;
+    let change = provider_router::record_success_and_emit_transition(
+        provider_router::RecordCircuitArgs::from_state(
+            state,
+            common.trace_id.as_str(),
+            common.cli_key.as_str(),
+            provider_id,
+            provider_ctx_owned.provider_name_base.as_str(),
+            provider_ctx_owned.provider_base_url_base.as_str(),
+            now_unix,
+        ),
+    );
+    if let Some(last) = attempts.last_mut() {
+        last.circuit_state_after = Some(change.after.state.as_str());
+        last.circuit_failure_count = Some(change.after.failure_count);
+        last.circuit_failure_threshold = Some(change.after.failure_threshold);
+    }
+    if let Some(session_id) = common.session_id.as_deref() {
+        state.session.bind_success(
+            &common.cli_key,
+            session_id,
+            provider_id,
+            common.effective_sort_mode_id,
+            now_unix,
+        );
+    }
+
+    let duration_ms = started.elapsed().as_millis();
+    emit_request_event_and_enqueue_request_log(
+        RequestEndArgs::from_context(RequestEndContextArgs {
+            deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx, &state.plugin_pipeline),
+            trace_id: common.trace_id.as_str(),
+            cli_key: common.cli_key.as_str(),
+            method: common.method_hint.as_str(),
+            path: common.forwarded_path.as_str(),
+            observe: common.observe,
+            query: common.query.as_deref(),
+            excluded_from_stats: false,
+            duration_ms,
+            attempts: attempts.as_slice(),
+            special_settings_json: response_fixer::special_settings_json(&common.special_settings),
+            session_id: common.session_id.clone(),
+            requested_model: requested_model_for_log,
+            created_at_ms,
+            created_at,
+        })
+        .with_completion(RequestCompletion::success_with_visible_ttfb(
+            status.as_u16(),
+            provider_ttfb_ms,
+            Some(duration_ms),
+            usage_metrics,
+            None,
+            usage,
+        )),
+    )
+    .await;
+
+    abort_guard.disarm();
+    LoopControl::Return(build_response(
+        status,
+        &response_headers,
+        common.trace_id.as_str(),
+        Body::from(body_bytes),
+    ))
 }
 
 #[cfg(test)]

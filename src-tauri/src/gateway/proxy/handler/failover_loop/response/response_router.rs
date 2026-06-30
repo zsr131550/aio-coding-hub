@@ -80,7 +80,6 @@ where
         upstream_retry_policy: &prepared.upstream_retry_policy,
         claude_model_mapping: prepared.claude_model_mapping.as_ref(),
     };
-
     emit_gateway_debug_log_lazy(&ctx.state.app, || {
         format!(
             "[RESP] trace_id={} status={} provider={} (id={}) is_stream={}\n  headers={}",
@@ -105,6 +104,7 @@ where
         if is_event_stream(&response_headers) {
             return success_event_stream::handle_success_event_stream(
                 ctx,
+                input,
                 provider_ctx,
                 attempt_ctx,
                 loop_state.reborrow(),
@@ -117,6 +117,7 @@ where
         }
         return success_non_stream::handle_success_non_stream(
             ctx,
+            input,
             provider_ctx,
             attempt_ctx,
             loop_state.reborrow(),
@@ -128,8 +129,6 @@ where
         .await;
     }
 
-    // Release provider_ctx (immutable borrow of prepared) before mutable borrows.
-    let _ = provider_ctx;
     let _ = attempt_ctx;
 
     // --- Claude API key auth scheme fallback (401/403) ---
@@ -219,6 +218,64 @@ where
         prepared.request_body_mutated_before_attempt = true;
     }
     control
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn route_buffered_non_stream_response<R>(
+    ctx: CommonCtx<'_, R>,
+    input: &RequestContext<R>,
+    prepared: &mut PreparedProvider,
+    retry_state: &mut RetryLoopState,
+    indices: AttemptIndices,
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Bytes,
+    provider_ttfb_ms: Option<u128>,
+    timing: AttemptTiming,
+    loop_state: &mut LoopState<'_, R>,
+) -> LoopControl
+where
+    R: tauri::Runtime,
+    R::Handle: Unpin,
+{
+    let circuit_before = prepared.circuit_snapshot.clone();
+    let attempt_ctx = AttemptCtx {
+        attempt_index: indices.attempt_index,
+        retry_index: indices.retry_index,
+        attempt_started_ms: timing.attempt_started_ms,
+        attempt_started: timing.attempt_started,
+        circuit_before: &circuit_before,
+        gemini_oauth_response_mode: prepared.gemini_oauth_response_mode,
+        cx2cc_active: prepared.cx2cc_active,
+        active_bridge_type: prepared.active_bridge_type.as_deref(),
+        anthropic_stream_requested: prepared.anthropic_stream_requested,
+    };
+    let provider_ctx = ProviderCtx {
+        provider_id: prepared.provider_id,
+        provider_name_base: &prepared.provider_name_base,
+        provider_base_url_base: &prepared.provider_base_url_base,
+        auth_mode: prepared.auth_mode.as_str(),
+        provider_index: prepared.provider_index,
+        session_reuse: prepared.session_reuse,
+        provider_max_attempts: prepared.provider_max_attempts,
+        stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,
+        upstream_retry_policy: &prepared.upstream_retry_policy,
+        claude_model_mapping: prepared.claude_model_mapping.as_ref(),
+    };
+
+    success_non_stream::handle_success_non_stream_buffered(
+        ctx,
+        input,
+        provider_ctx,
+        attempt_ctx,
+        loop_state.reborrow(),
+        retry_state,
+        status,
+        headers,
+        body,
+        provider_ttfb_ms,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

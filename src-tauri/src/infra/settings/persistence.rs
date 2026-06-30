@@ -6,7 +6,7 @@ use super::migration::{
 };
 use super::types::{
     AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, CodexReasoningGuardExhaustedAction,
-    GatewayListenMode, WslHostAddressMode,
+    CodexReasoningGuardRetryPolicy, GatewayListenMode, WslHostAddressMode,
 };
 use crate::app_paths;
 use crate::shared::error::AppResult;
@@ -400,7 +400,59 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
     }
     match settings.codex_reasoning_guard_exhausted_action {
         CodexReasoningGuardExhaustedAction::ReturnError
-        | CodexReasoningGuardExhaustedAction::SwitchProvider => {}
+        | CodexReasoningGuardExhaustedAction::SwitchProvider
+        | CodexReasoningGuardExhaustedAction::SwitchModel => {}
+    }
+    match settings.codex_reasoning_guard_retry_policy {
+        CodexReasoningGuardRetryPolicy::Single | CodexReasoningGuardRetryPolicy::Concurrent => {}
+    }
+    if settings.codex_reasoning_guard_concurrent_max == 0
+        || settings.codex_reasoning_guard_concurrent_max > MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: codex_reasoning_guard_concurrent_max must be between 1 and {MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX}"
+        )
+        .into());
+    }
+    if settings.codex_reasoning_guard_concurrent_interval_ms
+        > MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: codex_reasoning_guard_concurrent_interval_ms must be <= {MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS}"
+        )
+        .into());
+    }
+    if settings.codex_reasoning_guard_concurrent_max_attempts
+        > MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: codex_reasoning_guard_concurrent_max_attempts must be <= {MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS}"
+        )
+        .into());
+    }
+    if settings.codex_reasoning_guard_model_fallbacks.len()
+        > MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: codex_reasoning_guard_model_fallbacks must contain <= {MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN} models"
+        )
+        .into());
+    }
+    let mut seen_fallback_models = HashSet::new();
+    for (index, model) in settings
+        .codex_reasoning_guard_model_fallbacks
+        .iter()
+        .enumerate()
+    {
+        let field = format!("codex_reasoning_guard_model_fallbacks[{index}]");
+        let model = model.trim();
+        validate_non_empty_bounded_string(&field, model, MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN)?;
+        if !seen_fallback_models.insert(model.to_string()) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: duplicate codex reasoning guard model fallback for {model}"
+            )
+            .into());
+        }
     }
     if settings.codex_reasoning_guard_model_rules.len() > MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN
     {

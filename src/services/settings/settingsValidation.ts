@@ -2,6 +2,7 @@ import type {
   CodexReasoningGuardCompareMode,
   CodexReasoningGuardExhaustedAction,
   CodexReasoningGuardModelRule,
+  CodexReasoningGuardRetryPolicy,
   GatewayListenMode,
   SensitiveStringUpdate,
   UpstreamRetryPolicy,
@@ -27,11 +28,19 @@ export const DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET = 5;
 export const DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS = 1_000;
 export const DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION: CodexReasoningGuardExhaustedAction =
   "return_error";
+export const DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY: CodexReasoningGuardRetryPolicy = "single";
+export const DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX = 5;
+export const DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS = 1_000;
+export const DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS = 10;
 export const MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS = 100;
 export const MAX_CODEX_REASONING_GUARD_BACKOFF_MS = 60_000;
 export const MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET = 100;
 export const MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET = 100;
 export const MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS = 60_000;
+export const MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX = 5;
+export const MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS = 60_000;
+export const MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS = 100;
+export const MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN = 16;
 export const MIN_PREFERRED_PORT = 1024;
 export const MAX_PREFERRED_PORT = 65535;
 export const MIN_LOG_RETENTION_DAYS = 1;
@@ -398,6 +407,11 @@ export type SettingsSetValidationInput = {
   codexReasoningGuardDelayedRetryBudget?: number | null;
   codexReasoningGuardDelayedRetryMs?: number | null;
   codexReasoningGuardExhaustedAction?: CodexReasoningGuardExhaustedAction | null;
+  codexReasoningGuardRetryPolicy?: CodexReasoningGuardRetryPolicy | null;
+  codexReasoningGuardConcurrentMax?: number | null;
+  codexReasoningGuardConcurrentIntervalMs?: number | null;
+  codexReasoningGuardConcurrentMaxAttempts?: number | null;
+  codexReasoningGuardModelFallbacks?: string[] | null;
   codexReasoningGuardBackoffAfterHits?: number | null;
   codexReasoningGuardBackoffMs?: number | null;
 };
@@ -554,9 +568,19 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
   if (input.codexReasoningGuardExhaustedAction != null) {
     if (
       input.codexReasoningGuardExhaustedAction !== "return_error" &&
-      input.codexReasoningGuardExhaustedAction !== "switch_provider"
+      input.codexReasoningGuardExhaustedAction !== "switch_provider" &&
+      input.codexReasoningGuardExhaustedAction !== "switch_model"
     ) {
-      return "Codex 降智拦截预算耗尽动作仅支持 return_error 或 switch_provider";
+      return "Codex 降智拦截预算耗尽动作仅支持 return_error、switch_provider 或 switch_model";
+    }
+  }
+
+  if (input.codexReasoningGuardRetryPolicy != null) {
+    if (
+      input.codexReasoningGuardRetryPolicy !== "single" &&
+      input.codexReasoningGuardRetryPolicy !== "concurrent"
+    ) {
+      return "Codex 降智拦截重试策略仅支持 single 或 concurrent";
     }
   }
 
@@ -577,6 +601,21 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
       MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
     ],
     [
+      "Codex 降智拦截并发数量",
+      input.codexReasoningGuardConcurrentMax,
+      MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX,
+    ],
+    [
+      "Codex 降智拦截并发间隔",
+      input.codexReasoningGuardConcurrentIntervalMs,
+      MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
+    ],
+    [
+      "Codex 降智拦截并发最大尝试次数",
+      input.codexReasoningGuardConcurrentMaxAttempts,
+      MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
+    ],
+    [
       "Codex 降智拦截等待触发次数",
       input.codexReasoningGuardBackoffAfterHits,
       MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS,
@@ -590,6 +629,38 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
     if (value == null) continue;
     if (!Number.isSafeInteger(value) || value < 0 || value > max) {
       return `${fieldLabel}必须为 0-${max} 的整数`;
+    }
+  }
+
+  if (
+    input.codexReasoningGuardConcurrentMax != null &&
+    input.codexReasoningGuardConcurrentMax < 1
+  ) {
+    return `Codex 降智拦截并发数量必须为 1-${MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX} 的整数`;
+  }
+
+  if (input.codexReasoningGuardModelFallbacks != null) {
+    const fallbacks = input.codexReasoningGuardModelFallbacks;
+    if (!Array.isArray(fallbacks)) {
+      return "Codex 降智拦截模型回退列表必须是列表";
+    }
+    if (fallbacks.length > MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN) {
+      return `Codex 降智拦截模型回退最多支持 ${MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN} 个模型`;
+    }
+    const seenModels = new Set<string>();
+    for (const model of fallbacks) {
+      const trimmed = model?.trim() ?? "";
+      if (!trimmed) return "Codex 降智拦截模型回退不能包含空模型名";
+      if (utf8Length(trimmed) > MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN) {
+        return `Codex 降智拦截模型回退名必须 <= ${MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN} 字符`;
+      }
+      if (CONTROL_CHAR_PATTERN.test(trimmed)) {
+        return "Codex 降智拦截模型回退名不能包含控制字符";
+      }
+      if (seenModels.has(trimmed)) {
+        return `Codex 降智拦截模型回退不能重复：${trimmed}`;
+      }
+      seenModels.add(trimmed);
     }
   }
 

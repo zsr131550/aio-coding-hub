@@ -149,6 +149,13 @@ impl<R: tauri::Runtime> ProxyContext<R> {
                 .codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms: rs.codex_reasoning_guard_delayed_retry_ms,
             codex_reasoning_guard_exhausted_action: rs.codex_reasoning_guard_exhausted_action,
+            codex_reasoning_guard_retry_policy: rs.codex_reasoning_guard_retry_policy,
+            codex_reasoning_guard_concurrent_max: rs.codex_reasoning_guard_concurrent_max,
+            codex_reasoning_guard_concurrent_interval_ms: rs
+                .codex_reasoning_guard_concurrent_interval_ms,
+            codex_reasoning_guard_concurrent_max_attempts: rs
+                .codex_reasoning_guard_concurrent_max_attempts,
+            codex_reasoning_guard_model_fallbacks: rs.codex_reasoning_guard_model_fallbacks,
             max_attempts_per_provider: rs.max_attempts_per_provider,
             max_providers_to_try: rs.max_providers_to_try,
             upstream_retry_policy: rs.upstream_retry_policy,

@@ -27,6 +27,11 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
     pub(super) codex_reasoning_guard_exhausted_action: settings::CodexReasoningGuardExhaustedAction,
+    pub(super) codex_reasoning_guard_retry_policy: settings::CodexReasoningGuardRetryPolicy,
+    pub(super) codex_reasoning_guard_concurrent_max: u32,
+    pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
+    pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
+    pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
     pub(super) enable_claude_metadata_user_id_injection: bool,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
@@ -146,6 +151,21 @@ pub(super) fn handler_runtime_settings(
         codex_reasoning_guard_exhausted_action: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_exhausted_action)
             .unwrap_or_default(),
+        codex_reasoning_guard_retry_policy: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_retry_policy)
+            .unwrap_or_default(),
+        codex_reasoning_guard_concurrent_max: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_concurrent_max)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX),
+        codex_reasoning_guard_concurrent_interval_ms: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_concurrent_interval_ms)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS),
+        codex_reasoning_guard_concurrent_max_attempts: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_concurrent_max_attempts)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS),
+        codex_reasoning_guard_model_fallbacks: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_model_fallbacks.clone())
+            .unwrap_or_default(),
         enable_claude_metadata_user_id_injection: settings_cfg
             .map(|cfg| cfg.enable_claude_metadata_user_id_injection)
             .unwrap_or(true)
@@ -182,6 +202,12 @@ mod tests {
             codex_reasoning_guard_delayed_retry_ms: 4_000,
             codex_reasoning_guard_exhausted_action:
                 settings::CodexReasoningGuardExhaustedAction::SwitchProvider,
+            codex_reasoning_guard_retry_policy:
+                settings::CodexReasoningGuardRetryPolicy::Concurrent,
+            codex_reasoning_guard_concurrent_max: 4,
+            codex_reasoning_guard_concurrent_interval_ms: 250,
+            codex_reasoning_guard_concurrent_max_attempts: 12,
+            codex_reasoning_guard_model_fallbacks: vec!["gpt-5.4".to_string()],
             codex_reasoning_guard_backoff_after_hits: 99,
             codex_reasoning_guard_backoff_ms: 60_000,
             ..Default::default()
@@ -195,6 +221,17 @@ mod tests {
         assert_eq!(
             runtime.codex_reasoning_guard_exhausted_action,
             settings::CodexReasoningGuardExhaustedAction::SwitchProvider
+        );
+        assert_eq!(
+            runtime.codex_reasoning_guard_retry_policy,
+            settings::CodexReasoningGuardRetryPolicy::Concurrent
+        );
+        assert_eq!(runtime.codex_reasoning_guard_concurrent_max, 4);
+        assert_eq!(runtime.codex_reasoning_guard_concurrent_interval_ms, 250);
+        assert_eq!(runtime.codex_reasoning_guard_concurrent_max_attempts, 12);
+        assert_eq!(
+            runtime.codex_reasoning_guard_model_fallbacks,
+            vec!["gpt-5.4".to_string()]
         );
     }
 }
