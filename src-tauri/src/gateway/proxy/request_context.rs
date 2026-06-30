@@ -49,6 +49,11 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
     pub(super) codex_reasoning_guard_exhausted_action:
         crate::settings::CodexReasoningGuardExhaustedAction,
+    pub(super) codex_reasoning_guard_retry_policy: crate::settings::CodexReasoningGuardRetryPolicy,
+    pub(super) codex_reasoning_guard_concurrent_max: u32,
+    pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
+    pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
+    pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
     pub(super) upstream_retry_policy: crate::settings::UpstreamRetryPolicy,
@@ -73,6 +78,97 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
 }
 
 impl<R: tauri::Runtime> RequestContext<R> {
+    pub(super) fn clone_for_concurrent_probe(&self) -> Self {
+        let mut abort_guard = RequestAbortGuard::new(
+            self.state.app.clone(),
+            self.state.db.clone(),
+            self.state.log_tx.clone(),
+            self.state.plugin_pipeline.clone(),
+            self.trace_id.clone(),
+            self.cli_key.clone(),
+            self.method_hint.clone(),
+            self.forwarded_path.clone(),
+            self.observe_request,
+            self.query.clone(),
+            self.session_id.clone(),
+            self.requested_model.clone(),
+            self.created_at_ms,
+            self.created_at,
+            self.started,
+        );
+        abort_guard.disarm();
+
+        Self {
+            state: self.state.clone(),
+            cli_key: self.cli_key.clone(),
+            forwarded_path: self.forwarded_path.clone(),
+            observe_request: self.observe_request,
+            req_method: self.req_method.clone(),
+            method_hint: self.method_hint.clone(),
+            query: self.query.clone(),
+            trace_id: self.trace_id.clone(),
+            started: self.started,
+            created_at_ms: self.created_at_ms,
+            created_at: self.created_at,
+            session_id: self.session_id.clone(),
+            requested_model: self.requested_model.clone(),
+            requested_model_location: self.requested_model_location,
+            effective_sort_mode_id: self.effective_sort_mode_id,
+            providers: self.providers.clone(),
+            session_bound_provider_id: self.session_bound_provider_id,
+            base_headers: self.base_headers.clone(),
+            body_bytes: self.body_bytes.clone(),
+            request_body_state: self.request_body_state.clone(),
+            introspection_json: self.introspection_json.clone(),
+            strip_request_content_encoding_seed: self.strip_request_content_encoding_seed,
+            special_settings: Arc::clone(&self.special_settings),
+            provider_base_url_ping_cache_ttl_seconds: self.provider_base_url_ping_cache_ttl_seconds,
+            verbose_provider_error: self.verbose_provider_error,
+            enable_codex_session_id_completion: self.enable_codex_session_id_completion,
+            codex_reasoning_guard_enabled: self.codex_reasoning_guard_enabled,
+            codex_reasoning_guard_compare_mode: self.codex_reasoning_guard_compare_mode,
+            codex_reasoning_guard_reasoning_equals: self
+                .codex_reasoning_guard_reasoning_equals
+                .clone(),
+            codex_reasoning_guard_model_rules: self.codex_reasoning_guard_model_rules.clone(),
+            codex_reasoning_guard_immediate_retry_budget: self
+                .codex_reasoning_guard_immediate_retry_budget,
+            codex_reasoning_guard_delayed_retry_budget: self
+                .codex_reasoning_guard_delayed_retry_budget,
+            codex_reasoning_guard_delayed_retry_ms: self.codex_reasoning_guard_delayed_retry_ms,
+            codex_reasoning_guard_exhausted_action: self.codex_reasoning_guard_exhausted_action,
+            codex_reasoning_guard_retry_policy: self.codex_reasoning_guard_retry_policy,
+            codex_reasoning_guard_concurrent_max: self.codex_reasoning_guard_concurrent_max,
+            codex_reasoning_guard_concurrent_interval_ms: self
+                .codex_reasoning_guard_concurrent_interval_ms,
+            codex_reasoning_guard_concurrent_max_attempts: self
+                .codex_reasoning_guard_concurrent_max_attempts,
+            codex_reasoning_guard_model_fallbacks: self
+                .codex_reasoning_guard_model_fallbacks
+                .clone(),
+            max_attempts_per_provider: self.max_attempts_per_provider,
+            max_providers_to_try: self.max_providers_to_try,
+            upstream_retry_policy: self.upstream_retry_policy.clone(),
+            provider_cooldown_secs: self.provider_cooldown_secs,
+            upstream_first_byte_timeout_secs: self.upstream_first_byte_timeout_secs,
+            upstream_first_byte_timeout: self.upstream_first_byte_timeout,
+            upstream_stream_idle_timeout: self.upstream_stream_idle_timeout,
+            upstream_request_timeout_non_streaming: self.upstream_request_timeout_non_streaming,
+            fingerprint_key: self.fingerprint_key,
+            fingerprint_debug: self.fingerprint_debug.clone(),
+            unavailable_fingerprint_key: self.unavailable_fingerprint_key,
+            unavailable_fingerprint_debug: self.unavailable_fingerprint_debug.clone(),
+            abort_guard,
+            enable_thinking_signature_rectifier: self.enable_thinking_signature_rectifier,
+            enable_thinking_budget_rectifier: self.enable_thinking_budget_rectifier,
+            enable_claude_metadata_user_id_injection: self.enable_claude_metadata_user_id_injection,
+            cx2cc_settings: self.cx2cc_settings.clone(),
+            enable_response_fixer: self.enable_response_fixer,
+            response_fixer_stream_config: self.response_fixer_stream_config,
+            response_fixer_non_stream_config: self.response_fixer_non_stream_config,
+        }
+    }
+
     pub(super) fn from_handler_parts(parts: RequestContextParts<R>) -> Self {
         let RequestContextParts {
             state,
@@ -109,6 +205,11 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms,
             codex_reasoning_guard_exhausted_action,
+            codex_reasoning_guard_retry_policy,
+            codex_reasoning_guard_concurrent_max,
+            codex_reasoning_guard_concurrent_interval_ms,
+            codex_reasoning_guard_concurrent_max_attempts,
+            codex_reasoning_guard_model_fallbacks,
             max_attempts_per_provider,
             max_providers_to_try,
             upstream_retry_policy,
@@ -200,6 +301,11 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms,
             codex_reasoning_guard_exhausted_action,
+            codex_reasoning_guard_retry_policy,
+            codex_reasoning_guard_concurrent_max,
+            codex_reasoning_guard_concurrent_interval_ms,
+            codex_reasoning_guard_concurrent_max_attempts,
+            codex_reasoning_guard_model_fallbacks,
             max_attempts_per_provider,
             max_providers_to_try,
             upstream_retry_policy,
@@ -313,6 +419,11 @@ pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
     pub(super) codex_reasoning_guard_exhausted_action:
         crate::settings::CodexReasoningGuardExhaustedAction,
+    pub(super) codex_reasoning_guard_retry_policy: crate::settings::CodexReasoningGuardRetryPolicy,
+    pub(super) codex_reasoning_guard_concurrent_max: u32,
+    pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
+    pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
+    pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
     pub(super) upstream_retry_policy: crate::settings::UpstreamRetryPolicy,

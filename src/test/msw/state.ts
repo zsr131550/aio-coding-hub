@@ -23,7 +23,7 @@ const DEFAULT_CLI_PROXY_STATUS: CliProxyStatus[] = [
 
 // Default settings matching the Rust backend defaults.
 const DEFAULT_SETTINGS: AppSettings = {
-  schema_version: 41,
+  schema_version: 43,
   preferred_port: 37123,
   show_home_heatmap: true,
   show_home_usage: true,
@@ -47,6 +47,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   codex_reasoning_guard_delayed_retry_budget: 5,
   codex_reasoning_guard_delayed_retry_ms: 1000,
   codex_reasoning_guard_exhausted_action: "return_error",
+  codex_reasoning_guard_retry_policy: "single",
+  codex_reasoning_guard_concurrent_max: 5,
+  codex_reasoning_guard_concurrent_interval_ms: 1000,
+  codex_reasoning_guard_concurrent_max_attempts: 10,
+  codex_reasoning_guard_model_fallbacks: [],
   codex_reasoning_guard_backoff_after_hits: 5,
   codex_reasoning_guard_backoff_ms: 1000,
   auto_start: false,

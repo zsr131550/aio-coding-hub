@@ -41,16 +41,51 @@ where
         retry_state.allow_next_retry_beyond_max_attempts = false;
         let attempt_index = loop_state.attempts.len().saturating_add(1) as u32;
 
-        let send_outcome = attempt_executor::execute_attempt(
-            ctx,
-            input,
-            prepared,
-            &mut retry_state,
-            retry_index,
-            attempt_index,
-            &mut loop_state,
-        )
-        .await;
+        let send_outcome = if let Some(wave) = take_guard_concurrent_wave(&mut retry_state) {
+            match codex_reasoning_guard_concurrent::run_guard_retry_wave(
+                ctx,
+                input,
+                prepared,
+                &retry_state,
+                retry_index,
+                attempt_index,
+                wave.concurrency,
+                wave.interval_ms,
+            )
+            .await
+            {
+                codex_reasoning_guard_concurrent::ConcurrentProbeOutcome::Winner {
+                    prepared: winner_prepared,
+                    send_outcome,
+                } => {
+                    *prepared = *winner_prepared;
+                    send_outcome
+                }
+                codex_reasoning_guard_concurrent::ConcurrentProbeOutcome::Exhausted => {
+                    attempt_executor::execute_attempt(
+                        ctx,
+                        input,
+                        prepared,
+                        &mut retry_state,
+                        retry_index,
+                        attempt_index,
+                        &mut loop_state,
+                    )
+                    .await
+                }
+            }
+        } else {
+            attempt_executor::execute_attempt(
+                ctx,
+                input,
+                prepared,
+                &mut retry_state,
+                retry_index,
+                attempt_index,
+                &mut loop_state,
+            )
+            .await
+        };
 
         let ctrl = dispatch_outcome(
             ctx,
@@ -71,12 +106,33 @@ where
                 retry_index = retry_index.saturating_add(1);
                 continue;
             }
+            LoopControl::SwitchModel(next_model) => {
+                if apply_codex_reasoning_guard_model_fallback(
+                    input,
+                    prepared,
+                    &mut retry_state,
+                    &next_model,
+                ) {
+                    retry_index = retry_index.saturating_add(1);
+                    continue;
+                }
+                break;
+            }
             LoopControl::BreakRetry => break,
             LoopControl::Return(resp) => return Some(resp),
         }
     }
 
     None
+}
+
+fn take_guard_concurrent_wave(
+    retry_state: &mut RetryLoopState,
+) -> Option<attempt_executor::CodexReasoningGuardNextRetryWave> {
+    retry_state
+        .codex_reasoning_guard_next_retry_wave
+        .take()
+        .filter(|wave| wave.concurrency > 1)
 }
 
 /// Dispatch one attempt outcome to the appropriate handler and return
@@ -112,6 +168,28 @@ where
                 retry_state,
                 indices,
                 resp,
+                timing,
+                loop_state,
+            )
+            .await
+        }
+        AttemptSendOutcome::BufferedNonStreamResponse {
+            status,
+            headers,
+            body,
+            provider_ttfb_ms,
+            timing,
+        } => {
+            response_router::route_buffered_non_stream_response(
+                ctx,
+                input,
+                prepared,
+                retry_state,
+                indices,
+                status,
+                headers,
+                body,
+                provider_ttfb_ms,
                 timing,
                 loop_state,
             )
@@ -180,4 +258,33 @@ fn build_error_contexts<'a, R: tauri::Runtime>(
         claude_model_mapping: prepared.claude_model_mapping.as_ref(),
     };
     (attempt_ctx, provider_ctx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn take_guard_concurrent_wave_only_uses_parallel_waves() {
+        let mut retry_state = RetryLoopState::new();
+        retry_state.codex_reasoning_guard_next_retry_wave =
+            Some(attempt_executor::CodexReasoningGuardNextRetryWave {
+                concurrency: 1,
+                interval_ms: 1_000,
+            });
+
+        assert!(take_guard_concurrent_wave(&mut retry_state).is_none());
+        assert!(retry_state.codex_reasoning_guard_next_retry_wave.is_none());
+
+        retry_state.codex_reasoning_guard_next_retry_wave =
+            Some(attempt_executor::CodexReasoningGuardNextRetryWave {
+                concurrency: 3,
+                interval_ms: 1_000,
+            });
+
+        let wave = take_guard_concurrent_wave(&mut retry_state).expect("parallel wave");
+        assert_eq!(wave.concurrency, 3);
+        assert_eq!(wave.interval_ms, 1_000);
+        assert!(retry_state.codex_reasoning_guard_next_retry_wave.is_none());
+    }
 }

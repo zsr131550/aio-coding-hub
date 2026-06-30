@@ -50,6 +50,8 @@ mod attempt_auth;
 mod attempt_executor;
 #[path = "attempt/attempt_record.rs"]
 mod attempt_record;
+#[path = "attempt/codex_reasoning_guard_concurrent.rs"]
+mod codex_reasoning_guard_concurrent;
 #[path = "attempt/retry_engine.rs"]
 mod retry_engine;
 #[path = "attempt/send.rs"]
@@ -103,6 +105,9 @@ use request_end_helpers::{
     RequestEndContextArgs, RequestEndDeps,
 };
 
+use crate::gateway::proxy::model_rewrite::{
+    replace_model_in_body_json, replace_model_in_path, replace_model_in_query,
+};
 use crate::gateway::proxy::{
     errors::{classify_upstream_status, error_response},
     failover::{retry_backoff_delay, select_provider_base_url_for_request, FailoverDecision},
@@ -136,7 +141,7 @@ use crate::gateway::thinking_signature_rectifier;
 use crate::gateway::util::{
     body_for_introspection, build_target_url, clear_all_auth_headers, ensure_cli_required_headers,
     inject_provider_auth, lossy_utf8_preview, now_unix_seconds, redacted_headers_for_debug,
-    strip_hop_headers, MAX_DEBUG_BODY_PREVIEW_BYTES,
+    strip_hop_headers, RequestedModelLocation, MAX_DEBUG_BODY_PREVIEW_BYTES,
 };
 
 use context::{
@@ -155,6 +160,85 @@ fn stream_flag_from_raw_body(body: &[u8]) -> bool {
         Err(_) => return false,
     };
     haystack.contains("\"stream\":true") || haystack.contains("\"stream\": true")
+}
+
+fn current_codex_reasoning_guard_model<'a, R: tauri::Runtime>(
+    input: &'a RequestContext<R>,
+    retry_state: &'a attempt_executor::RetryLoopState,
+) -> Option<&'a str> {
+    retry_state
+        .codex_reasoning_guard_current_model
+        .as_deref()
+        .or(input.requested_model.as_deref())
+}
+
+fn apply_codex_reasoning_guard_model_fallback<R: tauri::Runtime>(
+    input: &RequestContext<R>,
+    prepared: &mut provider_iterator::PreparedProvider,
+    retry_state: &mut attempt_executor::RetryLoopState,
+    next_model: &str,
+) -> bool {
+    let location = input
+        .requested_model_location
+        .unwrap_or(RequestedModelLocation::BodyJson);
+    let mut changed = false;
+
+    match location {
+        RequestedModelLocation::BodyJson => {
+            if let Ok(mut root) =
+                serde_json::from_slice::<serde_json::Value>(&prepared.upstream_body_bytes)
+            {
+                if replace_model_in_body_json(&mut root, next_model) {
+                    if let Ok(bytes) = serde_json::to_vec(&root) {
+                        prepared.upstream_body_bytes = Bytes::from(bytes);
+                        prepared.strip_request_content_encoding = true;
+                        prepared.request_body_mutated_before_attempt = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        RequestedModelLocation::Query => {
+            if let Some(query) = prepared.upstream_query.as_deref() {
+                let next_query = replace_model_in_query(query, next_model);
+                if next_query != query {
+                    prepared.upstream_query = Some(next_query);
+                    changed = true;
+                }
+            }
+        }
+        RequestedModelLocation::Path => {
+            if let Some(next_path) =
+                replace_model_in_path(&prepared.upstream_forwarded_path, next_model)
+            {
+                prepared.upstream_forwarded_path = next_path;
+                changed = true;
+            }
+        }
+    }
+
+    if !changed {
+        let Ok(mut root) =
+            serde_json::from_slice::<serde_json::Value>(&prepared.upstream_body_bytes)
+        else {
+            return false;
+        };
+        if !replace_model_in_body_json(&mut root, next_model) {
+            return false;
+        }
+        let Ok(bytes) = serde_json::to_vec(&root) else {
+            return false;
+        };
+        prepared.upstream_body_bytes = Bytes::from(bytes);
+        prepared.strip_request_content_encoding = true;
+        prepared.request_body_mutated_before_attempt = true;
+        changed = true;
+    }
+
+    retry_state.codex_reasoning_guard_current_model = Some(next_model.to_string());
+    retry_state.codex_reasoning_guard_hits = 0;
+    retry_state.allow_next_retry_beyond_max_attempts = true;
+    changed
 }
 
 /// Main failover loop: iterate providers, retry attempts, handle responses.
@@ -208,6 +292,13 @@ where
             .codex_reasoning_guard_delayed_retry_budget,
         codex_reasoning_guard_delayed_retry_ms: input.codex_reasoning_guard_delayed_retry_ms,
         codex_reasoning_guard_exhausted_action: input.codex_reasoning_guard_exhausted_action,
+        codex_reasoning_guard_retry_policy: input.codex_reasoning_guard_retry_policy,
+        codex_reasoning_guard_concurrent_max: input.codex_reasoning_guard_concurrent_max,
+        codex_reasoning_guard_concurrent_interval_ms: input
+            .codex_reasoning_guard_concurrent_interval_ms,
+        codex_reasoning_guard_concurrent_max_attempts: input
+            .codex_reasoning_guard_concurrent_max_attempts,
+        codex_reasoning_guard_model_fallbacks: &input.codex_reasoning_guard_model_fallbacks,
         enable_response_fixer: input.enable_response_fixer,
         response_fixer_stream_config: input.response_fixer_stream_config,
         response_fixer_non_stream_config: input.response_fixer_non_stream_config,

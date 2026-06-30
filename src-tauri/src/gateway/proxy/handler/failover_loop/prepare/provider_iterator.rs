@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 /// All mutable state accumulated by the provider preparation phase that the
 /// retry loop (and later finalization) needs.
+#[derive(Clone)]
 pub(super) struct PreparedProvider {
     pub(super) provider_id: i64,
     pub(super) provider_name_base: String,

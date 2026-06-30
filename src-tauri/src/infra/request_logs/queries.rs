@@ -1165,7 +1165,7 @@ INSERT INTO request_logs (
         seed_codex_request_log_with_special_settings(&conn, 4, "trace-codex-unknown", None, None);
         drop(conn);
 
-        let stats = codex_reasoning_guard_stats(&db, None).unwrap();
+        let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
         assert_eq!(stats.hit_request_count, 2);
         assert_eq!(stats.hit_attempt_count, 3);
         assert_eq!(stats.normal_request_count, 2);
@@ -1235,13 +1235,13 @@ INSERT INTO request_logs (
         );
         drop(conn);
 
-        let all_stats = codex_reasoning_guard_stats(&db, None).unwrap();
+        let all_stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
         assert_eq!(all_stats.hit_request_count, 2);
         assert_eq!(all_stats.hit_attempt_count, 3);
         assert_eq!(all_stats.normal_request_count, 2);
         assert_eq!(all_stats.total_request_count, 4);
 
-        let session_stats = codex_reasoning_guard_stats(&db, Some(2_000)).unwrap();
+        let session_stats = codex_reasoning_guard_stats(&db, Some(2_000), None).unwrap();
         assert_eq!(session_stats.hit_request_count, 1);
         assert_eq!(session_stats.hit_attempt_count, 2);
         assert_eq!(session_stats.normal_request_count, 1);
@@ -1262,12 +1262,12 @@ INSERT INTO request_logs (
         let db_path = dir.path().join("request-logs.db");
         let db = db::init_for_tests(&db_path).unwrap();
 
-        let zero_error = codex_reasoning_guard_stats(&db, Some(0))
+        let zero_error = codex_reasoning_guard_stats(&db, Some(0), None)
             .unwrap_err()
             .to_string();
         assert!(zero_error.contains("invalid codex reasoning guard stats cutoff"));
 
-        let negative_error = codex_reasoning_guard_stats(&db, Some(-1))
+        let negative_error = codex_reasoning_guard_stats(&db, Some(-1), None)
             .unwrap_err()
             .to_string();
         assert!(negative_error.contains("invalid codex reasoning guard stats cutoff"));

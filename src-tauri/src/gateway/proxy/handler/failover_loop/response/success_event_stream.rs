@@ -9,6 +9,7 @@ use crate::domain::provider_oauth_limits;
 use crate::gateway::proxy::gemini_oauth;
 use crate::gateway::proxy::protocol_bridge;
 use crate::gateway::proxy::provider_router;
+use crate::gateway::proxy::request_context::RequestContext;
 use crate::gateway::proxy::status_override;
 use crate::gateway::proxy::upstream_client_error_rules;
 use std::time::Duration;
@@ -225,6 +226,7 @@ fn buffered_provider_failure_reason(error_code: &str, quota_exhausted: bool) -> 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_success_event_stream<R>(
     ctx: CommonCtx<'_, R>,
+    input: &RequestContext<R>,
     provider_ctx: ProviderCtx<'_>,
     attempt_ctx: AttemptCtx<'_>,
     loop_state: LoopState<'_, R>,
@@ -787,7 +789,7 @@ where
             if let Some(matched) = if should_buffer_codex_reasoning_guard {
                 codex_reasoning_guard::detect_from_json(
                     common.cli_key.as_str(),
-                    common.requested_model.as_deref(),
+                    current_codex_reasoning_guard_model(input, retry_state),
                     &aggregated,
                     common.codex_reasoning_guard_compare_mode,
                     common.codex_reasoning_guard_reasoning_equals.as_slice(),
@@ -802,6 +804,10 @@ where
                     common.codex_reasoning_guard_delayed_retry_budget,
                     common.codex_reasoning_guard_delayed_retry_ms,
                     common.codex_reasoning_guard_exhausted_action,
+                    common.codex_reasoning_guard_retry_policy,
+                    common.codex_reasoning_guard_concurrent_max,
+                    common.codex_reasoning_guard_concurrent_interval_ms,
+                    common.codex_reasoning_guard_concurrent_max_attempts,
                 );
                 codex_reasoning_guard::push_special_setting(
                     &common.special_settings,
@@ -837,6 +843,9 @@ where
                     codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
                         "codex_reasoning_guard_switch_provider"
                     }
+                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
+                        "codex_reasoning_guard_switch_model"
+                    }
                 };
                 emit_attempt_event_and_log(
                     ctx,
@@ -857,6 +866,8 @@ where
                         retry_state.codex_reasoning_guard_hits =
                             retry_state.codex_reasoning_guard_hits.saturating_add(1);
                         retry_state.allow_next_retry_beyond_max_attempts = true;
+                        retry_state
+                            .remember_codex_reasoning_guard_retry_wave(budget_decision.retry_wave);
                         codex_reasoning_guard::apply_delay_if_needed(budget_decision).await;
                         return LoopControl::ContinueRetry;
                     }
@@ -918,6 +929,66 @@ where
                             codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
                         ));
                         return LoopControl::BreakRetry;
+                    }
+                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
+                        retry_state.codex_reasoning_guard_next_retry_wave = None;
+                        let current_model = current_codex_reasoning_guard_model(input, retry_state);
+                        if let Some(next_model) = codex_reasoning_guard::select_next_model_fallback(
+                            current_model,
+                            common.codex_reasoning_guard_model_fallbacks.as_slice(),
+                        ) {
+                            return LoopControl::SwitchModel(next_model.to_string());
+                        }
+
+                        *last_outcome = Some(AttemptOutcome::new(
+                            ErrorCategory::SystemError.as_str(),
+                            codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                        ));
+                        let duration_ms = started.elapsed().as_millis();
+                        emit_request_event_and_enqueue_request_log(
+                            RequestEndArgs::from_context(RequestEndContextArgs {
+                                deps: RequestEndDeps::new(
+                                    &common.state.app,
+                                    &common.state.db,
+                                    &common.state.log_tx,
+                                    &common.state.plugin_pipeline,
+                                ),
+                                trace_id: common.trace_id.as_str(),
+                                cli_key: common.cli_key.as_str(),
+                                method: common.method_hint.as_str(),
+                                path: common.forwarded_path.as_str(),
+                                observe: common.observe,
+                                query: common.query.as_deref(),
+                                excluded_from_stats: false,
+                                duration_ms,
+                                attempts: attempts.as_slice(),
+                                special_settings_json: response_fixer::special_settings_json(
+                                    &common.special_settings,
+                                ),
+                                session_id: common.session_id.clone(),
+                                requested_model: common.requested_model.clone(),
+                                created_at_ms: common.created_at_ms,
+                                created_at: common.created_at,
+                            })
+                            .with_completion(
+                                RequestCompletion::failure_with_visible_ttfb(
+                                    StatusCode::BAD_GATEWAY.as_u16(),
+                                    Some(ErrorCategory::SystemError.as_str()),
+                                    codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                    initial_first_byte_ms,
+                                    Some(duration_ms),
+                                ),
+                            ),
+                        )
+                        .await;
+                        abort_guard.disarm();
+                        return LoopControl::Return(error_response(
+                            StatusCode::BAD_GATEWAY,
+                            common.trace_id.clone(),
+                            codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                            "Codex reasoning guard model fallback exhausted".to_string(),
+                            attempts.clone(),
+                        ));
                     }
                 }
             }

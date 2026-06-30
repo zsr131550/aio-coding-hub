@@ -47,6 +47,11 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
     pub(super) codex_reasoning_guard_exhausted_action:
         crate::settings::CodexReasoningGuardExhaustedAction,
+    pub(super) codex_reasoning_guard_retry_policy: crate::settings::CodexReasoningGuardRetryPolicy,
+    pub(super) codex_reasoning_guard_concurrent_max: u32,
+    pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
+    pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
+    pub(super) codex_reasoning_guard_model_fallbacks: &'a [String],
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -85,6 +90,11 @@ pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
     pub(super) codex_reasoning_guard_exhausted_action:
         crate::settings::CodexReasoningGuardExhaustedAction,
+    pub(super) codex_reasoning_guard_retry_policy: crate::settings::CodexReasoningGuardRetryPolicy,
+    pub(super) codex_reasoning_guard_concurrent_max: u32,
+    pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
+    pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
+    pub(super) codex_reasoning_guard_model_fallbacks: &'a [String],
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -133,6 +143,13 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
                 .codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms: args.codex_reasoning_guard_delayed_retry_ms,
             codex_reasoning_guard_exhausted_action: args.codex_reasoning_guard_exhausted_action,
+            codex_reasoning_guard_retry_policy: args.codex_reasoning_guard_retry_policy,
+            codex_reasoning_guard_concurrent_max: args.codex_reasoning_guard_concurrent_max,
+            codex_reasoning_guard_concurrent_interval_ms: args
+                .codex_reasoning_guard_concurrent_interval_ms,
+            codex_reasoning_guard_concurrent_max_attempts: args
+                .codex_reasoning_guard_concurrent_max_attempts,
+            codex_reasoning_guard_model_fallbacks: args.codex_reasoning_guard_model_fallbacks,
             enable_response_fixer: args.enable_response_fixer,
             response_fixer_stream_config: args.response_fixer_stream_config,
             response_fixer_non_stream_config: args.response_fixer_non_stream_config,
@@ -178,6 +195,11 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
     pub(super) codex_reasoning_guard_exhausted_action:
         crate::settings::CodexReasoningGuardExhaustedAction,
+    pub(super) codex_reasoning_guard_retry_policy: crate::settings::CodexReasoningGuardRetryPolicy,
+    pub(super) codex_reasoning_guard_concurrent_max: u32,
+    pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
+    pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
+    pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -219,6 +241,15 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
                 .codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms: ctx.codex_reasoning_guard_delayed_retry_ms,
             codex_reasoning_guard_exhausted_action: ctx.codex_reasoning_guard_exhausted_action,
+            codex_reasoning_guard_retry_policy: ctx.codex_reasoning_guard_retry_policy,
+            codex_reasoning_guard_concurrent_max: ctx.codex_reasoning_guard_concurrent_max,
+            codex_reasoning_guard_concurrent_interval_ms: ctx
+                .codex_reasoning_guard_concurrent_interval_ms,
+            codex_reasoning_guard_concurrent_max_attempts: ctx
+                .codex_reasoning_guard_concurrent_max_attempts,
+            codex_reasoning_guard_model_fallbacks: ctx
+                .codex_reasoning_guard_model_fallbacks
+                .to_vec(),
             enable_response_fixer: ctx.enable_response_fixer,
             response_fixer_stream_config: ctx.response_fixer_stream_config,
             response_fixer_non_stream_config: ctx.response_fixer_non_stream_config,
@@ -403,6 +434,7 @@ impl<'a, R: tauri::Runtime> LoopState<'a, R> {
 
 pub(super) enum LoopControl {
     ContinueRetry,
+    SwitchModel(String),
     BreakRetry,
     Return(Response),
 }

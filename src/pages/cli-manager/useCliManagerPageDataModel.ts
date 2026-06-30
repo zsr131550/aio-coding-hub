@@ -478,6 +478,11 @@ export function useCliManagerPageDataModel() {
         | "codex_reasoning_guard_delayed_retry_budget"
         | "codex_reasoning_guard_delayed_retry_ms"
         | "codex_reasoning_guard_exhausted_action"
+        | "codex_reasoning_guard_retry_policy"
+        | "codex_reasoning_guard_concurrent_max"
+        | "codex_reasoning_guard_concurrent_interval_ms"
+        | "codex_reasoning_guard_concurrent_max_attempts"
+        | "codex_reasoning_guard_model_fallbacks"
       >
     >
   ) {

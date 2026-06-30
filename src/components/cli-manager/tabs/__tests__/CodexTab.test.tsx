@@ -117,6 +117,14 @@ function createReasoningGuardStats(overrides: Partial<any> = {}) {
 }
 
 describe("components/cli-manager/tabs/CodexTab", () => {
+  const defaultCodexReasoningGuardRetrySettings = {
+    codex_reasoning_guard_retry_policy: "single",
+    codex_reasoning_guard_concurrent_max: 5,
+    codex_reasoning_guard_concurrent_interval_ms: 1000,
+    codex_reasoning_guard_concurrent_max_attempts: 10,
+    codex_reasoning_guard_model_fallbacks: [],
+  } as const;
+
   const mockReasoningGuardStatsQuery = vi.mocked(useCliManagerCodexReasoningGuardStatsQuery);
 
   beforeEach(() => {
@@ -499,6 +507,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       codex_reasoning_guard_delayed_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_ms: 1000,
       codex_reasoning_guard_exhausted_action: "return_error",
+      ...defaultCodexReasoningGuardRetrySettings,
     });
   });
 
@@ -553,6 +562,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       codex_reasoning_guard_delayed_retry_budget: 3,
       codex_reasoning_guard_delayed_retry_ms: 1500,
       codex_reasoning_guard_exhausted_action: "switch_provider",
+      ...defaultCodexReasoningGuardRetrySettings,
     });
   });
 
@@ -592,6 +602,119 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     expect(persistCodexReasoningGuardSettings).not.toHaveBeenCalled();
     expect(screen.getByText("立即重试预算必须在 0 到 100 之间。")).toBeInTheDocument();
+  });
+
+  it("saves Codex reasoning guard concurrent retry settings", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("重试策略"), {
+      target: { value: "concurrent" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("最大并发数"), {
+      target: { value: "3" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("并发启动间隔 ms"), {
+      target: { value: "1200" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("最大尝试次数"), {
+      target: { value: "7" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
+      codex_reasoning_guard_compare_mode: "equals",
+      codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
+      codex_reasoning_guard_model_rules: [],
+      codex_reasoning_guard_immediate_retry_budget: 5,
+      codex_reasoning_guard_delayed_retry_budget: 5,
+      codex_reasoning_guard_delayed_retry_ms: 1000,
+      codex_reasoning_guard_exhausted_action: "return_error",
+      codex_reasoning_guard_retry_policy: "concurrent",
+      codex_reasoning_guard_concurrent_max: 3,
+      codex_reasoning_guard_concurrent_interval_ms: 1200,
+      codex_reasoning_guard_concurrent_max_attempts: 7,
+      codex_reasoning_guard_model_fallbacks: [],
+    });
+  });
+
+  it("saves Codex reasoning guard model fallback priority when switching models", async () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("预算耗尽后"), {
+      target: { value: "switch_model" },
+    });
+    const fallbackTextarea = await within(dialog).findByLabelText("模型回退优先级");
+    fireEvent.change(fallbackTextarea, {
+      target: { value: "gpt-5.4\ngpt-5.3-codex\n gpt-5.4 " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
+      codex_reasoning_guard_compare_mode: "equals",
+      codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
+      codex_reasoning_guard_model_rules: [],
+      codex_reasoning_guard_immediate_retry_budget: 5,
+      codex_reasoning_guard_delayed_retry_budget: 5,
+      codex_reasoning_guard_delayed_retry_ms: 1000,
+      codex_reasoning_guard_exhausted_action: "switch_model",
+      codex_reasoning_guard_retry_policy: "single",
+      codex_reasoning_guard_concurrent_max: 5,
+      codex_reasoning_guard_concurrent_interval_ms: 1000,
+      codex_reasoning_guard_concurrent_max_attempts: 10,
+      codex_reasoning_guard_model_fallbacks: ["gpt-5.4", "gpt-5.3-codex"],
+    });
   });
 
   it("saves Codex reasoning guard compare mode and model rules", () => {
@@ -641,6 +764,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       codex_reasoning_guard_delayed_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_ms: 1000,
       codex_reasoning_guard_exhausted_action: "return_error",
+      ...defaultCodexReasoningGuardRetrySettings,
       codex_reasoning_guard_model_rules: [
         {
           requested_model: "gpt-5-mini-codex",
@@ -705,6 +829,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       codex_reasoning_guard_delayed_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_ms: 1000,
       codex_reasoning_guard_exhausted_action: "return_error",
+      ...defaultCodexReasoningGuardRetrySettings,
       codex_reasoning_guard_model_rules: [
         {
           requested_model: "gpt-5-mini-codex",
