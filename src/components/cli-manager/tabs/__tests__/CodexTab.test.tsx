@@ -254,6 +254,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       .fn()
       .mockResolvedValueOnce(createAppSettings({ codex_provider_test_model: "gpt-5.4" }))
       .mockResolvedValueOnce(createAppSettings({ codex_provider_test_model: "gpt-5.4-mini" }));
+    const syncCodexProvider = vi.fn().mockResolvedValue(undefined);
 
     render(
       <CliManagerCodexTab
@@ -276,6 +277,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
         persistCodexConfig={vi.fn()}
         persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
         persistCommonSettings={persistCommonSettings}
+        syncCodexProvider={syncCodexProvider}
       />
     );
 
@@ -300,6 +302,33 @@ describe("components/cli-manager/tabs/CodexTab", () => {
         codex_provider_test_model: "gpt-5.4-mini",
       })
     );
+
+    fireEvent.click(screen.getByRole("button", { name: "手动 Provider Sync" }));
+    expect(syncCodexProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables provider sync while codex saving or syncing", () => {
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={true}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexProviderSyncing={true}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(false)}
+        syncCodexProvider={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "同步中…" })).toBeDisabled();
   });
 
   it("persists Codex reasoning guard toggle and renders hit stats", () => {

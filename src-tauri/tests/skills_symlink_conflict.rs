@@ -33,7 +33,10 @@ fn skills_enable_and_uninstall_do_not_conflict_with_unmanaged_symlink_dir() {
     .expect("write external skill");
 
     let linked_skill_dir = fix.cli_skills_root.join(&fix.skill_key);
-    symlink_dir(&external_link_src, &linked_skill_dir).expect("create unmanaged symlink dir");
+    if let Err(err) = symlink_dir(&external_link_src, &linked_skill_dir) {
+        eprintln!("skipping unmanaged symlink conflict test: symlink creation unavailable: {err}");
+        return;
+    }
     assert!(
         std::fs::symlink_metadata(&linked_skill_dir)
             .expect("symlink metadata")

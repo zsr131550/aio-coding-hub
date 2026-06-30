@@ -230,6 +230,7 @@ export type CliManagerCodexTabProps = {
   codexConfigSaving: boolean;
   codexConfigTomlLoading: boolean;
   codexConfigTomlSaving: boolean;
+  codexProviderSyncing?: boolean;
   codexInfo: SimpleCliInfo | null;
   codexConfig: CodexConfigState | null;
   codexConfigToml: CodexConfigTomlState | null;
@@ -242,6 +243,7 @@ export type CliManagerCodexTabProps = {
   openCodexConfigDir: () => Promise<void> | void;
   persistCodexConfig: (patch: CodexConfigPatch) => Promise<void> | void;
   persistCodexConfigToml: (toml: string) => Promise<boolean> | boolean;
+  syncCodexProvider?: () => Promise<void> | void;
   persistCommonSettings?: (
     patch: Partial<AppSettings>
   ) => Promise<AppSettings | null> | AppSettings | null;
@@ -310,6 +312,7 @@ export function CliManagerCodexTab({
   codexConfigSaving,
   codexConfigTomlLoading,
   codexConfigTomlSaving,
+  codexProviderSyncing = false,
   codexInfo,
   codexConfig,
   codexConfigToml,
@@ -322,6 +325,7 @@ export function CliManagerCodexTab({
   openCodexConfigDir,
   persistCodexConfig,
   persistCodexConfigToml,
+  syncCodexProvider,
   persistCommonSettings,
   persistCodexReasoningGuardSettings,
   persistCodexHomeSettings,
@@ -500,6 +504,8 @@ export function CliManagerCodexTab({
   const saving = codexConfigSaving;
   const loading = codexLoading || codexConfigLoading;
   const tomlBusy = codexConfigTomlLoading || codexConfigTomlSaving;
+  const providerSyncControlsDisabled =
+    codexConfigSaving || codexConfigTomlSaving || codexProviderSyncing || !syncCodexProvider;
   const configLocationBusy = saving || codexHomeSettingsSaving;
   const configLocationControlsDisabled = configLocationBusy || selectingCodexHomeDir;
   const commonSettingsControlsDisabled = codexHomeSettingsSaving || !appSettings;
@@ -2006,6 +2012,23 @@ export function CliManagerCodexTab({
                     className="font-mono w-[280px] max-w-full"
                     disabled={providerTestModelControlsDisabled}
                   />
+                </SettingItem>
+
+                <SettingItem
+                  label="Provider Sync"
+                  subtitle="手动同步 Codex 历史到当前受管理的 provider。保存配置或同步进行中时不可重复触发。"
+                >
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void syncCodexProvider?.()}
+                    disabled={providerSyncControlsDisabled}
+                  >
+                    <RefreshCw
+                      className={cn("h-4 w-4", codexProviderSyncing ? "animate-spin" : "")}
+                    />
+                    {codexProviderSyncing ? "同步中…" : "手动 Provider Sync"}
+                  </Button>
                 </SettingItem>
 
                 {showsGpt54LinkedSettings ? (

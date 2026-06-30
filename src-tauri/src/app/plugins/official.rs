@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn official_catalog_uses_packaged_privacy_filter_resource_root() {
         let fixture = official_plugin("official.privacy-filter").expect("official plugin fixture");
-        let root = fixture.root_dir.to_string_lossy();
+        let root = fixture.root_dir.to_string_lossy().replace('\\', "/");
         assert!(
             root.contains("resources/plugins/official/privacy-filter"),
             "official plugin root must be a packaged resource path, got {root}"

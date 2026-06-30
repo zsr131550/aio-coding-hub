@@ -492,6 +492,7 @@ fn invalid_retry_policy_override_json_disables_override_instead_of_inheriting() 
 
     let saved =
         upsert(&db, default_provider_params("invalid-retry-override")).expect("save provider");
+    default_route_set_order(&db, "claude", vec![saved.id]).expect("set default route");
     {
         let conn = db.open_connection().expect("open db");
         conn.execute(
@@ -507,6 +508,7 @@ fn invalid_retry_policy_override_json_disables_override_instead_of_inheriting() 
         .upstream_retry_policy_override
         .expect("invalid override should remain explicit");
     assert!(!override_policy.enabled);
+    drop(conn);
 
     let gateway_provider =
         list_enabled_for_gateway_using_active_mode(&db, "claude").expect("list gateway providers");

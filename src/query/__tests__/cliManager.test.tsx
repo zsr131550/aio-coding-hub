@@ -17,6 +17,7 @@ import {
   cliManagerCodexConfigTomlGet,
   cliManagerCodexConfigTomlSet,
   cliManagerCodexInfoGet,
+  cliManagerCodexProviderSync,
   cliManagerGeminiInfoGet,
 } from "../../services/cli/cliManager";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
@@ -34,6 +35,7 @@ import {
   useCliManagerCodexConfigTomlQuery,
   useCliManagerCodexConfigTomlSetMutation,
   useCliManagerCodexInfoQuery,
+  useCliManagerCodexProviderSyncMutation,
   useCliManagerGeminiInfoQuery,
 } from "../cliManager";
 
@@ -53,6 +55,7 @@ vi.mock("../../services/cli/cliManager", async () => {
     cliManagerCodexConfigSet: vi.fn(),
     cliManagerCodexConfigTomlGet: vi.fn(),
     cliManagerCodexConfigTomlSet: vi.fn(),
+    cliManagerCodexProviderSync: vi.fn(),
     cliManagerGeminiInfoGet: vi.fn(),
   };
 });
@@ -183,6 +186,18 @@ describe("query/cliManager", () => {
     vi.mocked(cliManagerCodexInfoGet).mockResolvedValue(makeSimpleCliInfo());
     vi.mocked(cliManagerCodexConfigGet).mockResolvedValue(makeCodexConfigState());
     vi.mocked(cliManagerCodexConfigTomlGet).mockResolvedValue(makeCodexConfigTomlState());
+    vi.mocked(cliManagerCodexProviderSync).mockResolvedValue({
+      status: "ok",
+      target_provider: "aio",
+      trigger: "manual",
+      backup_dir: null,
+      changed_session_files: [],
+      sqlite_provider_rows_updated: 0,
+      sqlite_user_event_rows_updated: 0,
+      sqlite_cwd_rows_updated: 0,
+      updated_workspace_roots: [],
+      warning: null,
+    });
     vi.mocked(cliManagerGeminiInfoGet).mockResolvedValue(makeSimpleCliInfo());
 
     const client = createTestQueryClient();
@@ -194,6 +209,7 @@ describe("query/cliManager", () => {
     renderHook(() => useCliManagerCodexInfoQuery(), { wrapper });
     renderHook(() => useCliManagerCodexConfigQuery(), { wrapper });
     renderHook(() => useCliManagerCodexConfigTomlQuery(), { wrapper });
+    renderHook(() => useCliManagerCodexProviderSyncMutation(), { wrapper });
     renderHook(() => useCliManagerGeminiInfoQuery(), { wrapper });
 
     await waitFor(() => {
@@ -203,6 +219,7 @@ describe("query/cliManager", () => {
       expect(cliManagerCodexInfoGet).toHaveBeenCalled();
       expect(cliManagerCodexConfigGet).toHaveBeenCalled();
       expect(cliManagerCodexConfigTomlGet).toHaveBeenCalled();
+      expect(cliManagerCodexProviderSync).not.toHaveBeenCalled();
       expect(cliManagerGeminiInfoGet).toHaveBeenCalled();
     });
   });
@@ -234,6 +251,7 @@ describe("query/cliManager", () => {
     renderHook(() => useCliManagerCodexInfoQuery({ enabled: false }), { wrapper });
     renderHook(() => useCliManagerCodexConfigQuery({ enabled: false }), { wrapper });
     renderHook(() => useCliManagerCodexConfigTomlQuery({ enabled: false }), { wrapper });
+    renderHook(() => useCliManagerCodexProviderSyncMutation(), { wrapper });
     renderHook(() => useCliManagerGeminiInfoQuery({ enabled: false }), { wrapper });
 
     await Promise.resolve();
@@ -244,6 +262,7 @@ describe("query/cliManager", () => {
     expect(cliManagerCodexInfoGet).not.toHaveBeenCalled();
     expect(cliManagerCodexConfigGet).not.toHaveBeenCalled();
     expect(cliManagerCodexConfigTomlGet).not.toHaveBeenCalled();
+    expect(cliManagerCodexProviderSync).not.toHaveBeenCalled();
     expect(cliManagerGeminiInfoGet).not.toHaveBeenCalled();
   });
 
@@ -332,6 +351,37 @@ describe("query/cliManager", () => {
 
     expect(cliManagerCodexConfigTomlSet).toHaveBeenCalledWith('model = "gpt-5"');
     expect(client.getQueryData(cliManagerKeys.codexConfig())).toEqual(updated);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
+  });
+
+  it("useCliManagerCodexProviderSyncMutation invalidates codex config and toml", async () => {
+    setTauriRuntime();
+
+    const synced = {
+      status: "ok" as const,
+      target_provider: "aio",
+      trigger: "manual",
+      backup_dir: null,
+      changed_session_files: [],
+      sqlite_provider_rows_updated: 1,
+      sqlite_user_event_rows_updated: 0,
+      sqlite_cwd_rows_updated: 0,
+      updated_workspace_roots: [],
+      warning: null,
+    };
+    vi.mocked(cliManagerCodexProviderSync).mockResolvedValue(synced);
+
+    const client = createTestQueryClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useCliManagerCodexProviderSyncMutation(), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync();
+    });
+
+    expect(cliManagerCodexProviderSync).toHaveBeenCalledWith();
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
   });

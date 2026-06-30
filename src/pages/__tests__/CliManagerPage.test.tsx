@@ -26,6 +26,7 @@ import {
   useCliManagerCodexConfigTomlQuery,
   useCliManagerCodexConfigTomlSetMutation,
   useCliManagerCodexInfoQuery,
+  useCliManagerCodexProviderSyncMutation,
   useCliManagerGeminiConfigQuery,
   useCliManagerGeminiConfigSetMutation,
   useCliManagerGeminiInfoQuery,
@@ -103,6 +104,7 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
     persistCodexConfig,
     persistCodexHomeSettings,
     pickCodexHomeDirectory,
+    syncCodexProvider,
   }: any) => (
     <div>
       <div>codex-tab</div>
@@ -117,6 +119,9 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
       </button>
       <button type="button" onClick={() => persistCodexConfig({ foo: "bar" })}>
         save-codex
+      </button>
+      <button type="button" onClick={() => syncCodexProvider?.()}>
+        手动 Provider Sync
       </button>
       <button
         type="button"
@@ -168,6 +173,7 @@ vi.mock("../../query/cliManager", async () => {
     useCliManagerCodexConfigSetMutation: vi.fn(),
     useCliManagerCodexConfigTomlQuery: vi.fn(),
     useCliManagerCodexConfigTomlSetMutation: vi.fn(),
+    useCliManagerCodexProviderSyncMutation: vi.fn(),
     useCliManagerGeminiConfigQuery: vi.fn(),
     useCliManagerGeminiConfigSetMutation: vi.fn(),
     useCliManagerGeminiInfoQuery: vi.fn(),
@@ -240,6 +246,11 @@ beforeEach(() => {
     isFetching: false,
     refetch: vi.fn(),
   } as any);
+
+  vi.mocked(useCliManagerCodexProviderSyncMutation).mockReturnValue({
+    isPending: false,
+    mutateAsync: vi.fn(),
+  } as any);
 });
 
 describe("pages/CliManagerPage", () => {
@@ -311,6 +322,10 @@ describe("pages/CliManagerPage", () => {
       refetch: vi.fn(),
     } as any);
     vi.mocked(useCliManagerCodexConfigTomlSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerCodexProviderSyncMutation).mockReturnValue({
       isPending: false,
       mutateAsync: vi.fn(),
     } as any);
@@ -415,6 +430,10 @@ describe("pages/CliManagerPage", () => {
       isPending: false,
       mutateAsync: vi.fn(),
     } as any);
+    vi.mocked(useCliManagerCodexProviderSyncMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
     vi.mocked(useCliManagerGeminiInfoQuery).mockReturnValue({
       data: null,
       isFetching: false,
@@ -514,6 +533,27 @@ describe("pages/CliManagerPage", () => {
       isFetching: false,
       refetch: codexConfigTomlRefetch,
     } as any);
+    const codexProviderSyncMutation = {
+      isPending: false,
+      mutateAsync: vi.fn(),
+    };
+    codexProviderSyncMutation.mutateAsync
+      .mockResolvedValueOnce({
+        status: "ok",
+        target_provider: "aio",
+        trigger: "manual",
+        backup_dir: null,
+        changed_session_files: [],
+        sqlite_provider_rows_updated: 1,
+        sqlite_user_event_rows_updated: 0,
+        sqlite_cwd_rows_updated: 0,
+        updated_workspace_roots: [],
+        warning: null,
+      })
+      .mockRejectedValueOnce(new Error("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: running"));
+    vi.mocked(useCliManagerCodexProviderSyncMutation).mockReturnValue(
+      codexProviderSyncMutation as any
+    );
     vi.mocked(useCliManagerCodexConfigTomlSetMutation).mockReturnValue({
       isPending: false,
       mutateAsync: vi.fn(),
@@ -587,6 +627,13 @@ describe("pages/CliManagerPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "save-codex" }));
     await waitFor(() =>
       expect(toast).toHaveBeenCalledWith("更新 Codex 配置失败（code CODEX_NO_PERM）：denied")
+    );
+    fireEvent.click(screen.getByRole("button", { name: "手动 Provider Sync" }));
+    await waitFor(() => expect(codexProviderSyncMutation.mutateAsync).toHaveBeenCalledWith());
+    expect(toast).toHaveBeenCalledWith("已同步 Codex Provider 到 aio");
+    fireEvent.click(screen.getByRole("button", { name: "手动 Provider Sync" }));
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("Codex App 正在运行，请先关闭 Codex App 后重试")
     );
 
     // Gemini tab refresh

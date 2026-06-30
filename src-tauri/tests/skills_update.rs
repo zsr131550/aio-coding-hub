@@ -36,6 +36,11 @@ fn commit_repo(repo: &Path, message: &str) {
     run_git(repo, &["commit", "-m", message]);
 }
 
+fn assert_file_text_normalized(path: &Path, expected: &str) {
+    let actual = std::fs::read_to_string(path).expect("read file");
+    assert_eq!(actual.replace("\r\n", "\n"), expected);
+}
+
 fn create_skill_repo(root: &Path) {
     std::fs::create_dir_all(root).expect("create repo");
     run_git(root, &["init"]);
@@ -159,10 +164,7 @@ WHERE skill_id = ?1 AND workspace_id = ?2
         .join("skills")
         .join("context7-v1")
         .join("guide.md");
-    assert_eq!(
-        std::fs::read_to_string(&guide_path).expect("read updated guide"),
-        "guide v2\n"
-    );
+    assert_file_text_normalized(&guide_path, "guide v2\n");
 }
 
 #[test]
@@ -268,10 +270,7 @@ VALUES (?1, ?2, 1, 1)
         .join("skills")
         .join(&skill_key)
         .join("guide.md");
-    assert_eq!(
-        std::fs::read_to_string(&guide_path).expect("read restored guide"),
-        "guide v1\n"
-    );
+    assert_file_text_normalized(&guide_path, "guide v1\n");
 
     let (name, content_hash): (String, Option<String>) = conn
         .query_row(

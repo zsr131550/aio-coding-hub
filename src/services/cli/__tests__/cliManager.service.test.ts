@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { commands } from "../../../generated/bindings";
 import { logToConsole } from "../../consoleLog";
+import { invokeTauriOrNull } from "../../tauriInvoke";
 import {
   type ClaudeEnvState,
   type ClaudeHooksState,
@@ -20,6 +21,7 @@ import {
   cliManagerCodexConfigTomlSet,
   cliManagerCodexConfigTomlValidate,
   cliManagerCodexInfoGet,
+  cliManagerCodexProviderSync,
 } from "../cliManager";
 
 vi.mock("../../../generated/bindings", async () => {
@@ -50,6 +52,14 @@ vi.mock("../../consoleLog", async () => {
   return {
     ...actual,
     logToConsole: vi.fn(),
+  };
+});
+
+vi.mock("../../tauriInvoke", async () => {
+  const actual = await vi.importActual<typeof import("../../tauriInvoke")>("../../tauriInvoke");
+  return {
+    ...actual,
+    invokeTauriOrNull: vi.fn(),
   };
 });
 
@@ -244,6 +254,18 @@ describe("services/cli/cliManager", () => {
       status: "ok",
       data: makeClaudeSettingsState(),
     });
+    vi.mocked(invokeTauriOrNull).mockResolvedValueOnce({
+      status: "ok",
+      target_provider: "aio",
+      trigger: "manual",
+      backup_dir: null,
+      changed_session_files: [],
+      sqlite_provider_rows_updated: 0,
+      sqlite_user_event_rows_updated: 0,
+      sqlite_cwd_rows_updated: 0,
+      updated_workspace_roots: [],
+      warning: null,
+    });
 
     await cliManagerCodexInfoGet();
     expect(commands.cliManagerCodexInfoGet).toHaveBeenCalledWith();
@@ -287,5 +309,10 @@ describe("services/cli/cliManager", () => {
     expect(commands.cliManagerClaudeSettingsSet).toHaveBeenCalledWith(
       expect.objectContaining({ model: "claude-3" })
     );
+
+    await cliManagerCodexProviderSync();
+    expect(invokeTauriOrNull).toHaveBeenCalledWith("cli_manager_codex_provider_sync", undefined, {
+      timeoutMs: 0,
+    });
   });
 });

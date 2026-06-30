@@ -26,7 +26,10 @@ fn codex_config_toml_raw_set_refuses_invalid_input_without_writing() {
 
     let _ = aio_coding_hub_lib::test_support::codex_config_toml_raw_set(
         &handle,
-        "approval_policy = \"nope\"\n".to_string(),
+        r#"model_provider = "aio"
+approval_policy = "nope"
+"#
+        .to_string(),
     )
     .expect_err("invalid enum should fail");
 
@@ -89,7 +92,13 @@ fn codex_config_toml_raw_set_uses_settings_override_directory() {
 
     aio_coding_hub_lib::test_support::codex_config_toml_raw_set(
         &handle,
-        "approval_policy = \"on-request\"\n".to_string(),
+        r#"model_provider = "aio"
+approval_policy = "on-request"
+
+[model_providers.aio]
+name = "aio"
+"#
+        .to_string(),
     )
     .expect("write raw toml");
 
@@ -100,5 +109,6 @@ fn codex_config_toml_raw_set_uses_settings_override_directory() {
         app.home_dir().join("override-codex").join("config.toml")
     );
     let got = std::fs::read_to_string(&path).expect("read override config");
-    assert_eq!(got, "approval_policy = \"on-request\"\n");
+    assert!(got.contains("model_provider = \"aio\""), "{got}");
+    assert!(got.contains("approval_policy = \"on-request\""), "{got}");
 }

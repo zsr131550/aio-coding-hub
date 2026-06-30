@@ -6,8 +6,8 @@ use serde_json::{json, Value};
 use std::io::ErrorKind;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessRuntimeConfig {
@@ -38,6 +38,7 @@ pub(crate) struct JsonRpcProcessRuntime {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     stdout: Option<BufReader<ChildStdout>>,
+    stderr: Option<ChildStderr>,
     next_id: u64,
     last_used: Instant,
 }
@@ -55,6 +56,12 @@ impl JsonRpcProcessRuntime {
         command.env_clear();
         if let Some(path) = std::env::var_os("PATH") {
             command.env("PATH", path);
+        }
+        #[cfg(windows)]
+        for key in ["SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
         }
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
@@ -82,11 +89,13 @@ impl JsonRpcProcessRuntime {
                 "process plugin stdout was unavailable",
             )
         })?;
+        let stderr = child.stderr.take();
         let mut runtime = Self {
             config,
             child: Some(child),
             stdin: Some(stdin),
             stdout: Some(BufReader::new(stdout)),
+            stderr,
             next_id: 1,
             last_used: Instant::now(),
         };
@@ -229,10 +238,14 @@ impl JsonRpcProcessRuntime {
             )
         })?;
         if bytes == 0 {
-            return Err(AppError::new(
-                "PLUGIN_PROCESS_CRASHED",
-                "process plugin exited before sending a response",
-            ));
+            let stderr = self.take_stderr_text().await;
+            let message = match stderr {
+                Some(stderr) if !stderr.is_empty() => {
+                    format!("process plugin exited before sending a response; stderr: {stderr}")
+                }
+                _ => "process plugin exited before sending a response".to_string(),
+            };
+            return Err(AppError::new("PLUGIN_PROCESS_CRASHED", message));
         }
         if bytes > max_line_bytes || line.len() > max_line_bytes {
             return Err(AppError::new(
@@ -251,6 +264,7 @@ impl JsonRpcProcessRuntime {
     async fn kill_child(&mut self) {
         self.stdin.take();
         self.stdout.take();
+        self.stderr.take();
         if let Some(mut child) = self.child.take() {
             match child.try_wait() {
                 Ok(Some(_)) => {}
@@ -264,6 +278,23 @@ impl JsonRpcProcessRuntime {
                 }
             }
         }
+    }
+
+    async fn take_stderr_text(&mut self) -> Option<String> {
+        let mut stderr = self.stderr.take()?;
+        let mut bytes = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(100), stderr.read_to_end(&mut bytes))
+            .await
+            .ok()?;
+        if bytes.is_empty() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&bytes)
+            .trim()
+            .chars()
+            .take(2048)
+            .collect::<String>();
+        Some(text)
     }
 }
 

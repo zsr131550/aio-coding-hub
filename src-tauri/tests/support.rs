@@ -68,6 +68,7 @@ impl Drop for EnvRestore {
 pub struct TestApp {
     _env: EnvRestore,
     _lock: MutexGuard<'static, ()>,
+    _codex_running_override: CodexRunningOverrideGuard,
     #[allow(dead_code)]
     home: TempDir,
     #[allow(dead_code)]
@@ -102,12 +103,14 @@ impl TestApp {
 
         // Flush the global settings cache so a fresh read hits the new temp dir.
         aio_coding_hub_lib::test_support::clear_settings_cache();
+        let codex_running_override = CodexRunningOverrideGuard::new(Some(false));
 
         let app = tauri::test::mock_app();
 
         Self {
             _lock: lock,
             _env: env,
+            _codex_running_override: codex_running_override,
             home,
             app_dotdir_name,
             app,
@@ -132,6 +135,23 @@ impl TestApp {
 impl Default for TestApp {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+struct CodexRunningOverrideGuard;
+
+impl CodexRunningOverrideGuard {
+    fn new(running: Option<bool>) -> Self {
+        aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(
+            running,
+        );
+        Self
+    }
+}
+
+impl Drop for CodexRunningOverrideGuard {
+    fn drop(&mut self) {
+        aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
     }
 }
 

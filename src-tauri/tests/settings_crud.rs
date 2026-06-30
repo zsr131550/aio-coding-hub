@@ -67,7 +67,10 @@ fn settings_migrates_legacy_update_releases_url_to_fork() {
     let migrated =
         aio_coding_hub_lib::test_support::settings_get_json(&handle).expect("read migrated");
 
-    assert_eq!(migrated["schema_version"], serde_json::json!(36));
+    assert!(
+        json_i64(&migrated, "schema_version") >= 36,
+        "legacy settings should migrate at least through the release URL fork migration"
+    );
     assert_eq!(
         migrated["update_releases_url"],
         serde_json::json!("https://github.com/FingerCaster/aio-coding-hub/releases")

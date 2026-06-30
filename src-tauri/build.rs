@@ -29,6 +29,15 @@ fn embed_windows_common_controls_manifest() {
     let manifest_path = out_dir.join("windows-test-manifest.xml");
     std::fs::write(&manifest_path, manifest).expect("write windows test manifest");
 
+    let common_controls_dependency = "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'";
+
+    // `rustc-link-arg-tests` does not reach Cargo's library unit-test harness on
+    // current Windows/MSVC toolchains, so also emit a general manifest dependency.
+    // Tauri app binaries already link their own manifest resource, so suppress
+    // generated bin manifests to avoid duplicate MANIFEST resources.
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg={common_controls_dependency}");
+    println!("cargo:rustc-link-arg-bins=/MANIFEST:NO");
     println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
     println!(
         "cargo:rustc-link-arg-tests=/MANIFESTINPUT:{}",
