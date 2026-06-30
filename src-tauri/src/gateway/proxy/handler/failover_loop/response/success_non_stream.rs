@@ -827,6 +827,147 @@ where
         response_headers.remove(header::CONTENT_LENGTH);
     }
 
+    if (200..300).contains(&status.as_u16()) && is_fake_200_non_stream_body(body_bytes.as_ref()) {
+        let error_code = GatewayErrorCode::Fake200.as_str();
+        let duration_ms = started.elapsed().as_millis();
+        let quota_exhausted =
+            upstream_client_error_rules::match_quota_exhausted(body_bytes.as_ref());
+        let oauth_quota_exhausted = quota_exhausted && provider_ctx_owned.auth_mode == "oauth";
+        let decision = if quota_exhausted {
+            FailoverDecision::SwitchProvider
+        } else {
+            FailoverDecision::Abort
+        };
+        let outcome = format!("body_error: code={error_code}");
+
+        attempts.push(FailoverAttempt {
+            provider_id,
+            provider_name: provider_ctx_owned.provider_name_base.clone(),
+            base_url: provider_ctx_owned.provider_base_url_base.clone(),
+            outcome: outcome.clone(),
+            status: Some(status.as_u16()),
+            provider_index: Some(provider_index),
+            retry_index: Some(retry_index),
+            session_reuse,
+            error_category: Some(ErrorCategory::ProviderError.as_str()),
+            error_code: Some(error_code),
+            decision: Some(decision.as_str()),
+            reason: Some(if quota_exhausted {
+                "successful HTTP status with quota exhausted error body".to_string()
+            } else {
+                "successful HTTP status with error body".to_string()
+            }),
+            selection_method,
+            reason_code: Some(ErrorCategory::ProviderError.reason_code()),
+            attempt_started_ms: Some(attempt_started_ms),
+            attempt_duration_ms: Some(duration_ms),
+            circuit_state_before: Some(circuit_before.state.as_str()),
+            circuit_state_after: None,
+            circuit_failure_count: Some(circuit_before.failure_count),
+            circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        });
+
+        emit_attempt_event_and_log_with_circuit_before(
+            ctx,
+            provider_ctx,
+            attempt_ctx,
+            outcome,
+            Some(status.as_u16()),
+        )
+        .await;
+
+        let now_unix = now_unix_seconds() as i64;
+        if oauth_quota_exhausted {
+            if let Err(err) =
+                provider_oauth_limits::save_exhausted_snapshot(&state.db, provider_id, None)
+            {
+                tracing::warn!(
+                    provider_id,
+                    "failed to save OAuth exhausted quota snapshot: {err}"
+                );
+            }
+        } else {
+            let change = provider_router::record_failure_and_emit_transition(
+                provider_router::RecordCircuitArgs::from_state(
+                    state,
+                    common.trace_id.as_str(),
+                    common.cli_key.as_str(),
+                    provider_id,
+                    provider_ctx_owned.provider_name_base.as_str(),
+                    provider_ctx_owned.provider_base_url_base.as_str(),
+                    now_unix,
+                ),
+            );
+            if let Some(last) = attempts.last_mut() {
+                last.circuit_state_after = Some(change.after.state.as_str());
+                last.circuit_failure_count = Some(change.after.failure_count);
+                last.circuit_failure_threshold = Some(change.after.failure_threshold);
+            }
+            *circuit_snapshot = change.after.clone();
+        }
+
+        if quota_exhausted {
+            if !oauth_quota_exhausted && common.provider_cooldown_secs > 0 {
+                let snap = provider_router::trigger_cooldown(
+                    state.circuit.as_ref(),
+                    provider_id,
+                    now_unix,
+                    common.provider_cooldown_secs,
+                );
+                *circuit_snapshot = snap;
+            }
+            failed_provider_ids.insert(provider_id);
+            *last_outcome = Some(AttemptOutcome::new(
+                ErrorCategory::ProviderError.as_str(),
+                error_code,
+            ));
+            return LoopControl::BreakRetry;
+        }
+
+        emit_request_event_and_enqueue_request_log(
+            RequestEndArgs::from_context(RequestEndContextArgs {
+                deps: RequestEndDeps::new(
+                    &state.app,
+                    &state.db,
+                    &state.log_tx,
+                    &state.plugin_pipeline,
+                ),
+                trace_id: common.trace_id.as_str(),
+                cli_key: common.cli_key.as_str(),
+                method: common.method_hint.as_str(),
+                path: common.forwarded_path.as_str(),
+                observe: common.observe,
+                query: common.query.as_deref(),
+                excluded_from_stats: false,
+                duration_ms,
+                attempts: attempts.as_slice(),
+                special_settings_json: response_fixer::special_settings_json(
+                    &common.special_settings,
+                ),
+                session_id: common.session_id.clone(),
+                requested_model: common.requested_model.clone(),
+                created_at_ms,
+                created_at,
+            })
+            .with_completion(RequestCompletion::failure_with_visible_ttfb(
+                StatusCode::BAD_GATEWAY.as_u16(),
+                Some(ErrorCategory::ProviderError.as_str()),
+                error_code,
+                provider_ttfb_ms,
+                Some(duration_ms),
+            )),
+        )
+        .await;
+
+        abort_guard.disarm();
+        return LoopControl::Return(build_response(
+            StatusCode::BAD_GATEWAY,
+            &response_headers,
+            common.trace_id.as_str(),
+            Body::from(body_bytes),
+        ));
+    }
+
     // Bridge providers translate upstream protocol responses back to client protocol.
     match translate_bridge_non_stream_body(
         active_bridge_type,
@@ -1187,125 +1328,6 @@ where
         Some(status.as_u16()),
     )
     .await;
-
-    if (200..300).contains(&status.as_u16()) && is_fake_200_non_stream_body(body_bytes.as_ref()) {
-        let error_code = GatewayErrorCode::Fake200.as_str();
-        let duration_ms = started.elapsed().as_millis();
-        let quota_exhausted =
-            upstream_client_error_rules::match_quota_exhausted(body_bytes.as_ref());
-        let oauth_quota_exhausted = quota_exhausted && provider_ctx_owned.auth_mode == "oauth";
-        let decision = if quota_exhausted {
-            FailoverDecision::SwitchProvider
-        } else {
-            FailoverDecision::Abort
-        };
-        if let Some(last) = attempts.last_mut() {
-            if last.outcome == "success" {
-                last.outcome = format!("body_error: code={error_code}");
-            }
-            last.error_category = Some(ErrorCategory::ProviderError.as_str());
-            last.error_code = Some(error_code);
-            last.decision = Some(decision.as_str());
-            last.reason = Some(if quota_exhausted {
-                "successful HTTP status with quota exhausted error body".to_string()
-            } else {
-                "successful HTTP status with error body".to_string()
-            });
-            last.reason_code = Some(ErrorCategory::ProviderError.reason_code());
-            last.attempt_duration_ms = Some(duration_ms);
-        }
-
-        let now_unix = now_unix_seconds() as i64;
-        if oauth_quota_exhausted {
-            if let Err(err) =
-                provider_oauth_limits::save_exhausted_snapshot(&state.db, provider_id, None)
-            {
-                tracing::warn!(
-                    provider_id,
-                    "failed to save OAuth exhausted quota snapshot: {err}"
-                );
-            }
-        } else {
-            let change = provider_router::record_failure_and_emit_transition(
-                provider_router::RecordCircuitArgs::from_state(
-                    state,
-                    common.trace_id.as_str(),
-                    common.cli_key.as_str(),
-                    provider_id,
-                    provider_ctx_owned.provider_name_base.as_str(),
-                    provider_ctx_owned.provider_base_url_base.as_str(),
-                    now_unix,
-                ),
-            );
-            if let Some(last) = attempts.last_mut() {
-                last.circuit_state_after = Some(change.after.state.as_str());
-                last.circuit_failure_count = Some(change.after.failure_count);
-                last.circuit_failure_threshold = Some(change.after.failure_threshold);
-            }
-            *circuit_snapshot = change.after.clone();
-        }
-
-        if quota_exhausted {
-            if !oauth_quota_exhausted && common.provider_cooldown_secs > 0 {
-                let snap = provider_router::trigger_cooldown(
-                    state.circuit.as_ref(),
-                    provider_id,
-                    now_unix,
-                    common.provider_cooldown_secs,
-                );
-                *circuit_snapshot = snap;
-            }
-            failed_provider_ids.insert(provider_id);
-            *last_outcome = Some(AttemptOutcome::new(
-                ErrorCategory::ProviderError.as_str(),
-                error_code,
-            ));
-            return LoopControl::BreakRetry;
-        }
-
-        emit_request_event_and_enqueue_request_log(
-            RequestEndArgs::from_context(RequestEndContextArgs {
-                deps: RequestEndDeps::new(
-                    &state.app,
-                    &state.db,
-                    &state.log_tx,
-                    &state.plugin_pipeline,
-                ),
-                trace_id: common.trace_id.as_str(),
-                cli_key: common.cli_key.as_str(),
-                method: common.method_hint.as_str(),
-                path: common.forwarded_path.as_str(),
-                observe: common.observe,
-                query: common.query.as_deref(),
-                excluded_from_stats: false,
-                duration_ms,
-                attempts: attempts.as_slice(),
-                special_settings_json: response_fixer::special_settings_json(
-                    &common.special_settings,
-                ),
-                session_id: common.session_id.clone(),
-                requested_model: common.requested_model.clone(),
-                created_at_ms,
-                created_at,
-            })
-            .with_completion(RequestCompletion::failure_with_visible_ttfb(
-                StatusCode::BAD_GATEWAY.as_u16(),
-                Some(ErrorCategory::ProviderError.as_str()),
-                error_code,
-                provider_ttfb_ms,
-                Some(duration_ms),
-            )),
-        )
-        .await;
-
-        abort_guard.disarm();
-        return LoopControl::Return(build_response(
-            StatusCode::BAD_GATEWAY,
-            &response_headers,
-            common.trace_id.as_str(),
-            Body::from(body_bytes),
-        ));
-    }
 
     codex_service_tier::append_result_if_detected(
         common.cli_key.as_str(),
