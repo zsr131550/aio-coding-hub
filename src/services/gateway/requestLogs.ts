@@ -18,6 +18,10 @@ export const REQUEST_LOGS_MAX_LIMIT = 500;
 export const REQUEST_ATTEMPT_LOGS_DEFAULT_LIMIT = REQUEST_LOGS_DEFAULT_LIMIT;
 export const REQUEST_ATTEMPT_LOGS_MAX_LIMIT = 200;
 export const REQUEST_LOG_TRACE_ID_MAX_LENGTH = 256;
+export type RequestLogCreatedAtRange = {
+  startCreatedAtMs: number | null;
+  endCreatedAtMs: number | null;
+};
 
 export type RequestLogRouteHop = GeneratedRequestLogRouteHop;
 export type CodexReasoningGuardStats = GeneratedCodexReasoningGuardStats;
@@ -80,6 +84,30 @@ export function normalizeRequestLogSinceCreatedAtMs(value?: number | null): numb
     throw new Error(`SEC_INVALID_INPUT: invalid sinceCreatedAtMs=${value}`);
   }
   return value;
+}
+
+export function normalizeRequestLogEndCreatedAtMs(value?: number | null): number | null {
+  if (value == null) return null;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`SEC_INVALID_INPUT: invalid endCreatedAtMs=${value}`);
+  }
+  return value;
+}
+
+export function normalizeRequestLogCreatedAtRange(
+  range?: Partial<RequestLogCreatedAtRange> | null
+): RequestLogCreatedAtRange {
+  const startCreatedAtMs = normalizeRequestLogSinceCreatedAtMs(range?.startCreatedAtMs);
+  const endCreatedAtMs = normalizeRequestLogEndCreatedAtMs(range?.endCreatedAtMs);
+  if (startCreatedAtMs != null && endCreatedAtMs != null && endCreatedAtMs <= startCreatedAtMs) {
+    throw new Error(
+      `SEC_INVALID_INPUT: invalid createdAtRange start=${startCreatedAtMs} end=${endCreatedAtMs}`
+    );
+  }
+  return {
+    startCreatedAtMs,
+    endCreatedAtMs,
+  };
 }
 
 export function normalizeRequestLogCursorId(afterId: number): number {
@@ -245,16 +273,21 @@ export async function requestAttemptLogsByTraceId(traceId: string, limit?: numbe
   });
 }
 
-export async function requestLogsCodexReasoningGuardStats(sinceCreatedAtMs?: number | null) {
-  const normalizedSinceCreatedAtMs = normalizeRequestLogSinceCreatedAtMs(sinceCreatedAtMs);
+export async function requestLogsCodexReasoningGuardStats(
+  range?: Partial<RequestLogCreatedAtRange> | null
+) {
+  const normalizedRange = normalizeRequestLogCreatedAtRange(range);
 
   return invokeGeneratedIpc<CodexReasoningGuardStats>({
     title: "读取 Codex 降智拦截统计失败",
     cmd: "request_logs_codex_reasoning_guard_stats",
-    args: { sinceCreatedAtMs: normalizedSinceCreatedAtMs },
+    args: normalizedRange,
     invoke: async () =>
       mapGeneratedCommandResponse(
-        await commands.requestLogsCodexReasoningGuardStats(normalizedSinceCreatedAtMs),
+        await commands.requestLogsCodexReasoningGuardStats(
+          normalizedRange.startCreatedAtMs,
+          normalizedRange.endCreatedAtMs
+        ),
         (value) => value
       ),
   });

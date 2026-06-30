@@ -2,6 +2,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import {
   REQUEST_ATTEMPT_LOGS_DEFAULT_LIMIT,
   REQUEST_LOGS_DEFAULT_LIMIT,
+  normalizeRequestLogCreatedAtRange,
   requestAttemptLogsByTraceId,
   requestLogGet,
   requestLogsCodexReasoningGuardStats,
@@ -10,6 +11,7 @@ import {
   normalizeRequestAttemptLogsLimit,
   normalizeRequestLogTraceIdOrNull,
   normalizeRequestLogsLimit,
+  type RequestLogCreatedAtRange,
   type RequestLogSummary,
 } from "../services/gateway/requestLogs";
 import {
@@ -155,14 +157,17 @@ export function useRequestAttemptLogsByTraceIdQuery(traceId: string | null, limi
 }
 
 export function useRequestLogsCodexReasoningGuardStatsQuery(
-  sinceCreatedAtMs?: number | null,
+  range?: Partial<RequestLogCreatedAtRange> | null,
   options?: { enabled?: boolean }
 ) {
-  const normalizedSinceCreatedAtMs = sinceCreatedAtMs ?? null;
+  const normalizedRange = normalizeRequestLogCreatedAtRange(range);
 
   return useQuery({
-    queryKey: requestLogsKeys.codexReasoningGuardStats(normalizedSinceCreatedAtMs),
-    queryFn: () => requestLogsCodexReasoningGuardStats(normalizedSinceCreatedAtMs),
+    queryKey: requestLogsKeys.codexReasoningGuardStats(
+      normalizedRange.startCreatedAtMs,
+      normalizedRange.endCreatedAtMs
+    ),
+    queryFn: () => requestLogsCodexReasoningGuardStats(normalizedRange),
     enabled: isRequestLogsQueryEnabled(options?.enabled),
     placeholderData: keepPreviousData,
   });

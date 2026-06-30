@@ -592,22 +592,47 @@ pub fn get_by_trace_id(
 
 pub fn codex_reasoning_guard_stats(
     db: &db::Db,
-    since_created_at_ms: Option<i64>,
+    start_created_at_ms: Option<i64>,
+    end_created_at_ms: Option<i64>,
 ) -> crate::shared::error::AppResult<CodexReasoningGuardStats> {
     let conn = db.open_connection()?;
-    if matches!(since_created_at_ms, Some(value) if value <= 0) {
+    if matches!(start_created_at_ms, Some(value) if value <= 0) {
         return Err(db_err!("invalid codex reasoning guard stats cutoff"));
     }
+    if matches!(end_created_at_ms, Some(value) if value <= 0) {
+        return Err(db_err!("invalid codex reasoning guard stats end cutoff"));
+    }
+    if matches!(
+        (start_created_at_ms, end_created_at_ms),
+        (Some(start), Some(end)) if end <= start
+    ) {
+        return Err(db_err!("invalid codex reasoning guard stats range"));
+    }
 
-    let time_filter = if since_created_at_ms.is_some() {
-        " AND created_at_ms >= ?1"
+    let mut request_time_filters: Vec<String> = Vec::new();
+    let mut hit_time_filters: Vec<String> = Vec::new();
+    if start_created_at_ms.is_some() {
+        request_time_filters.push("created_at_ms >= ?1".to_string());
+        hit_time_filters.push("request_logs.created_at_ms >= ?1".to_string());
+    }
+    if end_created_at_ms.is_some() {
+        let end_param = if start_created_at_ms.is_some() {
+            "?2"
+        } else {
+            "?1"
+        };
+        request_time_filters.push(format!("created_at_ms < {end_param}"));
+        hit_time_filters.push(format!("request_logs.created_at_ms < {end_param}"));
+    }
+    let time_filter = if request_time_filters.is_empty() {
+        String::new()
     } else {
-        ""
+        format!(" AND {}", request_time_filters.join(" AND "))
     };
-    let hit_time_filter = if since_created_at_ms.is_some() {
-        " AND request_logs.created_at_ms >= ?1"
+    let hit_time_filter = if hit_time_filters.is_empty() {
+        String::new()
     } else {
-        ""
+        format!(" AND {}", hit_time_filters.join(" AND "))
     };
     let overall_sql = format!(
         r#"
@@ -643,10 +668,13 @@ SELECT
         hit_time_filter = hit_time_filter
     );
 
+    let range_params = [start_created_at_ms, end_created_at_ms];
+    let range_params_iter = range_params.iter().flatten().copied();
+
     let (hit_request_count, hit_attempt_count, total_request_count) = conn
         .query_row(
             &overall_sql,
-            params_from_iter(since_created_at_ms.iter()),
+            params_from_iter(range_params_iter.clone()),
             |row| {
                 Ok((
                     row.get::<_, i64>("hit_request_count")?.max(0),
@@ -716,7 +744,7 @@ ORDER BY
         .prepare(&by_model_sql)
         .map_err(|e| db_err!("failed to prepare codex reasoning guard model stats query: {e}"))?;
     let mut rows = stmt
-        .query(params_from_iter(since_created_at_ms.iter()))
+        .query(params_from_iter(range_params.iter().flatten().copied()))
         .map_err(|e| db_err!("failed to run codex reasoning guard model stats query: {e}"))?;
 
     let mut by_model = Vec::new();

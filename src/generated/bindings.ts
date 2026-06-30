@@ -1641,12 +1641,16 @@ export const commands = {
     }
   },
   async requestLogsCodexReasoningGuardStats(
-    sinceCreatedAtMs: number | null
+    startCreatedAtMs: number | null,
+    endCreatedAtMs: number | null
   ): Promise<Result<CodexReasoningGuardStats, string>> {
     try {
       return {
         status: "ok",
-        data: await TAURI_INVOKE("request_logs_codex_reasoning_guard_stats", { sinceCreatedAtMs }),
+        data: await TAURI_INVOKE("request_logs_codex_reasoning_guard_stats", {
+          startCreatedAtMs,
+          endCreatedAtMs,
+        }),
       };
     } catch (e) {
       if (e instanceof Error) throw e;

@@ -377,7 +377,11 @@ describe("query/requestLogs", () => {
     const wrapper = createQueryWrapper(client);
 
     const { result } = renderHook(
-      () => useRequestLogsCodexReasoningGuardStatsQuery(1_770_000_000_000),
+      () =>
+        useRequestLogsCodexReasoningGuardStatsQuery({
+          startCreatedAtMs: 1_770_000_000_000,
+          endCreatedAtMs: 1_770_086_400_000,
+        }),
       {
         wrapper,
       }
@@ -394,9 +398,14 @@ describe("query/requestLogs", () => {
       });
     });
 
-    expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith(1_770_000_000_000);
+    expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith({
+      startCreatedAtMs: 1_770_000_000_000,
+      endCreatedAtMs: 1_770_086_400_000,
+    });
     expect(
-      client.getQueryState(requestLogsKeys.codexReasoningGuardStats(1_770_000_000_000))
+      client.getQueryState(
+        requestLogsKeys.codexReasoningGuardStats(1_770_000_000_000, 1_770_086_400_000)
+      )
     ).toBeTruthy();
   });
 
@@ -415,9 +424,16 @@ describe("query/requestLogs", () => {
     const client = createTestQueryClient();
     const wrapper = createQueryWrapper(client);
 
-    const { result } = renderHook(() => useRequestLogsCodexReasoningGuardStatsQuery(null), {
-      wrapper,
-    });
+    const { result } = renderHook(
+      () =>
+        useRequestLogsCodexReasoningGuardStatsQuery({
+          startCreatedAtMs: null,
+          endCreatedAtMs: null,
+        }),
+      {
+        wrapper,
+      }
+    );
 
     await waitFor(() => {
       expect(result.current.data).toEqual({
@@ -430,8 +446,11 @@ describe("query/requestLogs", () => {
       });
     });
 
-    expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith(null);
-    expect(client.getQueryState(requestLogsKeys.codexReasoningGuardStats(null))).toBeTruthy();
+    expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith({
+      startCreatedAtMs: null,
+      endCreatedAtMs: null,
+    });
+    expect(client.getQueryState(requestLogsKeys.codexReasoningGuardStats(null, null))).toBeTruthy();
   });
 
   it("incremental refresh mutation keeps backend rows and cache stable on empty incremental items", async () => {

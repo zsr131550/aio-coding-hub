@@ -514,17 +514,23 @@ describe("query/cliManager", () => {
     const sessionOptions = { enabled: true };
     const allTimeOptions = { enabled: false };
 
-    useCliManagerCodexReasoningGuardStatsQuery(1_770_000_000_000, sessionOptions);
-    useCliManagerCodexReasoningGuardStatsQuery(null, allTimeOptions);
+    useCliManagerCodexReasoningGuardStatsQuery(
+      { startCreatedAtMs: 1_770_000_000_000, endCreatedAtMs: 1_770_086_400_000 },
+      sessionOptions
+    );
+    useCliManagerCodexReasoningGuardStatsQuery(
+      { startCreatedAtMs: null, endCreatedAtMs: null },
+      allTimeOptions
+    );
 
     expect(useRequestLogsCodexReasoningGuardStatsQuery).toHaveBeenNthCalledWith(
       1,
-      1_770_000_000_000,
+      { startCreatedAtMs: 1_770_000_000_000, endCreatedAtMs: 1_770_086_400_000 },
       sessionOptions
     );
     expect(useRequestLogsCodexReasoningGuardStatsQuery).toHaveBeenNthCalledWith(
       2,
-      null,
+      { startCreatedAtMs: null, endCreatedAtMs: null },
       allTimeOptions
     );
   });

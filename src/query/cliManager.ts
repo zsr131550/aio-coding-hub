@@ -195,8 +195,8 @@ export function pickCliAvailable(info: SimpleCliInfo | ClaudeCliInfo | null) {
 }
 
 export function useCliManagerCodexReasoningGuardStatsQuery(
-  sinceCreatedAtMs?: number | null,
+  range?: { startCreatedAtMs?: number | null; endCreatedAtMs?: number | null } | null,
   options?: { enabled?: boolean }
 ) {
-  return useRequestLogsCodexReasoningGuardStatsQuery(sinceCreatedAtMs, options);
+  return useRequestLogsCodexReasoningGuardStatsQuery(range, options);
 }

@@ -51,8 +51,8 @@ export const requestLogsKeys = {
   detail: (logId: number | null) => [...requestLogsAllKey, "detail", logId] as const,
   attemptsByTrace: (traceId: string | null, limit: number | null) =>
     [...requestLogsAllKey, "attempts", traceId, limit] as const,
-  codexReasoningGuardStats: (sinceCreatedAtMs: number | null) =>
-    [...requestLogsAllKey, "codexReasoningGuardStats", sinceCreatedAtMs] as const,
+  codexReasoningGuardStats: (startCreatedAtMs: number | null, endCreatedAtMs: number | null) =>
+    [...requestLogsAllKey, "codexReasoningGuardStats", startCreatedAtMs, endCreatedAtMs] as const,
 };
 
 const sortModesAllKey = ["sortModes"] as const;
