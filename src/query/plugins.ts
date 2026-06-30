@@ -16,6 +16,7 @@ import {
   pluginListExtensionRuntimeReports,
   pluginListRuntimeReports,
   pluginPreviewFromFile,
+  pluginPreviewRemoteUpdate,
   pluginPreviewUpdateFromFile,
   pluginExportReplayFixture,
   pluginQuarantineRevoked,
@@ -24,8 +25,10 @@ import {
   pluginSaveConfig,
   pluginUninstall,
   pluginUpdateFromFile,
+  pluginUpdateRemote,
   type JsonValue,
   type PluginDetail,
+  type PluginRemotePackageInput,
   type PluginSummary,
 } from "../services/plugins";
 import { pluginActiveContributions } from "../services/pluginContributions";
@@ -248,6 +251,17 @@ export function usePluginPreviewUpdateFromFileMutation() {
   });
 }
 
+export function usePluginPreviewRemoteUpdateMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: PluginRemotePackageInput) => pluginPreviewRemoteUpdate(input),
+    onSuccess: (next, input) => {
+      queryClient.setQueryData(pluginKeys.updatePreview(input.downloadUrl), next);
+    },
+  });
+}
+
 export function usePluginUpdateFromFileMutation() {
   const queryClient = useQueryClient();
 
@@ -261,6 +275,21 @@ export function usePluginUpdateFromFileMutation() {
         queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
         refreshPluginContributionQueries(queryClient);
       }
+    },
+  });
+}
+
+export function usePluginUpdateRemoteMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: PluginRemotePackageInput) => pluginUpdateRemote(input),
+    onSuccess: (next, input) => {
+      const normalizedPluginId = normalizePluginId(input.pluginId);
+      if (next) {
+        queryClient.setQueryData(pluginKeys.detail(normalizedPluginId), next);
+      }
+      refreshPluginMutationQueries(queryClient, normalizedPluginId);
     },
   });
 }

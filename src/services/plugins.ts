@@ -59,6 +59,33 @@ export function normalizePluginFilePath(filePath: string): string {
   return normalizeRequiredText("filePath", filePath);
 }
 
+export type PluginRemotePackageInput = {
+  pluginId: string;
+  downloadUrl: string;
+  checksum: string;
+  signature?: string | null;
+  publicKey?: string | null;
+  marketSourceUrl?: string | null;
+  source?: "market" | "github_release" | null;
+};
+
+function normalizeRemotePackageInput(input: PluginRemotePackageInput) {
+  const pluginId = normalizePluginId(input.pluginId);
+  const downloadUrl = normalizeRequiredText("downloadUrl", input.downloadUrl);
+  const checksum = normalizeRequiredText("checksum", input.checksum);
+  const signature =
+    input.signature == null ? null : normalizeRequiredText("signature", input.signature);
+  const publicKey =
+    input.publicKey == null ? null : normalizeRequiredText("publicKey", input.publicKey);
+  const marketSourceUrl =
+    input.marketSourceUrl == null
+      ? null
+      : normalizeRequiredText("marketSourceUrl", input.marketSourceUrl);
+  const source = input.source ?? null;
+
+  return { pluginId, downloadUrl, checksum, signature, publicKey, marketSourceUrl, source };
+}
+
 function clampAuditLimit(limit: number | null | undefined): number {
   if (limit == null || !Number.isFinite(limit)) return PLUGIN_AUDIT_LOG_DEFAULT_LIMIT;
   return Math.min(PLUGIN_AUDIT_LOG_MAX_LIMIT, Math.max(1, Math.trunc(limit)));
@@ -144,42 +171,36 @@ export async function pluginUpdateFromFile(filePath: string) {
   });
 }
 
-export async function pluginInstallRemote(input: {
-  pluginId: string;
-  downloadUrl: string;
-  checksum: string;
-  signature?: string | null;
-  publicKey?: string | null;
-  marketSourceUrl?: string | null;
-  source?: "market" | "github_release" | null;
-}) {
-  const pluginId = normalizePluginId(input.pluginId);
-  const downloadUrl = normalizeRequiredText("downloadUrl", input.downloadUrl);
-  const checksum = normalizeRequiredText("checksum", input.checksum);
-  const signature =
-    input.signature == null ? null : normalizeRequiredText("signature", input.signature);
-  const publicKey =
-    input.publicKey == null ? null : normalizeRequiredText("publicKey", input.publicKey);
-  const marketSourceUrl =
-    input.marketSourceUrl == null
-      ? null
-      : normalizeRequiredText("marketSourceUrl", input.marketSourceUrl);
-  const source = input.source ?? null;
+export async function pluginPreviewRemoteUpdate(input: PluginRemotePackageInput) {
+  const remoteInput = normalizeRemotePackageInput(input);
+
+  return invokeGeneratedIpc<PluginUpdateDiff>({
+    title: "预览远程插件更新失败",
+    cmd: "plugin_preview_remote_update",
+    args: remoteInput,
+    invoke: async () => commands.pluginPreviewRemoteUpdate(remoteInput),
+  });
+}
+
+export async function pluginInstallRemote(input: PluginRemotePackageInput) {
+  const remoteInput = normalizeRemotePackageInput(input);
 
   return invokeGeneratedIpc<PluginDetail>({
     title: "远程安装插件失败",
     cmd: "plugin_install_remote",
-    args: { pluginId, downloadUrl, checksum, signature, publicKey, marketSourceUrl, source },
-    invoke: async () =>
-      commands.pluginInstallRemote({
-        pluginId,
-        downloadUrl,
-        checksum,
-        signature,
-        publicKey,
-        marketSourceUrl,
-        source,
-      }),
+    args: remoteInput,
+    invoke: async () => commands.pluginInstallRemote(remoteInput),
+  });
+}
+
+export async function pluginUpdateRemote(input: PluginRemotePackageInput) {
+  const remoteInput = normalizeRemotePackageInput(input);
+
+  return invokeGeneratedIpc<PluginDetail>({
+    title: "远程更新插件失败",
+    cmd: "plugin_update_remote",
+    args: remoteInput,
+    invoke: async () => commands.pluginUpdateRemote(remoteInput),
   });
 }
 

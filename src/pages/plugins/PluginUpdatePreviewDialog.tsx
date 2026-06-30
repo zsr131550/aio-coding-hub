@@ -30,13 +30,13 @@ const LIFECYCLE_NOTICE_CODES = new Set([
 function changeLabel(change: string) {
   const labels: Record<string, string> = {
     added: "新增",
-    added_pending: "新增，待授权",
+    added_pending: "新增",
     removed: "移除",
     changed: "变更",
     unchanged: "未变",
-    unchanged_granted: "已授权",
-    unchanged_pending: "待授权",
-    unchanged_requested: "仍需授权",
+    unchanged_granted: "仍会生效",
+    unchanged_pending: "仍会生效",
+    unchanged_requested: "仍会生效",
   };
   return labels[change] ?? change;
 }
@@ -124,7 +124,7 @@ function PermissionChanges({ changes }: { changes: readonly PluginPermissionLife
   if (changes.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
-        没有权限变化
+        没有数据访问变化
       </div>
     );
   }
@@ -233,7 +233,7 @@ export function PluginUpdatePreviewDialog({
     <Dialog
       open={open}
       title="更新预检"
-      description="确认版本、权限和兼容性变化后再更新本地插件。"
+      description="确认版本、数据访问和兼容性变化后再更新本地插件。"
       className="max-w-2xl"
       onOpenChange={(nextOpen) => {
         if (!nextOpen) onClose();
@@ -311,7 +311,7 @@ export function PluginUpdatePreviewDialog({
           </div>
 
           <div className="space-y-2">
-            <div className="text-sm font-semibold text-foreground">权限变化</div>
+            <div className="text-sm font-semibold text-foreground">数据访问变化</div>
             <PermissionChanges changes={diff.permissionChanges} />
           </div>
 

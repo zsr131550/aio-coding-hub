@@ -446,7 +446,6 @@ if (contract) {
     [
       "crate::gateway::plugins::contract::is_active_hook",
       "crate::gateway::plugins::contract::is_reserved_hook",
-      "crate::gateway::plugins::contract::is_reserved_permission",
       "crate::gateway::plugins::contract::hook_contract",
       "providers.editor.sections",
       "providers.editor.fields",
@@ -544,13 +543,13 @@ if (contract) {
   requireRegex(
     "src-tauri/src/domain/plugins.rs",
     rust,
-    /pub fn is_reserved_gateway_hook\(hook: &str\)([\s\S]*?)pub fn is_reserved_permission/,
+    /pub fn is_reserved_gateway_hook\(hook: &str\)([\s\S]*?)\}/,
     "reserved hook validation helper"
   );
   requireIncludes(
     "src-tauri/src/domain/plugins.rs",
     rust,
-    ["PLUGIN_RESERVED_HOOK", "PLUGIN_RESERVED_PERMISSION"],
+    ["PLUGIN_RESERVED_HOOK"],
     "reserved validation error"
   );
   requireNotIncludes(

@@ -40,6 +40,7 @@ impl ExtensionHostInstance {
         Self::start_with_timeout(manifest, plugin_root, DEFAULT_EXTENSION_HOST_CALL_TIMEOUT).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn start_with_host_api(
         manifest: PluginManifest,
         plugin_root: PathBuf,

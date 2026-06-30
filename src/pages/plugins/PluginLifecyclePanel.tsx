@@ -46,6 +46,7 @@ function auditString(detail: PluginDetail, keys: readonly string[]) {
 
 const TRUST_EVENT_TYPES = new Set([
   "plugin.installed",
+  "plugin.remote.installed",
   "plugin.updated",
   "plugin.rollback",
   "plugin.official.installed",

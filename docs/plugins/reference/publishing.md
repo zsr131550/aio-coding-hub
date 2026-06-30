@@ -78,7 +78,7 @@
 
 自定义 market index 属于高级来源。高级来源可以加载临时 URL 或粘贴 JSON，但它只是发布者和高级用户入口；真实安装仍由宿主重新执行 checksum、signature、compatibility、runtime policy 和 revoked checks。
 
-market index URL 只用于定位索引来源。trusted public key 用于校验 release signature；它不能扩大插件 capabilities，也不能绕过 host compatibility、runtime policy、checksum、capability grant 或 quarantine 规则。
+market index URL 只用于定位索引来源。trusted public key 用于校验 release signature；它不能扩大插件 capabilities，也不能绕过 host compatibility、runtime policy、checksum、capability contract 或 quarantine 规则。
 
 ## Trust And Install Blocks
 

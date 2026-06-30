@@ -9,6 +9,7 @@ use rusqlite::{params, params_from_iter, types::Value};
 const DEFAULT_PLUGIN_RUNTIME_REPORT_RETENTION_DAYS: i64 = 30;
 const DEFAULT_PLUGIN_RUNTIME_REPORTS_PER_PLUGIN: usize = 5_000;
 const SECONDS_PER_DAY: i64 = 86_400;
+const CONTRIBUTION_TYPE_META_KEY: &str = "__aioContributionType";
 
 #[derive(Debug, Clone)]
 pub(crate) struct RecordPluginHookExecutionReportInput {
@@ -66,6 +67,18 @@ pub(crate) fn record_extension_execution_report(
         .command_or_hook
         .clone()
         .unwrap_or_else(|| contribution_id.clone());
+    let mut mutation_summary = input.mutation_summary;
+    if let Some(object) = mutation_summary.as_object_mut() {
+        object.insert(
+            CONTRIBUTION_TYPE_META_KEY.to_string(),
+            serde_json::Value::String(contribution_type.to_string()),
+        );
+    } else {
+        mutation_summary = serde_json::json!({
+            "value": mutation_summary,
+            CONTRIBUTION_TYPE_META_KEY: contribution_type,
+        });
+    }
     let report = record_hook_execution_report(
         db,
         RecordPluginHookExecutionReportInput {
@@ -82,7 +95,7 @@ pub(crate) fn record_extension_execution_report(
             circuit_state: None,
             context_budget_json: input.input_budget,
             output_budget_json: input.output_budget,
-            mutation_summary_json: input.mutation_summary,
+            mutation_summary_json: mutation_summary,
             replayable: input.replayable,
             replay_export_reason: None,
         },
@@ -331,8 +344,8 @@ FROM plugin_hook_execution_reports
     }
     if let Some(contribution_type) = contribution_type {
         match contribution_type {
-            "command" => conditions.push("runtime_kind = 'extensionHost'"),
-            "hook" => conditions.push("runtime_kind <> 'extensionHost'"),
+            "command" => conditions.push(extension_contribution_type_condition("command")),
+            "hook" => conditions.push(extension_contribution_type_condition("hook")),
             _ => unreachable!("contribution type already normalized"),
         }
     }
@@ -432,6 +445,18 @@ fn runtime_kind_for_contribution_type(contribution_type: &str) -> &'static str {
     }
 }
 
+fn extension_contribution_type_condition(contribution_type: &'static str) -> &'static str {
+    match contribution_type {
+        "command" => {
+            "(json_extract(mutation_summary_json, '$.__aioContributionType') = 'command' OR (json_extract(mutation_summary_json, '$.__aioContributionType') IS NULL AND runtime_kind = 'extensionHost' AND hook_name NOT LIKE 'gateway.%' AND hook_name NOT LIKE 'log.%'))"
+        }
+        "hook" => {
+            "(json_extract(mutation_summary_json, '$.__aioContributionType') = 'hook' OR (json_extract(mutation_summary_json, '$.__aioContributionType') IS NULL AND (runtime_kind <> 'extensionHost' OR hook_name LIKE 'gateway.%' OR hook_name LIKE 'log.%')))"
+        }
+        _ => "1 = 0",
+    }
+}
+
 fn hook_execution_report_from_row(
     row: &rusqlite::Row<'_>,
 ) -> Result<PluginHookExecutionReport, rusqlite::Error> {
@@ -468,13 +493,15 @@ fn extension_execution_report_from_row(
     let output_budget_json: String = row.get("output_budget_json")?;
     let mutation_summary_json: String = row.get("mutation_summary_json")?;
     let replayable: i64 = row.get("replayable")?;
-    let runtime_kind: String = row.get("runtime_kind")?;
     let contribution_id: String = row.get("hook_name")?;
-    let contribution_type = if runtime_kind == "extensionHost" {
-        "command"
-    } else {
-        "hook"
-    };
+    let mutation_summary = parse_json_value(&mutation_summary_json);
+    let runtime_kind: String = row.get("runtime_kind")?;
+    let contribution_type =
+        extension_contribution_type(&mutation_summary, &runtime_kind, &contribution_id);
+    let mut public_mutation_summary = mutation_summary;
+    if let Some(object) = public_mutation_summary.as_object_mut() {
+        object.remove(CONTRIBUTION_TYPE_META_KEY);
+    }
     Ok(PluginExtensionExecutionReport {
         id: row.get("id")?,
         plugin_id: row.get("plugin_id")?,
@@ -489,10 +516,39 @@ fn extension_execution_report_from_row(
         error_code: row.get("error_code")?,
         input_budget: parse_json_value(&context_budget_json),
         output_budget: parse_json_value(&output_budget_json),
-        mutation_summary: parse_json_value(&mutation_summary_json),
+        mutation_summary: public_mutation_summary,
         replayable: replayable != 0,
         created_at: row.get("created_at")?,
     })
+}
+
+fn extension_contribution_type(
+    mutation_summary: &serde_json::Value,
+    runtime_kind: &str,
+    contribution_id: &str,
+) -> &'static str {
+    if mutation_summary
+        .get(CONTRIBUTION_TYPE_META_KEY)
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| value == "hook")
+    {
+        return "hook";
+    }
+    if mutation_summary
+        .get(CONTRIBUTION_TYPE_META_KEY)
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| value == "command")
+    {
+        return "command";
+    }
+    if runtime_kind != "extensionHost"
+        || contribution_id.starts_with("gateway.")
+        || contribution_id.starts_with("log.")
+    {
+        "hook"
+    } else {
+        "command"
+    }
 }
 
 fn extension_execution_report_from_hook_report(
@@ -671,5 +727,64 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].status, "completed");
         assert_eq!(list[0].mutation_summary["field"], "requestBody");
+    }
+
+    #[test]
+    fn extension_runtime_reports_filter_extension_host_commands_and_hooks_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("extension-reports.db")).unwrap();
+
+        record_extension_execution_report(
+            &db,
+            RecordPluginExtensionExecutionReportInput {
+                plugin_id: "community.prompt-helper".to_string(),
+                contribution_type: "command".to_string(),
+                contribution_id: "community.prompt-helper.hello".to_string(),
+                command_or_hook: None,
+                trace_id: Some("trace-command".to_string()),
+                status: "completed".to_string(),
+                started_at_ms: 1_000,
+                duration_ms: 3,
+                failure_kind: None,
+                error_code: None,
+                input_budget: serde_json::json!({}),
+                output_budget: serde_json::json!({}),
+                mutation_summary: serde_json::json!({ "changed": false }),
+                replayable: false,
+            },
+        )
+        .unwrap();
+        record_extension_execution_report(
+            &db,
+            RecordPluginExtensionExecutionReportInput {
+                plugin_id: "community.prompt-helper".to_string(),
+                contribution_type: "hook".to_string(),
+                contribution_id: "gateway.request.afterBodyRead".to_string(),
+                command_or_hook: None,
+                trace_id: Some("trace-hook".to_string()),
+                status: "completed".to_string(),
+                started_at_ms: 2_000,
+                duration_ms: 5,
+                failure_kind: None,
+                error_code: None,
+                input_budget: serde_json::json!({}),
+                output_budget: serde_json::json!({}),
+                mutation_summary: serde_json::json!({ "changed": true }),
+                replayable: true,
+            },
+        )
+        .unwrap();
+
+        let commands =
+            list_extension_execution_reports(&db, None, Some("command"), None, None, 50).unwrap();
+        let hooks =
+            list_extension_execution_reports(&db, None, Some("hook"), None, None, 50).unwrap();
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].contribution_type, "command");
+        assert_eq!(commands[0].trace_id.as_deref(), Some("trace-command"));
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0].contribution_type, "hook");
+        assert_eq!(hooks[0].trace_id.as_deref(), Some("trace-hook"));
     }
 }

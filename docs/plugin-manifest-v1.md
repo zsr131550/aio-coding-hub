@@ -2,7 +2,7 @@
 
 `plugin.json` 是插件与 AIO Coding Hub 之间稳定的 package contract。Plugin API v1 的社区插件只有一种公开运行时：Extension Host。社区插件必须提供 `main`，声明 `runtime.kind = "extensionHost"`，并把 TypeScript 或 JavaScript 源码打包成宿主可加载的 JavaScript 输出。
 
-Official Privacy Filter 也使用同一套 Extension Host manifest、capability、hook 和 lifecycle 规则。官方身份只体现在 bundled 分发、默认配置和默认授权上，不体现在独立 runtime 或宿主特例上。
+Official Privacy Filter 也使用同一套 Extension Host manifest、capability、hook 和 lifecycle 规则。官方身份只体现在 bundled 分发和默认配置上，不体现在独立 runtime、独立权限或宿主特例上。
 
 ## 1. 必填字段
 
@@ -85,7 +85,7 @@ Extension Host 是唯一 community runtime：
 
 ## 6. Contributions 与 Capabilities
 
-Contribution points 只描述插件希望接入的位置；capability 才是宿主授权对应贡献点的开关。缺少依赖 capability 的 manifest 会被拒绝。
+Contribution points 只描述插件希望接入的位置；capability 是宿主开放对应贡献点/API surface 的 manifest contract。缺少依赖 capability 的 manifest 会被拒绝。
 
 | Contribution | Required capability |
 | --- | --- |
@@ -202,7 +202,7 @@ Validation 会拒绝：
 | From | To | Trigger |
 | --- | --- | --- |
 | `available` | `installed` | 用户安装 package 或 market plugin。 |
-| `installed` | `enabled` | 用户授权 required capabilities 且配置有效。 |
+| `installed` | `enabled` | 用户确认插件且配置有效。 |
 | `installed` | `disabled` | 用户安装但不启用。 |
 | `enabled` | `disabled` | 用户禁用插件。 |
 | `disabled` | `enabled` | 用户在校验通过后启用插件。 |
@@ -275,11 +275,11 @@ module.exports.activate = function(api) {
 };
 ```
 
-这个示例不声明 `permissions`。Extension Host manifest 只能声明 `capabilities` 和 `contributes`；`context.request.body` 是否可见、`requestBody` mutation 是否被接受，都由宿主按当前 hook contract、capability grant 和 context/output budget 判断。插件必须在字段缺失或为空时继续运行。
+这个示例不声明 `permissions`。Extension Host manifest 只能声明 `capabilities` 和 `contributes`；`context.request.body` 是否可见、`requestBody` mutation 是否被接受，都由宿主按当前 hook contract、capability 和 context/output budget 判断。插件必须在字段缺失或为空时继续运行。
 
 ## 12. Manifest 示例：Privacy Filter
 
-`official.privacy-filter` 是 bundled official Extension Host 插件。它使用普通插件 manifest、普通 gateway hook 生命周期和普通 Extension Host disposal；官方身份只提供默认安装源、默认配置和默认授权。
+`official.privacy-filter` 是 bundled official Extension Host 插件。它使用普通插件 manifest、普通 gateway hook 生命周期和普通 Extension Host disposal；官方身份只提供默认安装源和默认配置。
 
 ```json
 {

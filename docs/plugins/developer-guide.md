@@ -31,7 +31,7 @@ doctor -> validate --strict -> pack -> publish-check -> install/update -> export
 5. 使用 `pnpm --filter create-aio-plugin cli doctor` 和 `validate --strict` 做 package health、manifest 与入口文件校验。
 6. 使用 `pnpm --filter create-aio-plugin cli pack` 打包为 `.aio-plugin`。
 7. 发布前运行 `pnpm --filter create-aio-plugin cli publish-check ./acme.redactor` 生成 release metadata。
-8. 在 Plugins 页面本地导入或从市场安装，先检查安装预检，再确认安装、授权 capability、启用插件，检查审计日志。
+8. 在 Plugins 页面本地导入或从市场安装，先检查安装预检，再确认 capabilities、数据访问和贡献点影响，启用插件，检查审计日志。
 9. 对真实请求问题，从宿主导出 `plugin_export_replay_fixture`，用导出的 trace、attempts、runtime reports 和本地 body fixture 复现。
 10. 修复 Extension Host 入口后重新打包、安装并复测。
 11. 发布前计算 `sha256`，可信索引分发时补 Ed25519 签名。
@@ -295,7 +295,7 @@ Warnings do not fail the command in 0.62.1; any `error` severity diagnostic retu
 - `main` 指向的 Extension Host 输出文件存在、位于包内、大小在限制内。
 - Claude fixture 和 Codex/OpenAI Responses fixture 都能通过宿主运行报告、导出的 replay fixture 或集成测试覆盖预期行为。
 - 未声明 capability 的贡献点不会生效。
-- 打包后的 `.aio-plugin` 能在 Plugins 页面导入、授权并启用。
+- 打包后的 `.aio-plugin` 能在 Plugins 页面导入、确认并启用。
 
 ## 发布与升级
 
@@ -306,7 +306,7 @@ Warnings do not fail the command in 0.62.1; any `error` severity diagnostic retu
 - 新版本是否仍满足 `hostCompatibility`。
 - 是否新增 capabilities 或贡献点。新增能力必须由用户重新确认。
 - 是否改变 `configSchema`。需要通过 `configVersion` 和默认值保证旧配置可迁移。
-- 回滚是否能恢复旧版本、旧配置快照、旧 capability grants 和启用状态。
+- 回滚是否能恢复旧版本、旧配置快照和启用状态。
 
 ## 官方 Privacy Filter 示例
 

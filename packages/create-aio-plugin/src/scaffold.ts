@@ -114,7 +114,7 @@ function promptHelperExampleTemplate(id: string, name: string): ScaffoldFiles {
         message: "Prompt helper matched a Claude request."
       };
     }
-    return { action: "continue" };
+    return { action: "pass" };
   });
 };
 `,
@@ -153,7 +153,7 @@ module.exports.activate = function(api) {
     if (redacted !== body) {
       return { action: "replace", requestBody: redacted };
     }
-    return { action: "continue" };
+    return { action: "pass" };
   });
 
   api.gateway.registerHook("${logHook}", function(context) {
@@ -162,7 +162,7 @@ module.exports.activate = function(api) {
     if (redacted !== message) {
       return { action: "replace", logMessage: redacted };
     }
-    return { action: "continue" };
+    return { action: "pass" };
   });
 };
 `,
@@ -205,7 +205,7 @@ module.exports.activate = function(api) {
         responseBody: body.replace(riskyPattern, "[REVIEW_REQUIRED]")
       };
     }
-    return { action: "continue" };
+    return { action: "pass" };
   });
 };
 `,

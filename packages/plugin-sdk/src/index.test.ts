@@ -617,14 +617,22 @@ describe("PluginHookContext", () => {
 });
 
 describe("PluginApi", () => {
-  it("represents the host privacy redaction API", () => {
+  it("represents the host command, gateway, and privacy APIs", () => {
     const api: PluginApi = {
+      commands: {
+        registerCommand: (_command, _handler) => undefined,
+      },
+      gateway: {
+        registerHook: (_name, _handler) => undefined,
+      },
       privacy: {
         redactText: (text) => ({ hit: true, count: 1, redacted: text.replace("secret", "[密钥]") }),
         redactRequestBody: (body) => ({ hit: false, count: 0, redacted: body }),
       },
     };
 
+    expect(api.commands).toBeDefined();
+    expect(api.gateway).toBeDefined();
     expect(api.privacy?.redactText("secret").redacted).toBe("[密钥]");
   });
 });

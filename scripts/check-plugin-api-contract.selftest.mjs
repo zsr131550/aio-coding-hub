@@ -262,7 +262,6 @@ function writePassingScaffold(root) {
       "extensionHost wasm process native privacyFilter",
       "crate::gateway::plugins::contract::is_active_hook",
       "crate::gateway::plugins::contract::is_reserved_hook",
-      "crate::gateway::plugins::contract::is_reserved_permission",
       "crate::gateway::plugins::contract::hook_contract",
       [
         "request.meta.read",
@@ -287,9 +286,8 @@ function writePassingScaffold(root) {
       '  hook == "gateway.request.afterBodyRead" || hook == "gateway.request.beforeSend"',
       "}",
       'pub fn is_reserved_gateway_hook(hook: &str) -> bool { hook == "gateway.response.headers" }',
-      'pub fn is_reserved_permission(permission: &str) -> bool { permission == "network.fetch" }',
       "fn permission_risk(permission: &str) { request.body.read; request.body.write; network.fetch; }",
-      "PLUGIN_RESERVED_HOOK PLUGIN_RESERVED_PERMISSION",
+      "PLUGIN_RESERVED_HOOK",
     ].join("\n")
   );
   writeFileSync(
@@ -411,6 +409,90 @@ const extensionHostDependencyBaselineResult = runCheck(extensionHostDependencyBa
 if (extensionHostDependencyBaselineResult.status !== 0) {
   throw new Error(
     `expected Extension Host dependency baseline to pass, got status ${extensionHostDependencyBaselineResult.status}\n${extensionHostDependencyBaselineResult.stderr}`
+  );
+}
+
+const singlePermissionModelRoot = makeRoot("single-permission-model");
+writeJson(singlePermissionModelRoot, "docs/plugins/plugin-api-v1-contract.json", {
+  apiVersion: "1.0.0",
+  defaultHookTimeoutMs: 150,
+  defaultFailurePolicy: "fail-open",
+  activeHooks: [
+    "gateway.request.afterBodyRead",
+    "gateway.request.beforeSend",
+    "gateway.response.chunk",
+  ],
+  reservedHooks: ["gateway.response.headers"],
+  activeMutationFields: ["requestBody", "streamChunk"],
+  configSchemaTypes: ["object"],
+  activePermissions: [
+    "request.meta.read",
+    "request.header.read",
+    "request.header.readSensitive",
+    "request.body.read",
+    "request.body.write",
+    "stream.inspect",
+    "stream.modify",
+  ],
+  reservedPermissions: ["network.fetch"],
+  capabilityDependencies: {
+    commands: ["commands.execute"],
+    providers: ["provider.extensionValues"],
+    "ui.providers.editor.sections": ["provider.extensionValues"],
+    "ui.providers.editor.fields": ["provider.extensionValues"],
+    "ui.buttonCommandFields": ["commands.execute"],
+    gatewayHooks: ["gateway.hooks"],
+    protocolBridges: ["protocol.bridge"],
+  },
+  hookMatrix: JSON.parse(
+    readFileSync(
+      join(extensionHostDependencyBaselineRoot, "docs/plugins/plugin-api-v1-contract.json"),
+      "utf8"
+    )
+  ).hookMatrix,
+  communityRuntimes: ["extensionHost"],
+  unsupportedLegacyRuntimes: ["wasm", "process", "native"],
+});
+writePassingScaffold(singlePermissionModelRoot);
+writeFileSync(
+  join(singlePermissionModelRoot, "src-tauri/src/domain/plugins.rs"),
+  [
+    "extensionHost wasm process native privacyFilter",
+    "crate::gateway::plugins::contract::is_active_hook",
+    "crate::gateway::plugins::contract::is_reserved_hook",
+    "crate::gateway::plugins::contract::hook_contract",
+    [
+      "request.meta.read",
+      "request.header.read",
+      "request.header.readSensitive",
+      "request.header.write",
+      "request.body.read",
+      "request.body.write",
+      "response.header.read",
+      "response.header.write",
+      "response.body.read",
+      "response.body.write",
+      "stream.inspect",
+      "stream.modify",
+      "log.redact",
+      "network.fetch",
+    ].join(" "),
+    "providers.editor.sections UI contribution requires provider.extensionValues",
+    "providers.editor.fields UI contribution requires provider.extensionValues",
+    "UI command field requires commands.execute",
+    "pub fn is_active_gateway_hook(hook: &str) -> bool {",
+    '  hook == "gateway.request.afterBodyRead" || hook == "gateway.request.beforeSend"',
+    "}",
+    'pub fn is_reserved_gateway_hook(hook: &str) -> bool { hook == "gateway.response.headers" }',
+    "fn permission_risk(permission: &str) { request.body.read; request.body.write; network.fetch; }",
+    "PLUGIN_RESERVED_HOOK",
+  ].join("\n")
+);
+
+const singlePermissionModelResult = runCheck(singlePermissionModelRoot);
+if (singlePermissionModelResult.status !== 0) {
+  throw new Error(
+    `expected Extension Host single permission model without reserved permission manifest validation to pass, got status ${singlePermissionModelResult.status}\n${singlePermissionModelResult.stderr}`
   );
 }
 
@@ -815,15 +897,13 @@ writeFileSync(
     "extensionHost wasm process native privacyFilter",
     "crate::gateway::plugins::contract::is_active_hook",
     "crate::gateway::plugins::contract::is_reserved_hook",
-    "crate::gateway::plugins::contract::is_reserved_permission",
     "crate::gateway::plugins::contract::hook_contract",
     "pub fn is_active_gateway_hook(hook: &str) -> bool {",
     '  hook == "gateway.request.afterBodyRead"',
     "}",
     'pub fn is_reserved_gateway_hook(hook: &str) -> bool { hook == "gateway.response.headers" }',
-    'pub fn is_reserved_permission(permission: &str) -> bool { permission == "network.fetch" }',
     "fn permission_risk(permission: &str) { request.meta.read; request.body.read; network.fetch; }",
-    "PLUGIN_RESERVED_HOOK PLUGIN_RESERVED_PERMISSION",
+    "PLUGIN_RESERVED_HOOK",
   ].join("\n")
 );
 writeFileSync(

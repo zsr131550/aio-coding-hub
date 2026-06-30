@@ -23,7 +23,7 @@ AIO Coding Hub 采用同样形态：
 - `plugin.json` 声明 ID、`main`、Extension Host runtime、contributions、capabilities、config schema 和 host compatibility。
 - Hooks 是明确的 gateway/log extension points，带有 bounded timeouts 和 host-trimmed contexts。
 - 社区代码执行不会进入 Rust main process 和 WebView。
-- `official.privacy-filter` 使用普通 Extension Host runtime。第三方包和官方插件都不能声明 legacy native engines；官方身份只体现在 bundled 分发、默认配置和默认授权。
+- `official.privacy-filter` 使用普通 Extension Host runtime。第三方包和官方插件都不能声明 legacy native engines；官方身份只体现在 bundled 分发和默认配置。
 
 ## 信任边界
 

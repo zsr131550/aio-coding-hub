@@ -55,17 +55,6 @@ pub(crate) fn official_plugin_ids() -> &'static [&'static str] {
     &["official.privacy-filter"]
 }
 
-pub(crate) fn official_default_permissions(plugin_id: &str) -> Vec<String> {
-    match plugin_id {
-        "official.privacy-filter" => vec![
-            "request.body.read".to_string(),
-            "request.body.write".to_string(),
-            "log.redact".to_string(),
-        ],
-        _ => Vec::new(),
-    }
-}
-
 pub(crate) fn official_source_resource_root() -> PathBuf {
     PathBuf::from(OFFICIAL_SOURCE_RESOURCE_ROOT)
 }
@@ -136,7 +125,6 @@ mod tests {
 
     fn enabled_official_plugin(plugin_id: &str) -> crate::domain::plugins::PluginDetail {
         let fixture = official_plugin(plugin_id).expect("official plugin fixture");
-        let permissions = official_default_permissions(plugin_id);
         let runtime = match &fixture.manifest.runtime {
             PluginRuntime::ExtensionHost { .. } => "extensionHost".to_string(),
             PluginRuntime::Native { engine } => format!("native:{engine}"),
@@ -159,7 +147,7 @@ mod tests {
             install_source: PluginInstallSource::Official,
             installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
             config: fixture.default_config,
-            granted_permissions: permissions,
+            granted_permissions: vec![],
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],

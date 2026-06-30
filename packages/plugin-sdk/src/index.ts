@@ -263,7 +263,14 @@ export type GatewayApi = {
   ): void;
 };
 
+export type CommandHandler = (args: JsonValue) => JsonValue;
+
+export type CommandsApi = {
+  registerCommand(command: string, handler: CommandHandler): void;
+};
+
 export type PluginApi = {
+  commands?: CommandsApi;
   gateway?: GatewayApi;
   privacy?: PrivacyApi;
 };

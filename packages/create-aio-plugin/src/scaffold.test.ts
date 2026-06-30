@@ -674,7 +674,7 @@ describe("create-aio-plugin example templates", () => {
       for (const hook of hooks) {
         expect(files["dist/extension.js"]).toContain(`api.gateway.registerHook("${hook}"`);
       }
-      expect(files["dist/extension.js"]).toContain('action: "continue"');
+      expect(files["dist/extension.js"]).toContain('action: "pass"');
       expect(validatePluginFilesStrict(files).ok).toBe(true);
       expectNoGeneratedLegacyFields(files);
       expectExampleReadmeDocumentsDevtoolsLoop(files);

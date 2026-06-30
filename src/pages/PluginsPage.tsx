@@ -19,6 +19,7 @@ import type {
   PluginDetail,
   PluginInstallPreview,
   PluginPermissionRisk,
+  PluginRemotePackageInput,
   PluginStatus,
   PluginSummary,
   PluginUpdateDiff,
@@ -30,17 +31,18 @@ import { Spinner } from "../ui/Spinner";
 import {
   usePluginDisableMutation,
   usePluginEnableMutation,
-  usePluginGrantPermissionsMutation,
   usePluginInstallFromFileMutation,
   usePluginInstallOfficialMutation,
   usePluginInstallRemoteMutation,
   usePluginPreviewFromFileMutation,
+  usePluginPreviewRemoteUpdateMutation,
   usePluginPreviewUpdateFromFileMutation,
   usePluginQuery,
   usePluginRollbackMutation,
   usePluginSaveConfigMutation,
   usePluginUninstallMutation,
   usePluginUpdateFromFileMutation,
+  usePluginUpdateRemoteMutation,
   usePluginsListQuery,
 } from "../query/plugins";
 import { PluginConfigSchemaForm } from "./plugins/PluginConfigSchemaForm";
@@ -94,6 +96,7 @@ function jsonRecord(value: JsonValue): Record<string, JsonValue> | null {
 
 const TRUST_EVENT_TYPES = new Set([
   "plugin.installed",
+  "plugin.remote.installed",
   "plugin.updated",
   "plugin.rollback",
   "plugin.official.installed",
@@ -101,6 +104,51 @@ const TRUST_EVENT_TYPES = new Set([
 
 const PLUGIN_DOCS_URL =
   "https://github.com/dyndynjyxa/aio-coding-hub/blob/main/docs/plugins/README.md";
+
+const GATEWAY_HOOK_ACCESS: Record<string, string[]> = {
+  "gateway.request.afterBodyRead": [
+    "request.meta.read",
+    "request.header.read",
+    "request.header.readSensitive",
+    "request.body.read",
+    "request.header.write",
+    "request.body.write",
+  ],
+  "gateway.request.beforeSend": [
+    "request.meta.read",
+    "request.header.read",
+    "request.header.readSensitive",
+    "request.body.read",
+    "request.header.write",
+    "request.body.write",
+  ],
+  "gateway.response.chunk": ["stream.inspect", "stream.modify"],
+  "gateway.response.after": [
+    "response.header.read",
+    "response.body.read",
+    "response.header.write",
+    "response.body.write",
+  ],
+  "gateway.error": [
+    "response.header.read",
+    "response.body.read",
+    "response.header.write",
+    "response.body.write",
+  ],
+  "log.beforePersist": ["log.redact"],
+};
+
+type UpdatePreviewState =
+  | {
+      source: "file";
+      filePath: string;
+      diff: PluginUpdateDiff;
+    }
+  | {
+      source: "remote";
+      input: PluginRemotePackageInput;
+      diff: PluginUpdateDiff;
+    };
 
 function latestTrustAudit(detail: PluginDetail) {
   return detail.audit_logs
@@ -220,12 +268,18 @@ function PluginListRow({
 }
 
 function PermissionList({ detail }: { detail: PluginDetail }) {
-  const granted = new Set(detail.granted_permissions);
-  const permissions = detail.manifest.permissions ?? [];
+  const permissions = effectiveDataAccessPermissions(detail);
+  if (permissions.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
+        插件未声明网关数据访问
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-2">
       {permissions.map((permission) => {
-        const ok = granted.has(permission);
         const copy = describePluginPermission(permission);
         return (
           <div
@@ -237,12 +291,8 @@ function PermissionList({ detail }: { detail: PluginDetail }) {
               <div className="mt-0.5 text-xs text-muted-foreground">{copy.detail}</div>
               <div className="mt-1 font-mono text-[11px] text-muted-foreground">{permission}</div>
             </div>
-            <span
-              className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
-                ok ? "bg-success/10 text-success" : "bg-warning/10 text-warning"
-              }`}
-            >
-              {ok ? "已允许" : "待允许"}
+            <span className="rounded-md border border-border px-2 py-0.5 text-xs">
+              {pluginRiskLabel(copy.risk)}
             </span>
           </div>
         );
@@ -251,13 +301,25 @@ function PermissionList({ detail }: { detail: PluginDetail }) {
   );
 }
 
+function effectiveDataAccessPermissions(detail: PluginDetail): string[] {
+  if (detail.manifest.runtime.kind !== "extensionHost") return [];
+  if (!(detail.manifest.capabilities ?? []).includes("gateway.hooks")) return [];
+
+  const permissions = new Set<string>();
+  for (const hook of detail.manifest.contributes?.gatewayHooks ?? []) {
+    for (const permission of GATEWAY_HOOK_ACCESS[hook.name] ?? []) {
+      permissions.add(permission);
+    }
+  }
+  return Array.from(permissions).sort();
+}
+
 function PluginDetailPanel({
   detail,
   loading,
   onSaveConfig,
   onUpdate,
   onRollback,
-  onGrantPendingPermissions,
   savingConfig,
   busy,
 }: {
@@ -266,7 +328,6 @@ function PluginDetailPanel({
   onSaveConfig: (config: JsonValue) => void;
   onUpdate: () => void;
   onRollback: (version: string) => void;
-  onGrantPendingPermissions: (pluginId: string, permissions: readonly string[]) => void;
   savingConfig: boolean;
   busy: boolean;
 }) {
@@ -301,26 +362,8 @@ function PluginDetailPanel({
               未签名
             </span>
           ) : null}
-          {detail.pending_permissions.length > 0 ? (
-            <span className="rounded-md border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-semibold text-warning">
-              新权限待授权
-            </span>
-          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
-          {detail.pending_permissions.length > 0 ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={busy}
-              onClick={() =>
-                onGrantPendingPermissions(detail.summary.plugin_id, detail.pending_permissions)
-              }
-            >
-              <ShieldAlert className="h-3.5 w-3.5" />
-              授权待审批权限
-            </Button>
-          ) : null}
           {detail.summary.update_available ? (
             <Button size="sm" variant="secondary" disabled={busy} onClick={onUpdate}>
               <Upload className="h-3.5 w-3.5" />
@@ -351,7 +394,7 @@ function PluginDetailPanel({
         detail.summary.permission_risk === "critical" ? (
           <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <ShieldAlert className="h-4 w-4" />
-            高危权限需要确认插件来源和用途。
+            高危数据访问需要确认插件来源和用途。
           </div>
         ) : null}
         <PermissionList detail={detail} />
@@ -410,19 +453,17 @@ export function PluginsPage() {
     filePath: string;
     preview: PluginInstallPreview;
   } | null>(null);
-  const [updatePreviewState, setUpdatePreviewState] = useState<{
-    filePath: string;
-    diff: PluginUpdateDiff;
-  } | null>(null);
+  const [updatePreviewState, setUpdatePreviewState] = useState<UpdatePreviewState | null>(null);
   const previewInstallMutation = usePluginPreviewFromFileMutation();
   const previewUpdateMutation = usePluginPreviewUpdateFromFileMutation();
+  const previewRemoteUpdateMutation = usePluginPreviewRemoteUpdateMutation();
   const installMutation = usePluginInstallFromFileMutation();
   const installOfficialMutation = usePluginInstallOfficialMutation();
   const installRemoteMutation = usePluginInstallRemoteMutation();
   const updateMutation = usePluginUpdateFromFileMutation();
+  const updateRemoteMutation = usePluginUpdateRemoteMutation();
   const rollbackMutation = usePluginRollbackMutation();
   const enableMutation = usePluginEnableMutation();
-  const grantPermissionsMutation = usePluginGrantPermissionsMutation();
   const disableMutation = usePluginDisableMutation();
   const uninstallMutation = usePluginUninstallMutation();
   const saveConfigMutation = usePluginSaveConfigMutation();
@@ -452,13 +493,14 @@ export function PluginsPage() {
   const busy =
     previewInstallMutation.isPending ||
     previewUpdateMutation.isPending ||
+    previewRemoteUpdateMutation.isPending ||
     installMutation.isPending ||
     installOfficialMutation.isPending ||
     installRemoteMutation.isPending ||
     updateMutation.isPending ||
+    updateRemoteMutation.isPending ||
     rollbackMutation.isPending ||
     enableMutation.isPending ||
-    grantPermissionsMutation.isPending ||
     disableMutation.isPending ||
     uninstallMutation.isPending ||
     saveConfigMutation.isPending;
@@ -504,7 +546,16 @@ export function PluginsPage() {
     if (!filePath) return;
     try {
       const diff = await previewUpdateMutation.mutateAsync(filePath);
-      setUpdatePreviewState({ filePath, diff });
+      setUpdatePreviewState({ source: "file", filePath, diff });
+    } catch (error) {
+      toast.error(formatActionFailureToast("预览更新", error).toast);
+    }
+  }
+
+  async function handleRemoteUpdate(input: PluginRemotePackageInput) {
+    try {
+      const diff = await previewRemoteUpdateMutation.mutateAsync(input);
+      setUpdatePreviewState({ source: "remote", input, diff });
     } catch (error) {
       toast.error(formatActionFailureToast("预览更新", error).toast);
     }
@@ -520,11 +571,19 @@ export function PluginsPage() {
 
   async function confirmUpdatePreview() {
     if (!updatePreviewState) return;
-    const done = await runAction("更新插件", () =>
-      updateMutation.mutateAsync(updatePreviewState.filePath)
-    );
+    const done = await runAction("更新插件", () => {
+      if (updatePreviewState.source === "remote") {
+        return updateRemoteMutation.mutateAsync(updatePreviewState.input);
+      }
+      return updateMutation.mutateAsync(updatePreviewState.filePath);
+    });
     if (done) setUpdatePreviewState(null);
   }
+
+  const updatePreviewLabel =
+    updatePreviewState?.source === "remote"
+      ? updatePreviewState.input.downloadUrl
+      : (updatePreviewState?.filePath ?? null);
 
   if (listQuery.isLoading) {
     return (
@@ -567,6 +626,7 @@ export function PluginsPage() {
             onInstall={(input) =>
               runAction("安装市场插件", () => installRemoteMutation.mutateAsync(input))
             }
+            onUpdate={handleRemoteUpdate}
             onInstallOfficial={(pluginId) =>
               runAction("安装官方插件", () => installOfficialMutation.mutateAsync(pluginId))
             }
@@ -636,15 +696,6 @@ export function PluginsPage() {
                     saveConfigMutation.mutateAsync({ pluginId: effectiveSelectedPluginId, config })
                   );
                 }}
-                onGrantPendingPermissions={(_pluginId, permissions) => {
-                  if (!effectiveSelectedPluginId) return;
-                  runAction("授权权限", () =>
-                    grantPermissionsMutation.mutateAsync({
-                      pluginId: effectiveSelectedPluginId,
-                      permissions,
-                    })
-                  );
-                }}
               />
             </div>
           </div>
@@ -662,8 +713,8 @@ export function PluginsPage() {
       <PluginUpdatePreviewDialog
         open={updatePreviewState != null}
         diff={updatePreviewState?.diff ?? null}
-        filePath={updatePreviewState?.filePath ?? null}
-        confirming={updateMutation.isPending}
+        filePath={updatePreviewLabel}
+        confirming={updateMutation.isPending || updateRemoteMutation.isPending}
         onClose={() => setUpdatePreviewState(null)}
         onConfirm={confirmUpdatePreview}
       />

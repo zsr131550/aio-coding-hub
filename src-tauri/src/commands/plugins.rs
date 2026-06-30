@@ -270,6 +270,38 @@ pub(crate) async fn plugin_preview_update_from_file(
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) async fn plugin_preview_remote_update(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    input: PluginInstallRemoteInput,
+) -> Result<PluginUpdateDiff, String> {
+    let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
+    let package_bytes = download_remote_plugin_package(&input.download_url).await?;
+    blocking::run("plugin_preview_remote_update", move || {
+        let cache_dir = crate::app_paths::plugins_cache_dir(&app)?;
+        let install_source = remote_install_source(input.source.as_deref(), &input.download_url)?;
+        plugin_service::preview_plugin_update_from_remote_package_bytes(
+            &db,
+            package_bytes,
+            &input.download_url,
+            &cache_dir,
+            env!("CARGO_PKG_VERSION"),
+            plugin_service::RemotePackageInstallPolicy {
+                install_source,
+                expected_plugin_id: input.plugin_id,
+                expected_checksum: input.checksum,
+                signature: input.signature,
+                public_key: input.public_key,
+                market_source_url: input.market_source_url,
+            },
+        )
+    })
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn plugin_install_from_file(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
@@ -431,6 +463,45 @@ pub(crate) async fn plugin_install_remote(
         let installed_dir = crate::app_paths::plugins_installed_dir(&app)?;
         let install_source = remote_install_source(input.source.as_deref(), &input.download_url)?;
         plugin_service::install_plugin_from_remote_package_bytes(
+            &db,
+            package_bytes,
+            &input.download_url,
+            &cache_dir,
+            &installed_dir,
+            env!("CARGO_PKG_VERSION"),
+            plugin_service::RemotePackageInstallPolicy {
+                install_source,
+                expected_plugin_id: input.plugin_id,
+                expected_checksum: input.checksum,
+                signature: input.signature,
+                public_key: input.public_key,
+                market_source_url: input.market_source_url,
+            },
+        )
+        .and_then(|detail| refresh_running_gateway_plugins(&app, &db, detail))
+        .and_then(|detail| ensure_plugin_runtime_dirs(&app, detail))
+    })
+    .await
+    .map_err(String::from)?;
+    dispose_plugin_extension_host_after_lifecycle_change(&registry_state, &detail).await;
+    Ok(detail)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn plugin_update_remote(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    registry_state: tauri::State<'_, ExtensionHostRuntimeState>,
+    input: PluginInstallRemoteInput,
+) -> Result<PluginDetail, String> {
+    let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
+    let package_bytes = download_remote_plugin_package(&input.download_url).await?;
+    let detail = blocking::run("plugin_update_remote", move || {
+        let cache_dir = crate::app_paths::plugins_cache_dir(&app)?;
+        let installed_dir = crate::app_paths::plugins_installed_dir(&app)?;
+        let install_source = remote_install_source(input.source.as_deref(), &input.download_url)?;
+        plugin_service::update_plugin_from_remote_package_bytes(
             &db,
             package_bytes,
             &input.download_url,
@@ -928,6 +999,7 @@ INSERT INTO plugin_market_sources(
             "plugin_disable",
             "plugin_uninstall",
             "plugin_update_from_file",
+            "plugin_update_remote",
             "plugin_rollback",
             "plugin_quarantine_revoked",
         ] {

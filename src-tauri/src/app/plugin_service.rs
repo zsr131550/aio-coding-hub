@@ -1,13 +1,14 @@
 use crate::app::plugins::contribution_registry::ActiveContributionSnapshot;
 use crate::app::plugins::extension_host_registry::ExtensionHostInstanceRegistry;
 use crate::domain::plugins::{
-    permission_risk, validate_manifest, validate_manifest_for_official_plugin, PluginCommandImpact,
-    PluginCompatibilitySummary, PluginContributionChange, PluginContributionImpact,
-    PluginContributionImpactItem, PluginDetail, PluginHookLifecycleSummary, PluginInstallPreview,
-    PluginInstallSource, PluginLifecycleChange, PluginLifecycleNotice, PluginManifest,
-    PluginPermissionLifecycleChange, PluginPermissionLifecycleSummary, PluginPermissionRisk,
-    PluginRuntime, PluginRuntimeLifecycleSummary, PluginStatus, PluginTrustSummary,
-    PluginUiSlotImpact, PluginUpdateDiff,
+    manifest_effective_permissions, permission_risk, validate_manifest,
+    validate_manifest_for_official_plugin, PluginCommandImpact, PluginCompatibilitySummary,
+    PluginContributionChange, PluginContributionImpact, PluginContributionImpactItem, PluginDetail,
+    PluginHookLifecycleSummary, PluginInstallPreview, PluginInstallSource, PluginLifecycleChange,
+    PluginLifecycleNotice, PluginManifest, PluginPermissionLifecycleChange,
+    PluginPermissionLifecycleSummary, PluginPermissionRisk, PluginRuntime,
+    PluginRuntimeLifecycleSummary, PluginStatus, PluginTrustSummary, PluginUiSlotImpact,
+    PluginUpdateDiff,
 };
 use crate::infra::plugins::runtime_reports::{
     record_extension_execution_report, RecordPluginExtensionExecutionReportInput,
@@ -446,9 +447,7 @@ pub(crate) fn install_official_plugin(
         &fixture.default_config,
         &[],
     )?;
-    let default_permissions =
-        crate::app::plugins::official::official_default_permissions(plugin_id);
-    let detail = repository::save_plugin_permissions(db, plugin_id, &default_permissions, &[])?;
+    let detail = repository::save_plugin_permissions(db, plugin_id, &[], &[])?;
     append_audit(
         db,
         Some(plugin_id.to_string()),
@@ -470,7 +469,6 @@ pub(crate) fn install_plugin_manifest(
     validate_manifest_for_source(&manifest, install_source, host_version)?;
     validate_reserved_official_source(&manifest, install_source)?;
     let plugin_id = manifest.id.clone();
-    let requested_permissions = manifest.permissions.clone();
     let detail = repository::insert_plugin(
         db,
         repository::InsertPluginInput {
@@ -483,7 +481,7 @@ pub(crate) fn install_plugin_manifest(
     let detail = if install_source == PluginInstallSource::Official {
         detail
     } else {
-        repository::save_plugin_permissions(db, &plugin_id, &[], &requested_permissions)?
+        repository::save_plugin_permissions(db, &plugin_id, &[], &[])?
     };
     append_audit(
         db,
@@ -1031,6 +1029,7 @@ fn build_install_preview(
     let existing_version = existing
         .as_ref()
         .and_then(|detail| detail.summary.current_version.clone());
+    let effective_permissions = manifest_effective_permissions(manifest);
 
     Ok(PluginInstallPreview {
         plugin_id: manifest.id.clone(),
@@ -1046,9 +1045,9 @@ fn build_install_preview(
         runtime,
         hooks: hook_lifecycle_summaries(manifest),
         permissions: permission_lifecycle_summaries(
-            &manifest.permissions,
+            &effective_permissions,
+            &effective_permissions,
             &[],
-            &manifest.permissions,
         ),
         contribution_impact: contribution_impact(manifest),
         compatibility,
@@ -1268,8 +1267,10 @@ fn diff_permissions(
     current: &PluginDetail,
     next: &PluginManifest,
 ) -> Vec<PluginPermissionLifecycleChange> {
-    let mut all = current.manifest.permissions.clone();
-    for permission in &next.permissions {
+    let current_permissions = manifest_effective_permissions(&current.manifest);
+    let next_permissions = manifest_effective_permissions(next);
+    let mut all = current_permissions.clone();
+    for permission in &next_permissions {
         if !all.contains(permission) {
             all.push(permission.clone());
         }
@@ -1278,17 +1279,13 @@ fn diff_permissions(
 
     all.into_iter()
         .map(|permission| {
-            let was_requested = current.manifest.permissions.contains(&permission);
-            let is_requested = next.permissions.contains(&permission);
-            let was_granted = current.granted_permissions.contains(&permission);
-            let was_pending = current.pending_permissions.contains(&permission);
-            let change = match (was_requested, is_requested, was_granted, was_pending) {
-                (true, true, true, _) => "unchanged_granted",
-                (true, true, false, true) => "unchanged_pending",
-                (true, true, false, false) => "unchanged_requested",
-                (false, true, _, _) => "added_pending",
-                (true, false, _, _) => "removed",
-                (false, false, _, _) => "not_requested",
+            let was_available = current_permissions.contains(&permission);
+            let is_available = next_permissions.contains(&permission);
+            let change = match (was_available, is_available) {
+                (true, true) => "unchanged",
+                (false, true) => "added",
+                (true, false) => "removed",
+                (false, false) => "not_available",
             };
             let risk = permission_risk(&permission).unwrap_or(PluginPermissionRisk::Low);
             PluginPermissionLifecycleChange {
@@ -1297,7 +1294,7 @@ fn diff_permissions(
                 change: change.to_string(),
             }
         })
-        .filter(|change| change.change != "not_requested")
+        .filter(|change| matches!(change.change.as_str(), "added" | "removed"))
         .collect()
 }
 
@@ -1531,28 +1528,10 @@ fn short_contribution_summary(value: impl AsRef<str>) -> String {
 }
 
 fn reconcile_permissions_for_manifest(
-    current: &PluginDetail,
-    manifest: &PluginManifest,
+    _current: &PluginDetail,
+    _manifest: &PluginManifest,
 ) -> (Vec<String>, Vec<String>) {
-    let mut granted: Vec<String> = current
-        .granted_permissions
-        .iter()
-        .filter(|permission| manifest.permissions.contains(*permission))
-        .cloned()
-        .collect();
-    granted.sort();
-    granted.dedup();
-
-    let mut pending: Vec<String> = manifest
-        .permissions
-        .iter()
-        .filter(|permission| !granted.contains(permission))
-        .cloned()
-        .collect();
-    pending.sort();
-    pending.dedup();
-
-    (granted, pending)
+    (Vec::new(), Vec::new())
 }
 
 fn config_for_manifest_version(
@@ -1629,7 +1608,6 @@ pub(crate) fn install_plugin_from_local_package_with_policy(
         })?;
 
         replace_dir(&extracted.root_dir, &installed_dir)?;
-        let requested_permissions = extracted.manifest.permissions.clone();
         let detail = repository::with_plugin_transaction(db, |tx| {
             repository::insert_plugin_with_tx(
                 tx,
@@ -1640,12 +1618,7 @@ pub(crate) fn install_plugin_from_local_package_with_policy(
                     installed_dir: Some(installed_dir.to_string_lossy().to_string()),
                 },
             )?;
-            let detail = repository::save_plugin_permissions_with_tx(
-                tx,
-                &plugin_id,
-                &[],
-                &requested_permissions,
-            )?;
+            let detail = repository::save_plugin_permissions_with_tx(tx, &plugin_id, &[], &[])?;
             append_audit_with_tx(
                 tx,
                 Some(plugin_id.clone()),
@@ -1763,6 +1736,120 @@ pub(crate) fn install_plugin_from_remote_package_bytes(
 
     let _ = std::fs::remove_file(&package_path);
     result
+}
+
+pub(crate) fn preview_plugin_update_from_remote_package_bytes(
+    db: &crate::db::Db,
+    package_bytes: Vec<u8>,
+    source_url: &str,
+    cache_dir: &Path,
+    host_version: &str,
+    policy: RemotePackageInstallPolicy,
+) -> AppResult<PluginUpdateDiff> {
+    let package_path =
+        write_remote_package_bytes(cache_dir, &policy.expected_plugin_id, &package_bytes)?;
+    let local_policy = local_policy_for_remote_package(db, source_url, &policy)?;
+    let result = preview_plugin_update_from_local_package(
+        db,
+        &package_path,
+        cache_dir,
+        host_version,
+        local_policy,
+    );
+    let _ = std::fs::remove_file(&package_path);
+    result
+}
+
+pub(crate) fn update_plugin_from_remote_package_bytes(
+    db: &crate::db::Db,
+    package_bytes: Vec<u8>,
+    source_url: &str,
+    cache_dir: &Path,
+    installed_root: &Path,
+    host_version: &str,
+    policy: RemotePackageInstallPolicy,
+) -> AppResult<PluginDetail> {
+    let install_source = policy.install_source;
+    let package_path =
+        write_remote_package_bytes(cache_dir, &policy.expected_plugin_id, &package_bytes)?;
+    let local_policy = local_policy_for_remote_package(db, source_url, &policy)?;
+    let result = update_plugin_from_local_package(
+        db,
+        &package_path,
+        cache_dir,
+        installed_root,
+        host_version,
+        local_policy,
+    )
+    .inspect(|detail| {
+        tracing::info!(
+            plugin_id = %detail.summary.plugin_id,
+            source = install_source.as_str(),
+            "remote plugin package updated"
+        );
+    });
+    let _ = std::fs::remove_file(&package_path);
+    result
+}
+
+fn write_remote_package_bytes(
+    cache_dir: &Path,
+    expected_plugin_id: &str,
+    package_bytes: &[u8],
+) -> AppResult<PathBuf> {
+    std::fs::create_dir_all(cache_dir).map_err(|e| {
+        format!(
+            "failed to create plugin cache dir {}: {e}",
+            cache_dir.display()
+        )
+    })?;
+    let package_path = unique_remote_package_path(
+        cache_dir,
+        crate::app_paths::plugin_id_path_segment(expected_plugin_id)?,
+    );
+    std::fs::write(&package_path, package_bytes).map_err(|e| {
+        format!(
+            "failed to write remote plugin package cache {}: {e}",
+            package_path.display()
+        )
+    })?;
+    Ok(package_path)
+}
+
+fn local_policy_for_remote_package(
+    db: &crate::db::Db,
+    source_url: &str,
+    policy: &RemotePackageInstallPolicy,
+) -> AppResult<LocalPackageInstallPolicy> {
+    if !matches!(
+        policy.install_source,
+        PluginInstallSource::Market | PluginInstallSource::GithubRelease
+    ) {
+        return Err(AppError::new(
+            "PLUGIN_REMOTE_INSTALL_SOURCE_INVALID",
+            "remote plugin install source must be market or GitHub release",
+        ));
+    }
+    if policy.expected_checksum.trim().is_empty() {
+        return Err(AppError::new(
+            "PLUGIN_REMOTE_CHECKSUM_REQUIRED",
+            "remote plugin installation requires a package checksum",
+        ));
+    }
+    let public_key = remote_package_trusted_public_key(db, source_url, policy)?;
+    Ok(LocalPackageInstallPolicy {
+        expected_plugin_id: Some(policy.expected_plugin_id.clone()),
+        expected_checksum: Some(policy.expected_checksum.clone()),
+        signature: policy.signature.clone(),
+        public_key,
+        allow_unsigned: false,
+        developer_mode: false,
+        install_source: policy.install_source,
+        remote_source_url: Some(source_url.to_string()),
+        market_source_url: (policy.install_source == PluginInstallSource::Market)
+            .then(|| policy.market_source_url.clone())
+            .flatten(),
+    })
 }
 
 fn remote_package_trusted_public_key(
@@ -2115,7 +2202,6 @@ pub(crate) fn enable_plugin(
     }
     validate_manifest_for_source(&detail.manifest, detail.install_source, host_version)?;
     ensure_runtime_enabled(&detail.manifest)?;
-    ensure_required_permissions_granted(&detail)?;
     validate_config_against_schema(detail.manifest.config_schema.as_ref(), &detail.config)?;
     let mut candidate = detail.clone();
     candidate.summary.status = PluginStatus::Enabled;
@@ -2198,85 +2284,25 @@ pub(crate) fn save_plugin_config(
 pub(crate) fn grant_plugin_permissions(
     db: &crate::db::Db,
     plugin_id: &str,
-    permissions: Vec<String>,
+    _permissions: Vec<String>,
 ) -> AppResult<PluginDetail> {
-    let detail = repository::get_plugin(db, plugin_id)?;
-    let mut granted = detail.granted_permissions;
-    for permission in permissions {
-        if !detail.manifest.permissions.contains(&permission) {
-            return Err(AppError::new(
-                "PLUGIN_PERMISSION_NOT_REQUESTED",
-                format!("plugin did not request permission: {permission}"),
-            ));
-        }
-        if !granted.contains(&permission) {
-            granted.push(permission);
-        }
-    }
-    granted.sort();
-    let next = repository::save_plugin_permissions(db, plugin_id, &granted, &[])?;
-    append_audit(
-        db,
-        Some(plugin_id.to_string()),
-        "plugin.permissions.granted",
-        "high",
-        "Plugin permissions granted",
-        serde_json::json!({ "permissions": granted }),
-    )?;
-    Ok(next)
+    let _ = repository::get_plugin(db, plugin_id)?;
+    Err(AppError::new(
+        "PLUGIN_PERMISSION_MODEL_REMOVED",
+        "Extension Host access is derived from capabilities and contributions; manual permission grants are not supported",
+    ))
 }
 
 pub(crate) fn revoke_plugin_permission(
     db: &crate::db::Db,
     plugin_id: &str,
-    permission: &str,
+    _permission: &str,
 ) -> AppResult<PluginDetail> {
-    let detail = repository::get_plugin(db, plugin_id)?;
-    let granted: Vec<String> = detail
-        .granted_permissions
-        .into_iter()
-        .filter(|item| item != permission)
-        .collect();
-    let next = repository::save_plugin_permissions(db, plugin_id, &granted, &[])?;
-    append_audit(
-        db,
-        Some(plugin_id.to_string()),
-        "plugin.permissions.revoked",
-        "medium",
-        "Plugin permission revoked",
-        serde_json::json!({ "permission": permission }),
-    )?;
-    repository::get_plugin(db, plugin_id).or(Ok(next))
-}
-
-fn ensure_required_permissions_granted(detail: &PluginDetail) -> AppResult<()> {
-    if matches!(detail.manifest.runtime, PluginRuntime::ExtensionHost { .. }) {
-        return Ok(());
-    }
-
-    let missing: Vec<&str> = detail
-        .manifest
-        .permissions
-        .iter()
-        .map(String::as_str)
-        .filter(|permission| {
-            !detail
-                .granted_permissions
-                .iter()
-                .any(|item| item == permission)
-        })
-        .collect();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(AppError::new(
-            "PLUGIN_PERMISSION_REQUIRED",
-            format!(
-                "missing required plugin permissions: {}",
-                missing.join(", ")
-            ),
-        ))
-    }
+    let _ = repository::get_plugin(db, plugin_id)?;
+    Err(AppError::new(
+        "PLUGIN_PERMISSION_MODEL_REMOVED",
+        "Extension Host access is derived from capabilities and contributions; manual permission revocation is not supported",
+    ))
 }
 
 fn ensure_runtime_enabled(manifest: &PluginManifest) -> AppResult<()> {
@@ -3224,13 +3250,13 @@ mod tests {
     }
 
     #[test]
-    fn revoke_official_plugin_permission_removes_grant_and_records_audit() {
+    fn manual_permission_mutations_are_rejected_for_extension_host_plugins() {
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::init_for_tests(&dir.path().join("official-revoke.db")).unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("permission-model.db")).unwrap();
         let installed_root = dir.path().join("installed");
         let official_root = crate::app::plugins::official::official_resource_root_for_tests();
 
-        install_official_plugin(
+        let installed = install_official_plugin(
             &db,
             "official.privacy-filter",
             &official_root,
@@ -3238,17 +3264,20 @@ mod tests {
             &installed_root,
         )
         .unwrap();
+        assert!(installed.granted_permissions.is_empty());
+        assert!(installed.pending_permissions.is_empty());
 
-        let detail =
-            revoke_plugin_permission(&db, "official.privacy-filter", "log.redact").unwrap();
+        let grant_err = grant_plugin_permissions(
+            &db,
+            "official.privacy-filter",
+            vec!["log.redact".to_string()],
+        )
+        .unwrap_err();
+        assert_eq!(grant_err.code(), "PLUGIN_PERMISSION_MODEL_REMOVED");
 
-        assert!(!detail
-            .granted_permissions
-            .contains(&"log.redact".to_string()));
-        assert!(detail
-            .audit_logs
-            .iter()
-            .any(|log| log.event_type == "plugin.permissions.revoked"));
+        let revoke_err =
+            revoke_plugin_permission(&db, "official.privacy-filter", "log.redact").unwrap_err();
+        assert_eq!(revoke_err.code(), "PLUGIN_PERMISSION_MODEL_REMOVED");
     }
 
     #[test]
@@ -3275,9 +3304,9 @@ mod tests {
         let installed_dir = std::path::Path::new(installed.installed_dir.as_deref().unwrap());
         assert!(installed_dir.join("plugin.json").exists());
         assert!(installed_dir.join("rules/gitleaks.toml").exists());
-        assert!(installed
-            .granted_permissions
-            .contains(&"log.redact".to_string()));
+        assert!(installed.granted_permissions.is_empty());
+        assert!(installed.pending_permissions.is_empty());
+        assert!(installed.manifest.permissions.is_empty());
         assert_eq!(installed.config["redactBeforeUpstream"], true);
         assert_eq!(installed.config["redactLogs"], true);
 
@@ -3530,12 +3559,11 @@ INSERT INTO plugins (
         assert_eq!(installed.config["redactBeforeUpstream"], true);
         assert_eq!(installed.config["redactLogs"], true);
         assert_eq!(installed.config["profile"], "balanced");
-        assert!(installed
-            .granted_permissions
-            .contains(&"request.body.write".to_string()));
-        assert!(installed
-            .granted_permissions
-            .contains(&"log.redact".to_string()));
+        assert!(installed.granted_permissions.is_empty());
+        assert!(installed.pending_permissions.is_empty());
+        let effective_permissions = manifest_effective_permissions(&installed.manifest);
+        assert!(effective_permissions.contains(&"request.body.write".to_string()));
+        assert!(effective_permissions.contains(&"log.redact".to_string()));
     }
 
     #[test]
@@ -4158,7 +4186,18 @@ INSERT INTO plugins (
         assert!(preview.compatibility.compatible);
         assert!(preview.trust.unsigned);
         assert!(!preview.trust.signature_verified);
-        assert!(preview.permissions.is_empty());
+        assert!(preview
+            .permissions
+            .iter()
+            .any(|permission| permission.permission == "request.body.read"));
+        assert!(preview
+            .permissions
+            .iter()
+            .any(|permission| permission.permission == "request.body.write"));
+        assert!(preview
+            .permissions
+            .iter()
+            .all(|permission| permission.granted && !permission.pending));
         assert_eq!(preview.hooks[0].name, "gateway.request.afterBodyRead");
         assert_eq!(
             preview.contribution_impact.capabilities,
@@ -4226,7 +4265,14 @@ INSERT INTO plugins (
             .blocking_reasons
             .iter()
             .all(|notice| notice.code != "PLUGIN_UNSIGNED_HIGH_RISK_PERMISSION"));
-        assert!(preview.permissions.is_empty());
+        assert!(preview
+            .permissions
+            .iter()
+            .any(|permission| permission.permission == "request.body.write"));
+        assert!(preview
+            .permissions
+            .iter()
+            .all(|permission| !permission.pending));
         assert!(repository::get_plugin(&db, "local.preview-extension-host").is_err());
     }
 

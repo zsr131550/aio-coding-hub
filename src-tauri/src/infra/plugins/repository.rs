@@ -1,8 +1,8 @@
 use crate::db;
 use crate::domain::plugins::{
-    validate_manifest, validate_manifest_for_official_plugin, PluginAuditLog, PluginDetail,
-    PluginInstallSource, PluginManifest, PluginPermissionRisk, PluginRuntime, PluginRuntimeFailure,
-    PluginStatus, PluginSummary,
+    manifest_permission_risk, validate_manifest, validate_manifest_for_official_plugin,
+    PluginAuditLog, PluginDetail, PluginInstallSource, PluginManifest, PluginPermissionRisk,
+    PluginRuntime, PluginRuntimeFailure, PluginStatus, PluginSummary,
 };
 use crate::shared::error::{db_err, AppResult};
 use crate::shared::time::now_unix_seconds;
@@ -712,7 +712,7 @@ fn summary_from_row(row: &rusqlite::Row<'_>) -> Result<PluginSummary, rusqlite::
         .unwrap_or_else(|| "unknown".to_string());
     let permission_risk = manifest
         .as_ref()
-        .map(|manifest| highest_permission_risk(&manifest.permissions))
+        .map(manifest_permission_risk)
         .unwrap_or(PluginPermissionRisk::Low);
 
     Ok(PluginSummary {
@@ -848,20 +848,6 @@ fn install_source_for_plugin_with_conn(
         .as_deref()
         .and_then(PluginInstallSource::parse)
         .unwrap_or(PluginInstallSource::Local))
-}
-
-fn highest_permission_risk(permissions: &[String]) -> PluginPermissionRisk {
-    use crate::domain::plugins::permission_risk;
-    permissions
-        .iter()
-        .filter_map(|permission| permission_risk(permission))
-        .max_by_key(|risk| match risk {
-            PluginPermissionRisk::Low => 0,
-            PluginPermissionRisk::Medium => 1,
-            PluginPermissionRisk::High => 2,
-            PluginPermissionRisk::Critical => 3,
-        })
-        .unwrap_or(PluginPermissionRisk::Low)
 }
 
 fn parse_manifest_lossy(raw: &str) -> Option<PluginManifest> {

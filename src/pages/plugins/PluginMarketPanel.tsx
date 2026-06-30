@@ -18,12 +18,14 @@ export function PluginMarketPanel({
   plugins,
   busy,
   onInstall,
+  onUpdate,
   onInstallOfficial,
   onSelectInstalled,
 }: {
   plugins: readonly PluginSummary[];
   busy: boolean;
   onInstall: (input: MarketInstallInput) => Promise<unknown>;
+  onUpdate: (input: MarketInstallInput) => Promise<unknown>;
   onInstallOfficial: (pluginId: string) => Promise<unknown>;
   onSelectInstalled: (pluginId: string) => void;
 }) {
@@ -77,7 +79,11 @@ export function PluginMarketPanel({
 
     const input = toMarketInstallInput(card);
     if (input) {
-      await onInstall(input);
+      if (card.action === "update") {
+        await onUpdate(input);
+      } else {
+        await onInstall(input);
+      }
     }
   }
 

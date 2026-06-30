@@ -157,7 +157,7 @@ export function PluginInstallPreviewDialog({
     <Dialog
       open={open}
       title="安装前预检"
-      description="确认本地插件包的来源、权限和兼容性后再安装。"
+      description="确认本地插件包的来源、数据访问和兼容性后再安装。"
       className="max-w-2xl"
       onOpenChange={(nextOpen) => {
         if (!nextOpen) onClose();
@@ -234,7 +234,7 @@ export function PluginInstallPreviewDialog({
           </div>
 
           <div className="space-y-2">
-            <div className="text-sm font-semibold text-foreground">权限</div>
+            <div className="text-sm font-semibold text-foreground">数据访问</div>
             <div className="grid gap-2">
               {preview.permissions.length > 0 ? (
                 preview.permissions.map((permission) => {
@@ -259,7 +259,7 @@ export function PluginInstallPreviewDialog({
                 })
               ) : (
                 <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
-                  插件未请求额外权限
+                  插件未声明额外数据访问
                 </div>
               )}
             </div>

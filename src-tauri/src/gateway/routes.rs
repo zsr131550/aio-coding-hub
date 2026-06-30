@@ -945,7 +945,6 @@ mod tests {
     fn official_privacy_filter_for_tests() -> PluginDetail {
         let fixture = official::official_plugin("official.privacy-filter")
             .expect("official privacy filter fixture");
-        let permissions = official::official_default_permissions(&fixture.manifest.id);
         PluginDetail {
             summary: PluginSummary {
                 id: 1,
@@ -964,7 +963,7 @@ mod tests {
             install_source: PluginInstallSource::Official,
             installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
             config: fixture.default_config,
-            granted_permissions: permissions,
+            granted_permissions: vec![],
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
@@ -1272,7 +1271,6 @@ mod tests {
             .expect("init test db");
         let fixture = official::official_plugin("official.privacy-filter")
             .expect("official privacy filter fixture");
-        let permissions = official::official_default_permissions(&fixture.manifest.id);
         let plugin = PluginDetail {
             summary: PluginSummary {
                 id: 1,
@@ -1291,7 +1289,7 @@ mod tests {
             install_source: PluginInstallSource::Official,
             installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
             config: fixture.default_config,
-            granted_permissions: permissions.clone(),
+            granted_permissions: vec![],
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
@@ -1307,7 +1305,7 @@ mod tests {
             },
         )
         .expect("insert official privacy filter");
-        repository::save_plugin_permissions(&db, &plugin.summary.plugin_id, &permissions, &[])
+        repository::save_plugin_permissions(&db, &plugin.summary.plugin_id, &[], &[])
             .expect("grant official privacy filter permissions");
         repository::save_plugin_config(
             &db,
@@ -1404,7 +1402,6 @@ mod tests {
         .expect("init test db");
         let fixture = official::official_plugin("official.privacy-filter")
             .expect("official privacy filter fixture");
-        let permissions = official::official_default_permissions(&fixture.manifest.id);
         let plugin = PluginDetail {
             summary: PluginSummary {
                 id: 1,
@@ -1423,7 +1420,7 @@ mod tests {
             install_source: PluginInstallSource::Official,
             installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
             config: fixture.default_config,
-            granted_permissions: permissions.clone(),
+            granted_permissions: vec![],
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
@@ -1439,7 +1436,7 @@ mod tests {
             },
         )
         .expect("insert official privacy filter");
-        repository::save_plugin_permissions(&db, &plugin.summary.plugin_id, &permissions, &[])
+        repository::save_plugin_permissions(&db, &plugin.summary.plugin_id, &[], &[])
             .expect("grant official privacy filter permissions");
         repository::save_plugin_config(
             &db,

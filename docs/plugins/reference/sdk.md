@@ -165,7 +165,7 @@ const result = {
 真正的宿主强制检查仍发生在 Rust application 中：
 
 - manifest compatibility checks。
-- capability grants。
+- capability contract checks。
 - hook context trimming。
 - mutation envelope enforcement。
 - runtime timeout 和 failure policy handling。

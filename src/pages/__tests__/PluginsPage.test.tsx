@@ -20,17 +20,18 @@ import { createTestQueryClient } from "../../test/utils/reactQuery";
 import {
   usePluginDisableMutation,
   usePluginEnableMutation,
-  usePluginGrantPermissionsMutation,
   usePluginInstallFromFileMutation,
   usePluginInstallOfficialMutation,
   usePluginInstallRemoteMutation,
   usePluginPreviewFromFileMutation,
+  usePluginPreviewRemoteUpdateMutation,
   usePluginPreviewUpdateFromFileMutation,
   usePluginExportReplayFixtureMutation,
   usePluginExtensionRuntimeReportsQuery,
   usePluginQuery,
   usePluginRollbackMutation,
   usePluginSaveConfigMutation,
+  usePluginUpdateRemoteMutation,
   usePluginUpdateFromFileMutation,
   usePluginsListQuery,
   usePluginUninstallMutation,
@@ -80,13 +81,14 @@ vi.mock("../../query/plugins", async () => {
     usePluginInstallOfficialMutation: vi.fn(),
     usePluginInstallRemoteMutation: vi.fn(),
     usePluginPreviewFromFileMutation: vi.fn(),
+    usePluginPreviewRemoteUpdateMutation: vi.fn(),
     usePluginPreviewUpdateFromFileMutation: vi.fn(),
     usePluginExportReplayFixtureMutation: vi.fn(),
     usePluginExtensionRuntimeReportsQuery: vi.fn(),
+    usePluginUpdateRemoteMutation: vi.fn(),
     usePluginUpdateFromFileMutation: vi.fn(),
     usePluginRollbackMutation: vi.fn(),
     usePluginEnableMutation: vi.fn(),
-    usePluginGrantPermissionsMutation: vi.fn(),
     usePluginDisableMutation: vi.fn(),
     usePluginUninstallMutation: vi.fn(),
     usePluginSaveConfigMutation: vi.fn(),
@@ -250,7 +252,7 @@ function updateDiff(overrides: Partial<PluginUpdateDiff> = {}): PluginUpdateDiff
       {
         permission: "request.body.write",
         risk: "critical",
-        change: "added_pending",
+        change: "added",
       },
     ],
     contributionChanges: [
@@ -399,13 +401,16 @@ describe("pages/PluginsPage", () => {
     vi.mocked(usePluginPreviewUpdateFromFileMutation).mockReturnValue(
       mutation({ mutateAsync: vi.fn().mockResolvedValue(updateDiff()) }) as any
     );
+    vi.mocked(usePluginPreviewRemoteUpdateMutation).mockReturnValue(
+      mutation({ mutateAsync: vi.fn().mockResolvedValue(updateDiff()) }) as any
+    );
     vi.mocked(usePluginInstallFromFileMutation).mockReturnValue(mutation() as any);
     vi.mocked(usePluginInstallOfficialMutation).mockReturnValue(mutation() as any);
     vi.mocked(usePluginInstallRemoteMutation).mockReturnValue(mutation() as any);
     vi.mocked(usePluginUpdateFromFileMutation).mockReturnValue(mutation() as any);
+    vi.mocked(usePluginUpdateRemoteMutation).mockReturnValue(mutation() as any);
     vi.mocked(usePluginRollbackMutation).mockReturnValue(mutation() as any);
     vi.mocked(usePluginEnableMutation).mockReturnValue(mutation() as any);
-    vi.mocked(usePluginGrantPermissionsMutation).mockReturnValue(mutation() as any);
     vi.mocked(usePluginDisableMutation).mockReturnValue(mutation() as any);
     vi.mocked(usePluginUninstallMutation).mockReturnValue(mutation() as any);
     vi.mocked(usePluginSaveConfigMutation).mockReturnValue(mutation() as any);
@@ -439,12 +444,12 @@ describe("pages/PluginsPage", () => {
     expect(screen.getAllByText("Community Prompt Helper").length).toBeGreaterThan(0);
     expect(screen.getAllByText("community.prompt-helper").length).toBeGreaterThan(0);
     expect(screen.getAllByText("扩展主机插件").length).toBeGreaterThan(0);
-    expect(screen.getByText("高风险")).toBeInTheDocument();
+    expect(screen.getAllByText("高风险").length).toBeGreaterThan(0);
     expect(screen.getByText("可更新")).toBeInTheDocument();
     expect(screen.getByText("Last failure")).toBeInTheDocument();
     expect(screen.getByText("gateway.request.afterBodyRead")).toBeInTheDocument();
     expect(screen.getByText("request.body.write")).toBeInTheDocument();
-    expect(screen.getByText("待允许")).toBeInTheDocument();
+    expect(screen.queryByText("待允许")).not.toBeInTheDocument();
     expect(screen.getByText("Plugin installed")).toBeInTheDocument();
   });
 
@@ -530,6 +535,42 @@ describe("pages/PluginsPage", () => {
     expect(lifecyclePanel).not.toBeNull();
     expect(within(lifecyclePanel as HTMLElement).getByText("签名状态未记录")).toBeInTheDocument();
     expect(screen.queryByText("签名已验证")).not.toBeInTheDocument();
+  });
+
+  it("presents remote install trust audit as verified", () => {
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginQuery).mockReturnValue({
+      data: detail({
+        install_source: "market",
+        audit_logs: [
+          {
+            id: 12,
+            plugin_id: "community.prompt-helper",
+            trace_id: null,
+            event_type: "plugin.remote.installed",
+            risk_level: "medium",
+            message: "Remote plugin package installed",
+            details: { signatureVerified: true, unsigned: false },
+            created_at: 42,
+          },
+        ],
+      }),
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+
+    const lifecyclePanel = screen.getByText("生命周期").closest("section");
+    expect(lifecyclePanel).not.toBeNull();
+    expect(within(lifecyclePanel as HTMLElement).getByText("签名已验证")).toBeInTheDocument();
+    expect(screen.queryByText("签名状态未记录")).not.toBeInTheDocument();
   });
 
   it("moves selection to the first available plugin when the selected plugin leaves the list", () => {
@@ -843,6 +884,81 @@ describe("pages/PluginsPage", () => {
     });
   });
 
+  it("previews advanced market updates before applying them", async () => {
+    const installRemoteMutation = mutation();
+    const previewRemoteUpdateMutation = mutation({
+      mutateAsync: vi.fn().mockResolvedValue(updateDiff({ pluginId: "community.prompt-helper" })),
+    });
+    const updateRemoteMutation = mutation();
+    vi.mocked(usePluginInstallRemoteMutation).mockReturnValue(installRemoteMutation as any);
+    vi.mocked(usePluginPreviewRemoteUpdateMutation).mockReturnValue(
+      previewRemoteUpdateMutation as any
+    );
+    vi.mocked(usePluginUpdateRemoteMutation).mockReturnValue(updateRemoteMutation as any);
+    vi.mocked(pluginParseMarketIndex).mockResolvedValue([
+      {
+        pluginId: "community.prompt-helper",
+        name: "Prompt Helper Update",
+        latestVersion: "1.1.0",
+        downloadUrl: "https://plugins.example.test/prompt-helper-1.1.0.aio-plugin",
+        marketSourceUrl: "https://plugins.example.test/index.json",
+        checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        signature: "signed-update",
+        riskLabels: ["request.body.write"],
+        revoked: false,
+        compatible: true,
+        updateAvailable: true,
+        installBlockReason: null,
+      },
+    ]);
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary({ plugin_id: "community.prompt-helper", current_version: "1.0.0" })],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+    fireEvent.click(screen.getByRole("button", { name: /高级来源/ }));
+    fireEvent.change(screen.getByLabelText("市场索引 JSON"), {
+      target: { value: '{"plugins":[]}' },
+    });
+    fireEvent.change(screen.getByLabelText("市场索引 URL"), {
+      target: { value: "https://plugins.example.test/index.json" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "加载高级来源" }));
+
+    const listing = await screen.findByText("Prompt Helper Update");
+    fireEvent.click(
+      within(listing.closest("article") as HTMLElement).getByRole("button", { name: "更新" })
+    );
+
+    await screen.findByRole("dialog", { name: "更新预检" });
+    expect(previewRemoteUpdateMutation.mutateAsync).toHaveBeenCalledWith({
+      pluginId: "community.prompt-helper",
+      downloadUrl: "https://plugins.example.test/prompt-helper-1.1.0.aio-plugin",
+      checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      signature: "signed-update",
+      publicKey: null,
+      marketSourceUrl: "https://plugins.example.test/index.json",
+      source: "market",
+    });
+    expect(installRemoteMutation.mutateAsync).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认更新" }));
+    await waitFor(() => {
+      expect(updateRemoteMutation.mutateAsync).toHaveBeenCalledWith({
+        pluginId: "community.prompt-helper",
+        downloadUrl: "https://plugins.example.test/prompt-helper-1.1.0.aio-plugin",
+        checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        signature: "signed-update",
+        publicKey: null,
+        marketSourceUrl: "https://plugins.example.test/index.json",
+        source: "market",
+      });
+    });
+  });
+
   it("blocks advanced listings that use reserved official plugin ids", async () => {
     const installOfficialMutation = mutation();
     const installRemoteMutation = mutation();
@@ -1143,12 +1259,20 @@ describe("pages/PluginsPage", () => {
       error: null,
     } as any);
     vi.mocked(usePluginSaveConfigMutation).mockReturnValue(mutation({ isPending: true }) as any);
+    vi.mocked(usePluginQuery).mockReturnValue({
+      data: detail({
+        summary: summary({ status: "disabled", update_available: true }),
+      }),
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
 
     renderWithProviders(<PluginsPage />);
 
     expect(screen.getByRole("button", { name: /启用/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /卸载/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /授权待审批权限/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /更新/ })).toBeDisabled();
   });
 
   it("uses the generic schema form for official plugin configuration", () => {
@@ -1388,50 +1512,15 @@ describe("pages/PluginsPage", () => {
     expect(importMutation.mutateAsync).not.toHaveBeenCalled();
   });
 
-  it("approves pending plugin permissions from the detail panel", async () => {
-    const grantMutation = mutation();
-    vi.mocked(usePluginGrantPermissionsMutation).mockReturnValue(grantMutation as any);
+  it("does not expose legacy pending permission approval actions", () => {
     vi.mocked(usePluginsListQuery).mockReturnValue({
       data: [summary()],
-      isLoading: false,
-      isFetching: false,
-      error: null,
-    } as any);
-
-    renderWithProviders(<PluginsPage />);
-    fireEvent.click(screen.getByRole("button", { name: "授权待审批权限" }));
-
-    await waitFor(() => {
-      expect(grantMutation.mutateAsync).toHaveBeenCalledWith({
-        pluginId: "community.prompt-helper",
-        permissions: ["request.body.write"],
-      });
-      expect(toast.success).toHaveBeenCalledWith("授权权限成功");
-    });
-  });
-
-  it("approves pending permissions with the effective selected plugin id when detail data is stale", async () => {
-    const grantMutation = mutation();
-    vi.mocked(usePluginGrantPermissionsMutation).mockReturnValue(grantMutation as any);
-    vi.mocked(usePluginsListQuery).mockReturnValue({
-      data: [
-        summary({
-          plugin_id: "community.current",
-          name: "Current Plugin",
-        }),
-      ],
       isLoading: false,
       isFetching: false,
       error: null,
     } as any);
     vi.mocked(usePluginQuery).mockReturnValue({
-      data: detail({
-        summary: summary({
-          plugin_id: "community.stale",
-          name: "Stale Plugin",
-        }),
-        pending_permissions: ["request.body.write"],
-      }),
+      data: detail({ pending_permissions: ["request.body.write"] }),
       isLoading: false,
       isFetching: false,
       error: null,
@@ -1439,49 +1528,8 @@ describe("pages/PluginsPage", () => {
 
     renderWithProviders(<PluginsPage />);
 
-    await waitFor(() => {
-      expect(usePluginQuery).toHaveBeenLastCalledWith("community.current", {
-        enabled: true,
-      });
-    });
-    fireEvent.click(screen.getByRole("button", { name: "授权待审批权限" }));
-
-    await waitFor(() => {
-      expect(grantMutation.mutateAsync).toHaveBeenCalledWith({
-        pluginId: "community.current",
-        permissions: ["request.body.write"],
-      });
-      expect(grantMutation.mutateAsync).not.toHaveBeenCalledWith({
-        pluginId: "community.stale",
-        permissions: ["request.body.write"],
-      });
-    });
-  });
-
-  it("keeps the pending permission action visible when enable fails", async () => {
-    const enableMutation = mutation({
-      mutateAsync: vi
-        .fn()
-        .mockRejectedValue(new Error("PLUGIN_PERMISSION_REQUIRED: request.body.write")),
-    });
-    vi.mocked(usePluginEnableMutation).mockReturnValue(enableMutation as any);
-    vi.mocked(usePluginsListQuery).mockReturnValue({
-      data: [summary()],
-      isLoading: false,
-      isFetching: false,
-      error: null,
-    } as any);
-
-    renderWithProviders(<PluginsPage />);
-    fireEvent.click(screen.getByRole("button", { name: "启用" }));
-
-    await waitFor(() => {
-      expect(enableMutation.mutateAsync).toHaveBeenCalledWith("community.prompt-helper");
-      expect(toast.error).toHaveBeenCalledWith(
-        "启用插件失败（code PLUGIN_PERMISSION_REQUIRED）：request.body.write"
-      );
-    });
-    expect(screen.getByRole("button", { name: "授权待审批权限" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "授权待审批权限" })).not.toBeInTheDocument();
+    expect(screen.queryByText("新权限待授权")).not.toBeInTheDocument();
   });
 
   it("does not infer rollback targets from audit details", () => {
@@ -1662,7 +1710,7 @@ describe("pages/PluginsPage", () => {
     const updateDialog = await screen.findByRole("dialog", { name: "更新预检" });
     expect(within(updateDialog).getByText("1.0.0 -> 1.1.0")).toBeInTheDocument();
     expect(within(updateDialog).getByText("gateway.response.beforeSend")).toBeInTheDocument();
-    expect(within(updateDialog).getByText("新增，待授权")).toBeInTheDocument();
+    expect(within(updateDialog).getAllByText("新增").length).toBeGreaterThan(0);
     expect(within(updateDialog).getByText("扩展范围变化")).toBeInTheDocument();
     expect(within(updateDialog).getAllByText("页面区域")).toHaveLength(2);
     expect(within(updateDialog).getByText("Log Panel")).toBeInTheDocument();

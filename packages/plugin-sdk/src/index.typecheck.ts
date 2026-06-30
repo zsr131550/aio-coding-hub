@@ -145,17 +145,33 @@ const replaceResponseHeadersResult: PluginHookResult = {
   responseBody: "{\"ok\":true}",
 };
 
-if (replaceRequestResult.action !== "replace" || !replaceResponseHeadersResult.headers) {
+const passResult: PluginHookResult = { action: "pass" };
+
+if (
+  replaceRequestResult.action !== "replace" ||
+  !replaceResponseHeadersResult.headers ||
+  passResult.action !== "pass"
+) {
   throw new Error("host mutation hook results should be representable");
 }
 
 const pluginApi: PluginApi = {
+  commands: {
+    registerCommand: (_command, _handler) => undefined,
+  },
+  gateway: {
+    registerHook: (_name, _handler) => undefined,
+  },
   privacy: {
     redactText: (text) => ({ hit: true, count: 1, redacted: text }),
     redactRequestBody: (body) => ({ hit: false, count: 0, redacted: body }),
   },
 };
 
-if (pluginApi.privacy?.redactText("secret").count !== 1) {
-  throw new Error("privacy API should be representable");
+if (
+  pluginApi.privacy?.redactText("secret").count !== 1 ||
+  !pluginApi.commands ||
+  !pluginApi.gateway
+) {
+  throw new Error("host PluginApi should be representable");
 }

@@ -1,5 +1,6 @@
 //! Usage: Application-level plugin runtimes and official plugin catalog.
 
+pub(crate) mod access_policy;
 pub(crate) mod contribution_registry;
 pub(crate) mod extension_host;
 pub(crate) mod extension_host_registry;

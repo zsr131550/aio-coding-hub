@@ -243,6 +243,7 @@ pub(crate) const RESERVED_HOOKS: &[HookContract] = &[
     },
 ];
 
+#[cfg(test)]
 pub(crate) const RESERVED_PERMISSIONS: &[&str] = &[
     "plugin.storage",
     "network.fetch",
@@ -271,6 +272,7 @@ pub(crate) fn is_known_hook(hook: &str) -> bool {
     hook_contract(hook).is_some()
 }
 
+#[cfg(test)]
 pub(crate) fn is_reserved_permission(permission: &str) -> bool {
     RESERVED_PERMISSIONS.contains(&permission)
 }

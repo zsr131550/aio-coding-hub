@@ -593,6 +593,91 @@ pub fn permission_risk(permission: &str) -> Option<PluginPermissionRisk> {
     }
 }
 
+pub fn manifest_effective_permissions(manifest: &PluginManifest) -> Vec<String> {
+    match &manifest.runtime {
+        PluginRuntime::ExtensionHost { .. } => extension_host_effective_permissions(manifest),
+        PluginRuntime::Native { .. } => Vec::new(),
+    }
+}
+
+pub fn gateway_hook_effective_permissions(
+    manifest: &PluginManifest,
+    hook_name: &str,
+) -> Vec<String> {
+    match &manifest.runtime {
+        PluginRuntime::ExtensionHost { .. } => extension_host_hook_permissions(manifest, hook_name),
+        PluginRuntime::Native { .. } => Vec::new(),
+    }
+}
+
+pub fn manifest_permission_risk(manifest: &PluginManifest) -> PluginPermissionRisk {
+    manifest_effective_permissions(manifest)
+        .iter()
+        .filter_map(|permission| permission_risk(permission))
+        .max_by_key(|risk| match risk {
+            PluginPermissionRisk::Low => 0,
+            PluginPermissionRisk::Medium => 1,
+            PluginPermissionRisk::High => 2,
+            PluginPermissionRisk::Critical => 3,
+        })
+        .unwrap_or(PluginPermissionRisk::Low)
+}
+
+fn extension_host_effective_permissions(manifest: &PluginManifest) -> Vec<String> {
+    if !manifest
+        .capabilities
+        .iter()
+        .any(|capability| capability == "gateway.hooks")
+    {
+        return Vec::new();
+    }
+    let Some(contributes) = manifest.contributes.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut permissions = contributes
+        .gateway_hooks
+        .iter()
+        .flat_map(|hook| extension_host_hook_permissions(manifest, &hook.name))
+        .collect::<Vec<_>>();
+    permissions.sort();
+    permissions.dedup();
+    permissions
+}
+
+fn extension_host_hook_permissions(manifest: &PluginManifest, hook_name: &str) -> Vec<String> {
+    if !manifest
+        .capabilities
+        .iter()
+        .any(|capability| capability == "gateway.hooks")
+    {
+        return Vec::new();
+    }
+    let Some(contributes) = manifest.contributes.as_ref() else {
+        return Vec::new();
+    };
+    if !contributes
+        .gateway_hooks
+        .iter()
+        .any(|hook| hook.name == hook_name)
+    {
+        return Vec::new();
+    }
+    let Some(contract) = crate::gateway::plugins::contract::hook_contract(hook_name) else {
+        return Vec::new();
+    };
+
+    let mut permissions = contract
+        .read_permissions
+        .iter()
+        .chain(contract.write_permissions.iter())
+        .map(|permission| (*permission).to_string())
+        .collect::<Vec<_>>();
+    permissions.sort();
+    permissions.dedup();
+    permissions
+}
+
 pub fn is_known_hook(hook: &str) -> bool {
     is_active_gateway_hook(hook) || is_reserved_gateway_hook(hook)
 }
@@ -603,10 +688,6 @@ pub fn is_active_gateway_hook(hook: &str) -> bool {
 
 pub fn is_reserved_gateway_hook(hook: &str) -> bool {
     crate::gateway::plugins::contract::is_reserved_hook(hook)
-}
-
-pub fn is_reserved_permission(permission: &str) -> bool {
-    crate::gateway::plugins::contract::is_reserved_permission(permission)
 }
 
 fn validate_plugin_id(plugin_id: &str) -> Result<(), PluginValidationError> {
@@ -1003,19 +1084,6 @@ fn is_valid_contribution_id(value: &str) -> bool {
         })
 }
 
-fn validate_hooks(hooks: &[PluginHook]) -> Result<(), PluginValidationError> {
-    if hooks.is_empty() {
-        return Err(PluginValidationError::new(
-            "PLUGIN_MISSING_HOOKS",
-            "plugin must declare at least one hook",
-        ));
-    }
-    for hook in hooks {
-        validate_hook(hook)?;
-    }
-    Ok(())
-}
-
 fn validate_hook(hook: &PluginHook) -> Result<(), PluginValidationError> {
     validate_hook_name(&hook.name)
 }
@@ -1035,79 +1103,6 @@ fn validate_hook_name(hook_name: &str) -> Result<(), PluginValidationError> {
             "PLUGIN_UNKNOWN_HOOK",
             format!("unknown hook: {}", hook_name),
         ));
-    }
-    Ok(())
-}
-
-fn validate_permissions(permissions: &[String]) -> Result<(), PluginValidationError> {
-    for permission in permissions {
-        if is_reserved_permission(permission) {
-            return Err(PluginValidationError::new(
-                "PLUGIN_RESERVED_PERMISSION",
-                format!(
-                    "permission is reserved for a future host-mediated API and is not active in plugin API v1: {permission}"
-                ),
-            ));
-        }
-        if permission_risk(permission).is_none() {
-            return Err(PluginValidationError::new(
-                "PLUGIN_UNKNOWN_PERMISSION",
-                format!("unknown permission: {permission}"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_hook_permissions(
-    hooks: &[PluginHook],
-    permissions: &[String],
-) -> Result<(), PluginValidationError> {
-    let has = |permission: &str| permissions.iter().any(|item| item == permission);
-    for hook in hooks {
-        let Some(contract) = crate::gateway::plugins::contract::hook_contract(&hook.name) else {
-            continue;
-        };
-        for dependency in contract.permission_dependencies {
-            if !has(dependency.permission) {
-                continue;
-            }
-            for required in dependency.requires {
-                if !has(required) {
-                    return Err(PluginValidationError::new(
-                        "PLUGIN_PERMISSION_MISMATCH",
-                        format!("{} requires {required}", dependency.permission),
-                    ));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn hook_allows_permission(hook_name: &str, permission: &str) -> bool {
-    crate::gateway::plugins::contract::hook_contract(hook_name).is_some_and(|hook| {
-        hook.read_permissions.contains(&permission) || hook.write_permissions.contains(&permission)
-    })
-}
-
-fn validate_permission_scope(
-    hooks: &[PluginHook],
-    permissions: &[String],
-) -> Result<(), PluginValidationError> {
-    for permission in permissions {
-        if is_reserved_permission(permission) {
-            continue;
-        }
-        let allowed = hooks
-            .iter()
-            .any(|hook| hook_allows_permission(&hook.name, permission));
-        if !allowed {
-            return Err(PluginValidationError::new(
-                "PLUGIN_PERMISSION_SCOPE_MISMATCH",
-                format!("permission {permission} does not apply to any declared hook"),
-            ));
-        }
     }
     Ok(())
 }
@@ -1303,8 +1298,10 @@ mod tests {
         }
     }
 
-    fn permissions(items: &[&str]) -> Vec<String> {
-        items.iter().map(|item| item.to_string()).collect()
+    fn plugin_manifest_with_contributes(contributes: serde_json::Value) -> PluginManifest {
+        let mut raw = valid_extension_host_manifest();
+        raw["contributes"] = contributes;
+        serde_json::from_value(raw).unwrap()
     }
 
     #[test]
@@ -1666,102 +1663,63 @@ mod tests {
     }
 
     #[test]
-    fn manifest_rejects_unknown_permission() {
-        let err = validate_permissions(&permissions(&["request.body.read", "unknown.permission"]))
-            .unwrap_err();
-        assert_eq!(err.code, "PLUGIN_UNKNOWN_PERMISSION");
-    }
-
-    #[test]
     fn manifest_rejects_unknown_hook() {
-        let hooks = vec![hook("gateway.request.missing")];
-        let err = validate_hooks(&hooks).unwrap_err();
+        let err = validate_hook(&hook("gateway.request.missing")).unwrap_err();
         assert_eq!(err.code, "PLUGIN_UNKNOWN_HOOK");
     }
 
     #[test]
     fn validate_manifest_rejects_reserved_hook_until_it_is_wired() {
-        let hooks = vec![hook("gateway.request.received")];
-        let err = validate_hooks(&hooks).unwrap_err();
+        let err = validate_hook(&hook("gateway.request.received")).unwrap_err();
         assert_eq!(err.code, "PLUGIN_RESERVED_HOOK");
         assert!(err.message.contains("gateway.request.received"));
     }
 
     #[test]
-    fn validate_manifest_accepts_active_vnext_hooks() {
-        let cases: [(&str, &[&str]); 6] = [
-            (
-                "gateway.request.afterBodyRead",
-                &["request.body.read", "request.body.write"],
-            ),
-            (
-                "gateway.request.beforeSend",
-                &["request.body.read", "request.body.write"],
-            ),
-            (
-                "gateway.response.chunk",
-                &["stream.inspect", "stream.modify"],
-            ),
-            (
-                "gateway.response.after",
-                &["response.body.read", "response.body.write"],
-            ),
-            ("gateway.error", &["response.body.read"]),
-            ("log.beforePersist", &["log.redact"]),
-        ];
+    fn extension_host_effective_permissions_are_derived_from_gateway_contributions() {
+        let mut manifest = plugin_manifest_with_contributes(serde_json::json!({
+            "gatewayHooks": [
+                { "name": "gateway.request.afterBodyRead", "priority": 10 },
+                { "name": "log.beforePersist", "priority": 20 }
+            ]
+        }));
+        manifest.capabilities = vec!["gateway.hooks".to_string()];
 
-        for (hook_name, permission_items) in cases {
-            let hooks = vec![hook(hook_name)];
-            let permissions = permissions(permission_items);
-            validate_hooks(&hooks)
-                .unwrap_or_else(|err| panic!("active hook {hook_name} rejected: {err:?}"));
-            validate_permissions(&permissions)
-                .unwrap_or_else(|err| panic!("permissions for {hook_name} rejected: {err:?}"));
-            validate_hook_permissions(&hooks, &permissions).unwrap_or_else(|err| {
-                panic!("permission dependencies for {hook_name} rejected: {err:?}")
-            });
-            validate_permission_scope(&hooks, &permissions)
-                .unwrap_or_else(|err| panic!("permission scope for {hook_name} rejected: {err:?}"));
-        }
-    }
+        let permissions = manifest_effective_permissions(&manifest);
 
-    #[test]
-    fn validate_manifest_preserves_before_send_write_without_read_compatibility() {
-        let hooks = vec![hook("gateway.request.beforeSend")];
-        let permissions = permissions(&["request.body.write"]);
-
-        validate_hook_permissions(&hooks, &permissions)
-            .and_then(|_| validate_permission_scope(&hooks, &permissions))
-            .expect("beforeSend write-only permission is part of Plugin API v1 compatibility");
-    }
-
-    #[test]
-    fn validate_manifest_rejects_reserved_permissions_until_host_apis_exist() {
         for permission in [
-            "plugin.storage",
-            "network.fetch",
-            "file.read",
-            "file.write",
-            "secret.read",
+            "request.meta.read",
+            "request.header.read",
+            "request.header.readSensitive",
+            "request.body.read",
+            "request.header.write",
+            "request.body.write",
+            "log.redact",
         ] {
-            let err = validate_permissions(&permissions(&[
-                "request.body.read",
-                "request.body.write",
-                permission,
-            ]))
-            .unwrap_err();
-            assert_eq!(err.code, "PLUGIN_RESERVED_PERMISSION");
-            assert!(err.message.contains(permission));
+            assert!(
+                permissions.contains(&permission.to_string()),
+                "missing derived permission {permission}"
+            );
         }
+        assert_eq!(
+            manifest_permission_risk(&manifest),
+            PluginPermissionRisk::High
+        );
     }
 
     #[test]
-    fn manifest_rejects_permissions_that_do_not_apply_to_declared_hooks() {
-        let hooks = vec![hook("log.beforePersist")];
-        let permissions = permissions(&["request.body.read", "log.redact"]);
-        let err = validate_permission_scope(&hooks, &permissions).unwrap_err();
-        assert_eq!(err.code, "PLUGIN_PERMISSION_SCOPE_MISMATCH");
-        assert!(err.message.contains("request.body.read"));
+    fn extension_host_effective_permissions_require_gateway_capability() {
+        let manifest = plugin_manifest_with_contributes(serde_json::json!({
+            "gatewayHooks": [
+                { "name": "gateway.request.afterBodyRead", "priority": 10 }
+            ]
+        }));
+
+        assert!(manifest_effective_permissions(&manifest).is_empty());
+        assert!(
+            gateway_hook_effective_permissions(&manifest, "gateway.request.afterBodyRead")
+                .is_empty()
+        );
     }
 
     #[test]

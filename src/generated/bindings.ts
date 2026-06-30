@@ -1467,6 +1467,19 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async pluginPreviewRemoteUpdate(
+    input: PluginInstallRemoteInput
+  ): Promise<Result<PluginUpdateDiff, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("plugin_preview_remote_update", { input }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async pluginInstallFromFile(
     input: PluginInstallFromFileInput
   ): Promise<Result<PluginDetail, string>> {
@@ -1510,6 +1523,14 @@ export const commands = {
   ): Promise<Result<PluginDetail, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("plugin_install_remote", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async pluginUpdateRemote(input: PluginInstallRemoteInput): Promise<Result<PluginDetail, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("plugin_update_remote", { input }) };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };

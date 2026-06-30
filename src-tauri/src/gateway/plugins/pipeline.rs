@@ -10,6 +10,7 @@ use super::permissions::{
     enforce_hook_result_permissions as enforce_descriptor_result_permissions, GatewayPluginError,
 };
 use super::registry::HookRegistry;
+use crate::app::plugins::access_policy::effective_hook_permissions;
 use crate::domain::plugins::{PluginDetail, PluginHook, PluginStatus};
 use crate::shared::time::now_unix_millis;
 use axum::body::Bytes;
@@ -300,10 +301,9 @@ impl GatewayPluginPipeline {
                 body: body.clone(),
                 ..input.clone()
             };
-            let visible = current_input.visible_context_with_budget(
-                &plugin.granted_permissions,
-                self.config.context_budget,
-            );
+            let permissions = effective_hook_permissions(plugin, input.hook_name);
+            let visible =
+                current_input.visible_context_with_budget(&permissions, self.config.context_budget);
             let truncation = VisibleTruncationState::from_context(&visible);
             let started_at_ms = now_unix_millis();
             let started = Instant::now();
@@ -405,7 +405,7 @@ impl GatewayPluginPipeline {
 
             if let Err(err) = enforce_hook_result_with_budget(
                 input.hook_name,
-                &plugin.granted_permissions,
+                &permissions,
                 &result,
                 self.config.mutation_budget,
                 &truncation,
@@ -599,10 +599,9 @@ impl GatewayPluginPipeline {
                 body: body.clone(),
                 ..input.clone()
             };
-            let visible = current_input.visible_context_with_budget(
-                &plugin.granted_permissions,
-                self.config.context_budget,
-            );
+            let permissions = effective_hook_permissions(plugin, input.hook_name);
+            let visible =
+                current_input.visible_context_with_budget(&permissions, self.config.context_budget);
             let truncation = VisibleTruncationState::from_context(&visible);
             let started_at_ms = now_unix_millis();
             let started = Instant::now();
@@ -684,7 +683,7 @@ impl GatewayPluginPipeline {
 
             if let Err(err) = enforce_hook_result_with_budget(
                 input.hook_name,
-                &plugin.granted_permissions,
+                &permissions,
                 &result,
                 self.config.mutation_budget,
                 &truncation,
@@ -856,10 +855,9 @@ impl GatewayPluginPipeline {
                 chunk: chunk.clone(),
                 ..input.clone()
             };
-            let visible = current_input.visible_context_with_budget(
-                &plugin.granted_permissions,
-                self.config.context_budget,
-            );
+            let permissions = effective_hook_permissions(plugin, hook_name);
+            let visible =
+                current_input.visible_context_with_budget(&permissions, self.config.context_budget);
             let truncation = VisibleTruncationState::from_context(&visible);
             let started_at_ms = now_unix_millis();
             let started = Instant::now();
@@ -941,7 +939,7 @@ impl GatewayPluginPipeline {
 
             if let Err(err) = enforce_hook_result_with_budget(
                 hook_name,
-                &plugin.granted_permissions,
+                &permissions,
                 &result,
                 self.config.mutation_budget,
                 &truncation,
@@ -1084,10 +1082,9 @@ impl GatewayPluginPipeline {
                 message: message.clone(),
                 ..input.clone()
             };
-            let visible = current_input.visible_context_with_budget(
-                &plugin.granted_permissions,
-                self.config.context_budget,
-            );
+            let permissions = effective_hook_permissions(plugin, hook_name);
+            let visible =
+                current_input.visible_context_with_budget(&permissions, self.config.context_budget);
             let truncation = VisibleTruncationState::from_context(&visible);
             let started_at_ms = now_unix_millis();
             let started = Instant::now();
@@ -1169,7 +1166,7 @@ impl GatewayPluginPipeline {
 
             if let Err(err) = enforce_hook_result_with_budget(
                 hook_name,
-                &plugin.granted_permissions,
+                &permissions,
                 &result,
                 self.config.mutation_budget,
                 &truncation,
@@ -2367,6 +2364,30 @@ mod tests {
             output.execution_reports[0].mutation_summary["fields"][0]["field"],
             serde_json::json!("requestBody")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn extension_host_request_hook_uses_contribution_access_without_legacy_permissions() {
+        let executor =
+            InMemoryGatewayPluginExecutor::new().with_request_handler("plugin.extension", |ctx| {
+                assert_eq!(ctx.request.body.as_deref(), Some("hello"));
+                GatewayHookResult {
+                    request_body: Some(r#"{"messages":[]}"#.to_string()),
+                    ..GatewayHookResult::continue_unchanged()
+                }
+            });
+        let pipeline = GatewayPluginPipeline::for_tests(
+            vec![plugin("plugin.extension", 10, vec![])],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig::default(),
+        );
+
+        let output = pipeline
+            .run_request_hook(request_input())
+            .await
+            .expect("extension host contribution access should allow request body mutation");
+
+        assert_eq!(output.body.as_ref(), br#"{"messages":[]}"#);
     }
 
     #[tokio::test(flavor = "current_thread")]
