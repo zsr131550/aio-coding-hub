@@ -93,6 +93,8 @@ impl GatewayControlService {
             recent_errors: recent_errors.clone(),
             latency_cache: Arc::new(Mutex::new(ProviderBaseUrlPingCache::default())),
             plugin_pipeline: plugin_pipeline.clone(),
+            #[cfg(test)]
+            http_client_override: None,
         };
         let router = build_router(state);
         let (shutdown, shutdown_rx) = oneshot::channel::<()>();

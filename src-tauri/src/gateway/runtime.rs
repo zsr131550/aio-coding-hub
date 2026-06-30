@@ -21,6 +21,8 @@ pub(in crate::gateway) struct GatewayAppState<R: tauri::Runtime = tauri::Wry> {
     pub(super) recent_errors: Arc<Mutex<RecentErrorCache>>,
     pub(super) latency_cache: Arc<Mutex<ProviderBaseUrlPingCache>>,
     pub(super) plugin_pipeline: Arc<GatewayPluginPipeline>,
+    #[cfg(test)]
+    pub(super) http_client_override: Option<reqwest::Client>,
 }
 
 impl<R: tauri::Runtime> Clone for GatewayAppState<R> {
@@ -35,12 +37,18 @@ impl<R: tauri::Runtime> Clone for GatewayAppState<R> {
             recent_errors: self.recent_errors.clone(),
             latency_cache: self.latency_cache.clone(),
             plugin_pipeline: self.plugin_pipeline.clone(),
+            #[cfg(test)]
+            http_client_override: self.http_client_override.clone(),
         }
     }
 }
 
 impl<R: tauri::Runtime> GatewayAppState<R> {
     pub(in crate::gateway) fn client(&self) -> reqwest::Client {
+        #[cfg(test)]
+        if let Some(client) = &self.http_client_override {
+            return client.clone();
+        }
         super::http_client::get()
     }
 }
