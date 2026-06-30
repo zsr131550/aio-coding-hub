@@ -40,6 +40,7 @@ pub(in crate::gateway) enum GatewayErrorCode {
     RequestLogWriteThroughRateLimited,
     RequestLogDropped,
     Fake200,
+    EmptyResponse,
 }
 
 impl GatewayErrorCode {
@@ -83,6 +84,7 @@ impl GatewayErrorCode {
             Self::RequestLogWriteThroughRateLimited => "GW_REQUEST_LOG_WRITE_THROUGH_RATE_LIMITED",
             Self::RequestLogDropped => "GW_REQUEST_LOG_DROPPED",
             Self::Fake200 => "GW_FAKE_200",
+            Self::EmptyResponse => "GW_EMPTY_RESPONSE",
         }
     }
 
@@ -126,6 +128,7 @@ impl GatewayErrorCode {
             "GW_REQUEST_LOG_WRITE_THROUGH_RATE_LIMITED" => Self::RequestLogWriteThroughRateLimited,
             "GW_REQUEST_LOG_DROPPED" => Self::RequestLogDropped,
             "GW_FAKE_200" => Self::Fake200,
+            "GW_EMPTY_RESPONSE" => Self::EmptyResponse,
             _ => return None,
         })
     }
@@ -176,6 +179,7 @@ mod tests {
         GatewayErrorCode::RequestLogWriteThroughRateLimited,
         GatewayErrorCode::RequestLogDropped,
         GatewayErrorCode::Fake200,
+        GatewayErrorCode::EmptyResponse,
     ];
 
     #[test]

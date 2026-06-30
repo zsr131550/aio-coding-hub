@@ -12,7 +12,12 @@ pub(super) fn finalize_circuit_and_session<R: tauri::Runtime>(
 ) -> Option<&'static str> {
     let effective_error_category = if error_code == Some(GatewayErrorCode::StreamAborted.as_str()) {
         Some(ErrorCategory::ClientAbort.as_str())
-    } else if error_code == Some(GatewayErrorCode::Fake200.as_str()) {
+    } else if matches!(
+        error_code,
+        Some(code)
+            if code == GatewayErrorCode::Fake200.as_str()
+                || code == GatewayErrorCode::EmptyResponse.as_str()
+    ) {
         Some(ErrorCategory::ProviderError.as_str())
     } else {
         ctx.error_category

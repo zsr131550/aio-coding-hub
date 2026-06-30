@@ -22,7 +22,10 @@ fn is_codex_responses_path(cli_key: &str, path: &str) -> bool {
     if cli_key != "codex" {
         return false;
     }
-    matches!(path.trim_end_matches('/'), "/v1/responses" | "/responses")
+    matches!(
+        path.trim_end_matches('/'),
+        "/v1/responses" | "/responses" | "/v1/codex/responses"
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -302,6 +305,15 @@ where
         if self.tracker.fake_200_detected() {
             self.ctx.fake_200_detected = true;
         }
+        let effective_error_code = if error_code.is_none()
+            && self
+                .tracker
+                .is_empty_success(&self.ctx.path, self.ctx.status, usage.as_ref())
+        {
+            Some(GatewayErrorCode::EmptyResponse.as_str())
+        } else {
+            error_code
+        };
         let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
         let requested_model = self
             .ctx
@@ -312,7 +324,7 @@ where
         emit_request_event_and_spawn_request_log(
             &self.ctx,
             StreamRequestCompletion::from_error_code(
-                error_code,
+                effective_error_code,
                 self.first_byte_ms,
                 self.first_byte_ms,
                 requested_model,
@@ -893,6 +905,7 @@ mod tests {
         assert!(is_codex_responses_path("codex", "/v1/responses"));
         assert!(is_codex_responses_path("codex", "/responses"));
         assert!(is_codex_responses_path("codex", "/v1/responses/"));
+        assert!(is_codex_responses_path("codex", "/v1/codex/responses"));
         assert!(!is_codex_responses_path("claude", "/v1/responses"));
         assert!(!is_codex_responses_path("codex", "/v1/chat/completions"));
     }

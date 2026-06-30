@@ -39,6 +39,7 @@ export const GatewayErrorCodes = {
   REQUEST_LOG_WRITE_THROUGH_RATE_LIMITED: "GW_REQUEST_LOG_WRITE_THROUGH_RATE_LIMITED",
   REQUEST_LOG_DROPPED: "GW_REQUEST_LOG_DROPPED",
   FAKE_200: "GW_FAKE_200",
+  EMPTY_RESPONSE: "GW_EMPTY_RESPONSE",
 } as const;
 
 export type GatewayErrorCode = (typeof GatewayErrorCodes)[keyof typeof GatewayErrorCodes];
@@ -82,6 +83,7 @@ export const GatewayErrorShortLabels = {
   [GatewayErrorCodes.REQUEST_LOG_WRITE_THROUGH_RATE_LIMITED]: "请求日志直写限速",
   [GatewayErrorCodes.REQUEST_LOG_DROPPED]: "请求日志丢弃",
   [GatewayErrorCodes.FAKE_200]: "假200",
+  [GatewayErrorCodes.EMPTY_RESPONSE]: "空回",
 } satisfies Record<GatewayErrorCode, string>;
 
 export function getGatewayErrorShortLabel(errorCode: string) {
@@ -236,5 +238,10 @@ export const GatewayErrorDescriptions = {
     desc: "上游返回伪成功响应",
     suggestion:
       "上游 Provider 返回了 HTTP 200 但响应体包含错误内容。已自动标记为失败并更新熔断器状态。",
+  },
+  GW_EMPTY_RESPONSE: {
+    desc: "上游返回空成功响应",
+    suggestion:
+      "上游 Provider 返回了成功状态但没有有效输出。已自动标记为 Provider 失败并尝试切换到其他 Provider。",
   },
 } satisfies Record<GatewayErrorCode, GatewayErrorDescription>;

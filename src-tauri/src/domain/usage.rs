@@ -391,6 +391,7 @@ fn merge_reasoning_tokens(base: Option<i64>, patch: Option<i64>) -> Option<i64> 
 
 #[derive(Debug)]
 pub struct SseUsageTracker {
+    is_codex: bool,
     is_claude: bool,
     buffer: Vec<u8>,
     current_event: Vec<u8>,
@@ -403,6 +404,7 @@ pub struct SseUsageTracker {
     completion_seen: bool,
     terminal_error_seen: bool,
     fake_200_detected: bool,
+    meaningful_output_seen: bool,
 }
 
 const MAX_SSE_USAGE_TRACKER_PENDING_BYTES: usize = 1024 * 1024;
@@ -482,9 +484,88 @@ fn is_terminal_error_status(status: &str) -> bool {
     )
 }
 
+fn is_codex_responses_path(path: &str) -> bool {
+    matches!(
+        path.trim_end_matches('/'),
+        "/v1/responses" | "/responses" | "/v1/codex/responses"
+    )
+}
+
+fn non_empty_string(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+}
+
+fn is_meaningful_output_item(value: &Value) -> bool {
+    let Some(obj) = value.as_object() else {
+        return false;
+    };
+
+    match obj.get("type").and_then(Value::as_str) {
+        Some("function_call" | "function_call_output" | "tool_call" | "tool_result") => {
+            return true;
+        }
+        Some("output_text" | "text") => {
+            return non_empty_string(obj.get("text"));
+        }
+        Some("refusal") => {
+            return non_empty_string(obj.get("refusal"));
+        }
+        Some(_) | None => {}
+    }
+
+    if non_empty_string(obj.get("text")) || non_empty_string(obj.get("refusal")) {
+        return true;
+    }
+
+    if let Some(content) = obj.get("content").and_then(Value::as_array) {
+        return content.iter().any(is_meaningful_output_item);
+    }
+
+    false
+}
+
+fn has_codex_meaningful_output(data: &Value) -> bool {
+    match data.get("type").and_then(Value::as_str) {
+        Some("response.output_text.delta" | "response.refusal.delta")
+            if non_empty_string(data.get("delta")) =>
+        {
+            return true;
+        }
+        Some("response.function_call_arguments.delta") if non_empty_string(data.get("delta")) => {
+            return true;
+        }
+        Some("response.output_text.done" | "response.refusal.done") => {
+            if non_empty_string(data.get("text")) || non_empty_string(data.get("refusal")) {
+                return true;
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(item) = data.get("item") {
+        if is_meaningful_output_item(item) {
+            return true;
+        }
+    }
+
+    let output_arrays = [
+        data.get("output").and_then(Value::as_array),
+        data.get("response")
+            .and_then(|v| v.get("output"))
+            .and_then(Value::as_array),
+    ];
+    output_arrays
+        .into_iter()
+        .flatten()
+        .any(|items| items.iter().any(is_meaningful_output_item))
+}
+
 impl SseUsageTracker {
     pub fn new(cli_key: &str) -> Self {
         Self {
+            is_codex: cli_key == "codex",
             is_claude: cli_key == "claude",
             buffer: Vec::new(),
             current_event: Vec::new(),
@@ -496,6 +577,7 @@ impl SseUsageTracker {
             completion_seen: false,
             terminal_error_seen: false,
             fake_200_detected: false,
+            meaningful_output_seen: false,
         }
     }
 
@@ -509,6 +591,24 @@ impl SseUsageTracker {
 
     pub fn fake_200_detected(&self) -> bool {
         self.fake_200_detected
+    }
+
+    #[cfg(test)]
+    pub fn meaningful_output_seen(&self) -> bool {
+        self.meaningful_output_seen
+    }
+
+    pub fn is_empty_success(&self, path: &str, status: u16, usage: Option<&UsageExtract>) -> bool {
+        self.is_codex
+            && is_codex_responses_path(path)
+            && (200..300).contains(&status)
+            && self.completion_seen
+            && !self.terminal_error_seen
+            && !self.fake_200_detected
+            && !self.meaningful_output_seen
+            && usage
+                .and_then(|extract| extract.metrics.output_tokens)
+                .is_some_and(|output_tokens| output_tokens == 0)
     }
 
     pub fn ingest_chunk(&mut self, chunk: &[u8]) {
@@ -651,6 +751,10 @@ impl SseUsageTracker {
     }
 
     fn ingest_event(&mut self, event: &[u8], data: &Value) {
+        if self.is_codex && has_codex_meaningful_output(data) {
+            self.meaningful_output_seen = true;
+        }
+
         if is_completion_event_name(event) {
             self.completion_seen = true;
         }

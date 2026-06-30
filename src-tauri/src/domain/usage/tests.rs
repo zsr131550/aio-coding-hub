@@ -131,6 +131,98 @@ fn parse_codex_response_completed_marks_completion_seen() {
 }
 
 #[test]
+fn codex_output_text_delta_marks_meaningful_output() {
+    let sse = b"event: response.output_text.delta\n\
+                data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n\
+                event: response.completed\n\
+                data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}}\n\n";
+    let mut tracker = SseUsageTracker::new("codex");
+    tracker.ingest_chunk(sse);
+    let usage = tracker.finalize();
+
+    assert!(tracker.meaningful_output_seen());
+    assert!(!tracker.is_empty_success("/v1/responses", 200, usage.as_ref()));
+}
+
+#[test]
+fn codex_completed_output_text_marks_meaningful_output() {
+    let sse = b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}}\n\n";
+    let mut tracker = SseUsageTracker::new("codex");
+    tracker.ingest_chunk(sse);
+    let usage = tracker.finalize();
+
+    assert!(tracker.meaningful_output_seen());
+    assert!(!tracker.is_empty_success("/responses", 200, usage.as_ref()));
+}
+
+#[test]
+fn codex_function_call_output_marks_meaningful_output() {
+    let sse = b"event: response.output_item.done\n\
+                data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"call_1\",\"type\":\"function_call\",\"name\":\"lookup\",\"arguments\":\"{}\"}}\n\n\
+                event: response.completed\n\
+                data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}}\n\n";
+    let mut tracker = SseUsageTracker::new("codex");
+    tracker.ingest_chunk(sse);
+    let usage = tracker.finalize();
+
+    assert!(tracker.meaningful_output_seen());
+    assert!(!tracker.is_empty_success("/v1/responses", 200, usage.as_ref()));
+}
+
+#[test]
+fn codex_reasoning_delta_does_not_mask_empty_success() {
+    let sse = b"event: response.reasoning_text.delta\n\
+                data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"internal reasoning\"}\n\n\
+                event: response.completed\n\
+                data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}}\n\n";
+    let mut tracker = SseUsageTracker::new("codex");
+    tracker.ingest_chunk(sse);
+    let usage = tracker.finalize();
+
+    assert!(tracker.completion_seen());
+    assert!(!tracker.meaningful_output_seen());
+    assert!(tracker.is_empty_success("/v1/responses", 200, usage.as_ref()));
+    assert!(tracker.is_empty_success("/v1/codex/responses", 200, usage.as_ref()));
+}
+
+#[test]
+fn codex_empty_success_requires_zero_output_tokens() {
+    let sse = b"event: response.completed\n\
+                data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}}\n\n";
+    let mut tracker = SseUsageTracker::new("codex");
+    tracker.ingest_chunk(sse);
+    let usage = tracker.finalize();
+
+    assert!(tracker.completion_seen());
+    assert!(!tracker.meaningful_output_seen());
+    assert!(tracker.is_empty_success("/v1/responses", 200, usage.as_ref()));
+}
+
+#[test]
+fn empty_success_is_scoped_to_codex_responses_success_without_errors() {
+    let sse = b"event: response.completed\n\
+                data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}}\n\n";
+
+    let mut codex_tracker = SseUsageTracker::new("codex");
+    codex_tracker.ingest_chunk(sse);
+    let codex_usage = codex_tracker.finalize();
+    assert!(!codex_tracker.is_empty_success("/v1/chat/completions", 200, codex_usage.as_ref()));
+    assert!(!codex_tracker.is_empty_success("/v1/responses", 500, codex_usage.as_ref()));
+
+    let mut claude_tracker = SseUsageTracker::new("claude");
+    claude_tracker.ingest_chunk(sse);
+    let claude_usage = claude_tracker.finalize();
+    assert!(!claude_tracker.is_empty_success("/v1/responses", 200, claude_usage.as_ref()));
+
+    let error_sse = b"event: response.error\n\
+                    data: {\"type\":\"response.error\",\"error\":{\"message\":\"broken\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}\n\n";
+    let mut error_tracker = SseUsageTracker::new("codex");
+    error_tracker.ingest_chunk(error_sse);
+    let error_usage = error_tracker.finalize();
+    assert!(!error_tracker.is_empty_success("/v1/responses", 200, error_usage.as_ref()));
+}
+
+#[test]
 fn parse_codex_sse_keeps_positive_reasoning_when_later_usage_reports_zero() {
     let sse = b"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":20,\"total_tokens\":30,\"output_tokens_details\":{\"reasoning_tokens\":304}}}}\n\n\
                 data: {\"type\":\"response.done\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":20,\"total_tokens\":30,\"output_tokens_details\":{\"reasoning_tokens\":0}}}}\n\n";
