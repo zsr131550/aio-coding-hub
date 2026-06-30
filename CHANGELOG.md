@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.60.10](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.9...aio-coding-hub-v0.60.10) (2026-06-30)
+
+
+### Features
+
+* add Codex guard stats scope toggle ([4b7ed85](https://github.com/FingerCaster/aio-coding-hub/commit/4b7ed858fcea0020100420aa36a3799c0f173aea))
+
+
+### Bug Fixes
+
+* update vulnerable quinn proto lockfile ([8eca75f](https://github.com/FingerCaster/aio-coding-hub/commit/8eca75fcbb0a84d27142315cc71dec3fb22f3bc8))
+
 ## [0.60.9](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.8...aio-coding-hub-v0.60.9) (2026-06-29)
 
 
