@@ -1217,9 +1217,12 @@ describe("pages/CliManagerPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
     await screen.findByText("codex-tab");
 
-    expect(useCliManagerCodexReasoningGuardStatsQuery).toHaveBeenCalledWith(expect.any(Number), {
-      enabled: true,
-    });
+    expect(useCliManagerCodexReasoningGuardStatsQuery).toHaveBeenCalledWith(
+      { startCreatedAtMs: 1_770_000_000_000, endCreatedAtMs: null },
+      {
+        enabled: true,
+      }
+    );
     expect(useCliManagerCodexReasoningGuardStatsQuery).toHaveBeenCalledWith(null, {
       enabled: true,
     });

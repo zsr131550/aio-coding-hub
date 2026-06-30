@@ -1,8 +1,10 @@
 import { render, screen } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { CliManagerClaudeTab } from "../ClaudeTab";
 import { CliManagerCodexTab } from "../CodexTab";
 import { CliManagerGeminiTab } from "../GeminiTab";
+import { createTestQueryClient } from "../../../../test/utils/reactQuery";
 import {
   useCliManagerClaudeHooksQuery,
   useCliManagerClaudeHooksSetMutation,
@@ -104,62 +106,66 @@ describe("cli-manager tabs (coverage)", () => {
   });
 
   it("renders CodexTab (available)", () => {
+    const client = createTestQueryClient();
+
     render(
-      <CliManagerCodexTab
-        codexAvailable="available"
-        codexLoading={false}
-        codexConfigLoading={false}
-        codexConfigSaving={false}
-        codexConfigTomlLoading={false}
-        codexConfigTomlSaving={false}
-        codexInfo={{
-          found: true,
-          executable_path: "/usr/bin/codex",
-          version: "0.0.0",
-          error: null,
-          shell: "zsh",
-          resolved_via: "PATH",
-        }}
-        codexConfig={{
-          config_dir: "/tmp/.codex",
-          config_path: "/tmp/.codex/config.toml",
-          user_home_default_dir: "C:\\Users\\MyPC\\.codex",
-          user_home_default_path: "C:\\Users\\MyPC\\.codex\\config.toml",
-          follow_codex_home_dir: "C:\\Users\\MyPC\\.codex",
-          follow_codex_home_path: "C:\\Users\\MyPC\\.codex\\config.toml",
-          can_open_config_dir: true,
-          exists: true,
-          model: "gpt-5.4",
-          approval_policy: "never",
-          sandbox_mode: "workspace-write",
-          model_reasoning_effort: "medium",
-          plan_mode_reasoning_effort: "high",
-          web_search: "cached",
-          personality: "pragmatic",
-          model_context_window: 1000000,
-          model_auto_compact_token_limit: 900000,
-          service_tier: "fast",
-          sandbox_workspace_write_network_access: false,
-          features_unified_exec: true,
-          features_shell_snapshot: true,
-          features_apply_patch_freeform: true,
-          features_shell_tool: true,
-          features_exec_policy: true,
-          features_remote_compaction: true,
-          features_fast_mode: true,
-          features_responses_websockets_v2: true,
-          features_multi_agent: true,
-        }}
-        codexConfigToml={{
-          config_path: "/tmp/.codex/config.toml",
-          exists: true,
-          toml: 'approval_policy = "never"\\n',
-        }}
-        refreshCodex={vi.fn()}
-        openCodexConfigDir={vi.fn()}
-        persistCodexConfig={vi.fn()}
-        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
-      />
+      <QueryClientProvider client={client}>
+        <CliManagerCodexTab
+          codexAvailable="available"
+          codexLoading={false}
+          codexConfigLoading={false}
+          codexConfigSaving={false}
+          codexConfigTomlLoading={false}
+          codexConfigTomlSaving={false}
+          codexInfo={{
+            found: true,
+            executable_path: "/usr/bin/codex",
+            version: "0.0.0",
+            error: null,
+            shell: "zsh",
+            resolved_via: "PATH",
+          }}
+          codexConfig={{
+            config_dir: "/tmp/.codex",
+            config_path: "/tmp/.codex/config.toml",
+            user_home_default_dir: "C:\\Users\\MyPC\\.codex",
+            user_home_default_path: "C:\\Users\\MyPC\\.codex\\config.toml",
+            follow_codex_home_dir: "C:\\Users\\MyPC\\.codex",
+            follow_codex_home_path: "C:\\Users\\MyPC\\.codex\\config.toml",
+            can_open_config_dir: true,
+            exists: true,
+            model: "gpt-5.4",
+            approval_policy: "never",
+            sandbox_mode: "workspace-write",
+            model_reasoning_effort: "medium",
+            plan_mode_reasoning_effort: "high",
+            web_search: "cached",
+            personality: "pragmatic",
+            model_context_window: 1000000,
+            model_auto_compact_token_limit: 900000,
+            service_tier: "fast",
+            sandbox_workspace_write_network_access: false,
+            features_unified_exec: true,
+            features_shell_snapshot: true,
+            features_apply_patch_freeform: true,
+            features_shell_tool: true,
+            features_exec_policy: true,
+            features_remote_compaction: true,
+            features_fast_mode: true,
+            features_responses_websockets_v2: true,
+            features_multi_agent: true,
+          }}
+          codexConfigToml={{
+            config_path: "/tmp/.codex/config.toml",
+            exists: true,
+            toml: 'approval_policy = "never"\\n',
+          }}
+          refreshCodex={vi.fn()}
+          openCodexConfigDir={vi.fn()}
+          persistCodexConfig={vi.fn()}
+          persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        />
+      </QueryClientProvider>
     );
 
     expect(screen.getAllByText("config.toml").length).toBeGreaterThan(0);
