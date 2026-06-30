@@ -5,9 +5,12 @@ use super::upstream_retry_policy::{
     should_record_circuit_failure, transient_failure_decision, RetryPolicyMatch,
 };
 use super::*;
+use crate::domain::provider_oauth_limits;
 use crate::gateway::proxy::gemini_oauth;
 use crate::gateway::proxy::protocol_bridge;
 use crate::gateway::proxy::provider_router;
+use crate::gateway::proxy::status_override;
+use crate::gateway::proxy::upstream_client_error_rules;
 use std::time::Duration;
 
 fn stream_transport_decision(
@@ -23,6 +26,200 @@ fn stream_transport_decision(
         retry_index,
         max_attempts_per_provider,
     )
+}
+
+fn should_buffer_codex_responses_for_empty_detection(cli_key: &str, path: &str) -> bool {
+    cli_key == "codex"
+        && matches!(
+            path.trim_end_matches('/'),
+            "/v1/responses" | "/responses" | "/v1/codex/responses"
+        )
+}
+
+fn buffered_stream_error_code(
+    cli_key: &str,
+    path: &str,
+    status: u16,
+    raw: &[u8],
+) -> Option<&'static str> {
+    let mut tracker = usage::SseUsageTracker::new(cli_key);
+    tracker.ingest_chunk(raw);
+    let usage = tracker.finalize();
+    if tracker.fake_200_detected() {
+        return Some(GatewayErrorCode::Fake200.as_str());
+    }
+    if tracker.is_empty_success(path, status, usage.as_ref()) {
+        return Some(GatewayErrorCode::EmptyResponse.as_str());
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_buffered_provider_failure<R: tauri::Runtime>(
+    ctx: CommonCtx<'_, R>,
+    provider_ctx: ProviderCtx<'_>,
+    attempt_ctx: AttemptCtx<'_>,
+    loop_state: LoopState<'_, R>,
+    status: StatusCode,
+    raw: &[u8],
+    error_code: &'static str,
+) -> LoopControl {
+    let CommonCtx {
+        state,
+        trace_id,
+        cli_key,
+        provider_cooldown_secs,
+        ..
+    } = ctx;
+    let ProviderCtx {
+        provider_id,
+        provider_name_base,
+        provider_base_url_base,
+        auth_mode,
+        provider_index,
+        session_reuse,
+        ..
+    } = provider_ctx;
+    let AttemptCtx {
+        retry_index,
+        attempt_started_ms,
+        attempt_started,
+        circuit_before: _,
+        ..
+    } = attempt_ctx;
+    let LoopState {
+        attempts,
+        failed_provider_ids,
+        last_outcome,
+        circuit_snapshot,
+        abort_guard: _,
+    } = loop_state;
+
+    let category = ErrorCategory::ProviderError;
+    let decision = FailoverDecision::SwitchProvider;
+    let effective_status =
+        status_override::effective_status(Some(status.as_u16()), Some(error_code));
+    let now_unix = now_unix_seconds() as i64;
+    let quota_exhausted = error_code == GatewayErrorCode::Fake200.as_str()
+        && upstream_client_error_rules::match_quota_exhausted(raw);
+    let oauth_quota_exhausted = quota_exhausted && auth_mode == "oauth";
+    let outcome = if error_code == GatewayErrorCode::Fake200.as_str() {
+        format!("stream_error: code={error_code}")
+    } else {
+        format!(
+            "empty_response: category={} code={} decision={}",
+            category.as_str(),
+            error_code,
+            decision.as_str()
+        )
+    };
+
+    let change = if oauth_quota_exhausted {
+        if let Err(err) =
+            provider_oauth_limits::save_exhausted_snapshot(&state.db, provider_id, None)
+        {
+            tracing::warn!(
+                provider_id,
+                "failed to save OAuth exhausted quota snapshot: {err}"
+            );
+        }
+        None
+    } else {
+        Some(provider_router::record_failure_and_emit_transition(
+            provider_router::RecordCircuitArgs::from_state(
+                state,
+                trace_id.as_str(),
+                cli_key.as_str(),
+                provider_id,
+                provider_name_base.as_str(),
+                provider_base_url_base.as_str(),
+                now_unix,
+            ),
+        ))
+    };
+    if let Some(change) = &change {
+        *circuit_snapshot = change.after.clone();
+    }
+
+    if !oauth_quota_exhausted && provider_cooldown_secs > 0 {
+        let snap = provider_router::trigger_cooldown(
+            state.circuit.as_ref(),
+            provider_id,
+            now_unix,
+            provider_cooldown_secs,
+        );
+        *circuit_snapshot = snap;
+    }
+
+    let (circuit_state_after, circuit_failure_count, circuit_failure_threshold) =
+        if let Some(change) = &change {
+            (
+                Some(change.after.state.as_str()),
+                Some(change.after.failure_count),
+                Some(change.after.failure_threshold),
+            )
+        } else {
+            (None, None, None)
+        };
+    let circuit_state_before = change.as_ref().map(|change| change.before.state.as_str());
+
+    attempts.push(FailoverAttempt {
+        provider_id,
+        provider_name: provider_name_base.clone(),
+        base_url: provider_base_url_base.clone(),
+        outcome: outcome.clone(),
+        status: effective_status,
+        provider_index: Some(provider_index),
+        retry_index: Some(retry_index),
+        session_reuse,
+        error_category: Some(category.as_str()),
+        error_code: Some(error_code),
+        decision: Some(decision.as_str()),
+        reason: Some(buffered_provider_failure_reason(
+            error_code,
+            quota_exhausted,
+        )),
+        selection_method: dc::selection_method(provider_index, retry_index, session_reuse),
+        reason_code: Some(category.reason_code()),
+        attempt_started_ms: Some(attempt_started_ms),
+        attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
+        circuit_state_before,
+        circuit_state_after,
+        circuit_failure_count,
+        circuit_failure_threshold,
+    });
+
+    emit_attempt_event_and_log(
+        ctx,
+        provider_ctx,
+        attempt_ctx,
+        outcome,
+        effective_status,
+        AttemptCircuitFields {
+            state_before: circuit_state_before,
+            state_after: circuit_state_after,
+            failure_count: circuit_failure_count,
+            failure_threshold: circuit_failure_threshold,
+        },
+    )
+    .await;
+
+    failed_provider_ids.insert(provider_id);
+    *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
+    LoopControl::BreakRetry
+}
+
+fn buffered_provider_failure_reason(error_code: &str, quota_exhausted: bool) -> String {
+    if error_code == GatewayErrorCode::Fake200.as_str() {
+        if quota_exhausted {
+            "successful HTTP status with quota exhausted SSE error event".to_string()
+        } else {
+            "successful HTTP status with SSE error event".to_string()
+        }
+    } else {
+        "successful Codex Responses stream completed with no meaningful output and output_tokens=0"
+            .to_string()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -77,12 +274,18 @@ where
     } = attempt_ctx;
     let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
     let reason_code = dc::success_reason_code(provider_index, retry_index);
+    // Empty-success classification needs terminal SSE usage before response headers are sent,
+    // otherwise the gateway cannot return 502 or fail over to the next provider.
+    let should_buffer_empty_response =
+        should_buffer_codex_responses_for_empty_detection(&common.cli_key, &common.forwarded_path);
     let should_buffer_codex_reasoning_guard = common.codex_reasoning_guard_enabled
         && common.cli_key == "codex"
         && matches!(
             common.forwarded_path.trim_end_matches('/'),
             "/v1/responses" | "/responses"
         );
+    let should_buffer_codex_event_stream =
+        should_buffer_empty_response || should_buffer_codex_reasoning_guard;
 
     let LoopState {
         attempts,
@@ -279,7 +482,7 @@ where
             .await;
         }
 
-        if should_buffer_codex_reasoning_guard {
+        if should_buffer_codex_event_stream {
             let mut raw = Vec::new();
 
             if let Some(chunk) = first_chunk.take() {
@@ -520,6 +723,30 @@ where
                     raw
                 };
 
+            if let Some(error_code) = buffered_stream_error_code(
+                common.cli_key.as_str(),
+                common.forwarded_path.as_str(),
+                status.as_u16(),
+                raw.as_ref(),
+            ) {
+                return record_buffered_provider_failure(
+                    ctx,
+                    provider_ctx,
+                    attempt_ctx,
+                    LoopState {
+                        attempts,
+                        failed_provider_ids,
+                        last_outcome,
+                        circuit_snapshot,
+                        abort_guard,
+                    },
+                    status,
+                    raw.as_ref(),
+                    error_code,
+                )
+                .await;
+            }
+
             let aggregated = match protocol_bridge::stream::aggregate_responses_event_stream(
                 raw.as_ref(),
             ) {
@@ -556,14 +783,18 @@ where
                 }
             };
 
-            if let Some(matched) = codex_reasoning_guard::detect_from_json(
-                common.cli_key.as_str(),
-                common.requested_model.as_deref(),
-                &aggregated,
-                common.codex_reasoning_guard_compare_mode,
-                common.codex_reasoning_guard_reasoning_equals.as_slice(),
-                common.codex_reasoning_guard_model_rules.as_slice(),
-            ) {
+            if let Some(matched) = if should_buffer_codex_reasoning_guard {
+                codex_reasoning_guard::detect_from_json(
+                    common.cli_key.as_str(),
+                    common.requested_model.as_deref(),
+                    &aggregated,
+                    common.codex_reasoning_guard_compare_mode,
+                    common.codex_reasoning_guard_reasoning_equals.as_slice(),
+                    common.codex_reasoning_guard_model_rules.as_slice(),
+                )
+            } else {
+                None
+            } {
                 let budget_decision = codex_reasoning_guard::budget_decision(
                     retry_state.codex_reasoning_guard_hits,
                     common.codex_reasoning_guard_immediate_retry_budget,
