@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.60.13](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.12...aio-coding-hub-v0.60.13) (2026-07-01)
+
+
+### Bug Fixes
+
+* add customizable Codex reasoning guard hit labels across settings, logs, and request details
+* show `预算耗尽后切换模型` when Codex reasoning guard fallback switches models, and prefer the actual fallback model in success request logs
+* fix Codex bridge provider availability and bridge revert flows after the earlier 0.60.12 merge drift
+
+
+### Tests
+
+* lock the Codex reasoning guard fallback log visibility with frontend and Rust regression coverage
+* rerun the full verification matrix: front-end unit shards, Tauri tests, lint, typecheck, formatting, generated bindings, cargo check, and clippy
+
 ## [0.60.12](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.11...aio-coding-hub-v0.60.12) (2026-07-01)
 
 
