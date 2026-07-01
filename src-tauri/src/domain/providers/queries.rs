@@ -717,9 +717,9 @@ pub(crate) fn get_source_provider_for_gateway(
         })?;
     if let Some(expected_cli_key) = source_cli_key_for_bridge_type(bridge_type) {
         if cli_key_owned != expected_cli_key {
-            return Err(crate::shared::error::AppError::from(format!(
-                "DB_NOT_FOUND: source provider not found"
-            )));
+            return Err(crate::shared::error::AppError::from(
+                "DB_NOT_FOUND: source provider not found",
+            ));
         }
     } else if !is_codex_bridge_type(bridge_type) {
         return Err(crate::shared::error::AppError::from(format!(
@@ -819,7 +819,7 @@ pub(crate) async fn resolve_effective_transport_credential(
     }
 
     let token = raw_token;
-    let now_unix = crate::shared::time::now_unix_seconds() as i64;
+    let now_unix = crate::shared::time::now_unix_seconds();
     if crate::gateway::oauth::refresh::should_refresh_now(
         details.oauth_expires_at,
         details.oauth_refresh_lead_s,

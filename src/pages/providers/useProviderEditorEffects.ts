@@ -294,7 +294,15 @@ export function useProviderEditorEffects(d: EffectDeps) {
     ) {
       setCx2ccSourceValue("");
     }
-  }, [authMode, cliKey, codexBridgeTarget, open, selectedCx2ccSourceProvider, setCx2ccSourceValue]);
+  }, [
+    authMode,
+    cliKey,
+    codexBridgeTarget,
+    editingProviderId,
+    open,
+    selectedCx2ccSourceProvider,
+    setCx2ccSourceValue,
+  ]);
 
   useEffect(() => {
     if (!open || cliKey !== "claude") return;
