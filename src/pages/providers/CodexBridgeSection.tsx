@@ -9,12 +9,10 @@ import type { UseProviderEditorFormReturn } from "./useProviderEditorForm";
 export function CodexBridgeSection({ form }: { form: UseProviderEditorFormReturn }) {
   const { register, saving, tags, setTags, tagInput, setTagInput } = form;
   const exactEntries = Object.entries(form.modelMapping.exact ?? {});
-  const sourceCliKey = form.codexBridgeTarget === "anthropic_messages" ? "claude" : "codex";
   const sourceOptions = form.codexBridgeSourceProviders
     .filter(
       (provider) =>
         provider.enabled &&
-        provider.cli_key === sourceCliKey &&
         provider.id !== form.editingProviderId &&
         provider.source_provider_id == null &&
         !provider.bridge_type
@@ -71,9 +69,7 @@ export function CodexBridgeSection({ form }: { form: UseProviderEditorFormReturn
               onChange={(event) => form.setCx2ccSourceValue(event.currentTarget.value)}
               disabled={form.saving}
             >
-              <option value="">
-                {sourceCliKey === "claude" ? "选择 Claude 上游来源" : "选择 Codex 上游来源"}
-              </option>
+              <option value="">选择上游来源</option>
               {sourceOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}

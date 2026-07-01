@@ -1,7 +1,5 @@
 //! Usage: OAuth credential resolution helpers for `failover_loop`.
 
-use crate::gateway::util::now_unix_seconds;
-
 pub(super) fn resolve_oauth_adapter_for_provider(
     cli_key: &str,
     provider_id: i64,
@@ -25,125 +23,8 @@ pub(super) async fn resolve_effective_credential<R: tauri::Runtime>(
     cli_key: &str,
     provider: &crate::providers::ProviderForGateway,
 ) -> crate::shared::error::AppResult<String> {
-    if provider.auth_mode != "oauth" {
-        let api_key = provider.api_key_plaintext.trim();
-        if api_key.is_empty() {
-            return Err("SEC_INVALID_INPUT: provider api_key is empty"
-                .to_string()
-                .into());
-        }
-        return Ok(api_key.to_string());
-    }
-
-    let details = crate::providers::get_oauth_details(&state.db, provider.id)?;
-    if details.cli_key != cli_key {
-        return Err(format!(
-            "SEC_INVALID_STATE: oauth details cli_key mismatch for provider_id={} (expected={cli_key}, actual={})",
-            provider.id, details.cli_key
-        )
-        .into());
-    }
-    let oauth_adapter = resolve_oauth_adapter_for_provider(
-        cli_key,
-        provider.id,
-        Some(details.oauth_provider_type.as_str()),
-    )?;
-
-    let raw_token = details.oauth_access_token.trim().to_string();
-    if raw_token.is_empty() {
-        return Err("SEC_INVALID_INPUT: oauth access_token is empty"
-            .to_string()
-            .into());
-    }
-
-    let token = raw_token;
-    let now_unix = now_unix_seconds() as i64;
-    if crate::gateway::oauth::refresh::should_refresh_now(
-        details.oauth_expires_at,
-        details.oauth_refresh_lead_s,
-    ) {
-        if let (Some(ref refresh_token), Some(ref token_uri)) =
-            (&details.oauth_refresh_token, &details.oauth_token_uri)
-        {
-            if !refresh_token.trim().is_empty() && !token_uri.trim().is_empty() {
-                let client = state.client();
-                match crate::gateway::oauth::refresh::refresh_provider_token_with_retry(
-                    &client,
-                    token_uri,
-                    details.oauth_client_id.as_deref().unwrap_or(""),
-                    details.oauth_client_secret.as_deref(),
-                    refresh_token,
-                )
-                .await
-                {
-                    Ok(refreshed) => {
-                        let new_token = refreshed.access_token.trim().to_string();
-                        if !new_token.is_empty() {
-                            match crate::providers::update_oauth_tokens_if_last_refreshed_matches(
-                                &state.db,
-                                provider.id,
-                                "oauth",
-                                oauth_adapter.provider_type(),
-                                &new_token,
-                                refreshed.refresh_token.as_deref().or(Some(refresh_token)),
-                                refreshed
-                                    .id_token
-                                    .as_deref()
-                                    .or(details.oauth_id_token.as_deref()),
-                                token_uri,
-                                details.oauth_client_id.as_deref().unwrap_or(""),
-                                details.oauth_client_secret.as_deref(),
-                                refreshed.expires_at.or(details.oauth_expires_at),
-                                details.oauth_email.as_deref(),
-                                details.oauth_last_refreshed_at,
-                            ) {
-                                Ok(true) => {}
-                                Ok(false) => {
-                                    tracing::info!(
-                                        cli_key = %cli_key,
-                                        provider_id = provider.id,
-                                        "OAuth inline refresh CAS conflict: skipped stale token write"
-                                    );
-                                }
-                                Err(persist_err) => {
-                                    tracing::warn!(
-                                        cli_key = %cli_key,
-                                        provider_id = provider.id,
-                                        "OAuth token refresh persisted failed: {}",
-                                        persist_err
-                                    );
-                                }
-                            }
-                            tracing::info!(
-                                cli_key = %cli_key,
-                                provider_id = provider.id,
-                                "OAuth token refreshed inline successfully"
-                            );
-                            return Ok(new_token);
-                        }
-                    }
-                    Err(err) => {
-                        let still_valid = details
-                            .oauth_expires_at
-                            .map(|exp| exp > now_unix)
-                            .unwrap_or(false);
-                        if still_valid {
-                            tracing::warn!(
-                                provider_id = provider.id,
-                                cli_key = %cli_key,
-                                "oauth inline refresh failed; fallback to existing token: {}",
-                                err
-                            );
-                            return Ok(token);
-                        }
-                        return Err(format!("OAUTH_REFRESH_FAILED: {err}").into());
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(token)
+    let client = state.client();
+    crate::providers::resolve_effective_credential(&state.db, &client, cli_key, provider).await
 }
 
 /// After a 401 response, attempt to refresh OAuth token and return the new credential.

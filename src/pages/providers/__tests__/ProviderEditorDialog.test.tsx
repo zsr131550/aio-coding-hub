@@ -706,7 +706,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
   });
 
-  it("filters codex bridge sources by selected upstream endpoint and saves target bridge type", async () => {
+  it("shows all eligible codex bridge sources for both upstream endpoints and preserves selection", async () => {
     vi.mocked(providerUpsert).mockResolvedValue(
       makeProvider({
         id: 21,
@@ -751,14 +751,14 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     const sourceSelect = dialog.getByLabelText("上游来源");
     expect(within(sourceSelect).getByText("Codex Chat Source")).toBeInTheDocument();
-    expect(within(sourceSelect).queryByText("Claude Messages Source")).not.toBeInTheDocument();
+    expect(within(sourceSelect).getByText("Claude Messages Source")).toBeInTheDocument();
 
     fireEvent.change(sourceSelect, { target: { value: "7" } });
     expect(sourceSelect).toHaveValue("7");
 
     fireEvent.click(dialog.getByRole("tab", { name: "Anthropic Messages" }));
-    await waitFor(() => expect(sourceSelect).toHaveValue(""));
-    expect(within(sourceSelect).queryByText("Codex Chat Source")).not.toBeInTheDocument();
+    await waitFor(() => expect(sourceSelect).toHaveValue("7"));
+    expect(within(sourceSelect).getByText("Codex Chat Source")).toBeInTheDocument();
     expect(within(sourceSelect).getByText("Claude Messages Source")).toBeInTheDocument();
 
     fireEvent.change(sourceSelect, { target: { value: "8" } });
@@ -771,6 +771,64 @@ describe("pages/providers/ProviderEditorDialog", () => {
           name: "Codex Anthropic Bridge",
           sourceProviderId: 8,
           bridgeType: "codex_to_anthropic_messages",
+          costMultiplier: 1.6,
+        })
+      )
+    );
+  });
+
+  it("saves chat completions codex bridge with a claude source", async () => {
+    vi.mocked(providerUpsert).mockResolvedValue(
+      makeProvider({
+        id: 22,
+        cli_key: "codex",
+        name: "Codex Chat Bridge",
+        base_urls: [],
+        cost_multiplier: 1.6,
+        source_provider_id: 8,
+        bridge_type: "codex_to_openai_chat",
+      })
+    );
+
+    render(
+      <ProviderEditorDialog
+        mode="create"
+        open={true}
+        cliKey="codex"
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+        bridgeSourceProviders={[
+          makeProvider({
+            id: 7,
+            cli_key: "codex",
+            name: "Codex Chat Source",
+            cost_multiplier: 1.3,
+          }),
+          makeProvider({
+            id: 8,
+            cli_key: "claude",
+            name: "Claude Messages Source",
+            cost_multiplier: 1.6,
+          }),
+        ]}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.click(dialog.getByRole("tab", { name: "转译" }));
+    fireEvent.change(dialog.getByLabelText("名称"), {
+      target: { value: "Codex Chat Bridge" },
+    });
+    fireEvent.change(dialog.getByLabelText("上游来源"), { target: { value: "8" } });
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cliKey: "codex",
+          name: "Codex Chat Bridge",
+          sourceProviderId: 8,
+          bridgeType: "codex_to_openai_chat",
           costMultiplier: 1.6,
         })
       )
@@ -814,6 +872,74 @@ describe("pages/providers/ProviderEditorDialog", () => {
       "true"
     );
     expect(dialog.getByLabelText("上游来源")).toHaveValue("8");
+  });
+
+  it("restores editable transport fields when switching a codex bridge back to api key mode", async () => {
+    vi.mocked(providerUpsert).mockResolvedValue(
+      makeProvider({
+        id: 21,
+        cli_key: "codex",
+        name: "Codex Restored Provider",
+        base_urls: ["https://restored.example/v1"],
+        auth_mode: "api_key",
+        source_provider_id: null,
+        bridge_type: null,
+        api_key_configured: true,
+      })
+    );
+
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+        provider={makeProvider({
+          id: 21,
+          cli_key: "codex",
+          name: "Codex Restored Provider",
+          base_urls: [],
+          auth_mode: "api_key",
+          source_provider_id: 8,
+          bridge_type: "codex_to_anthropic_messages",
+          api_key_configured: false,
+        })}
+        bridgeSourceProviders={[
+          makeProvider({
+            id: 8,
+            cli_key: "claude",
+            name: "Claude Messages Source",
+          }),
+        ]}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.click(dialog.getByRole("tab", { name: "API 密钥" }));
+
+    const baseUrlInput = dialog.getByPlaceholderText(/中转 endpoint/);
+    fireEvent.change(baseUrlInput, {
+      target: { value: "https://restored.example/v1" },
+    });
+    fireEvent.change(dialog.getByPlaceholderText("sk-…"), {
+      target: { value: "sk-restored" },
+    });
+
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: 21,
+          cliKey: "codex",
+          name: "Codex Restored Provider",
+          baseUrls: ["https://restored.example/v1"],
+          apiKey: "sk-restored",
+          sourceProviderId: null,
+          bridgeType: null,
+        })
+      )
+    );
   });
 
   it("supports using the whole codex gateway as cx2cc source", async () => {

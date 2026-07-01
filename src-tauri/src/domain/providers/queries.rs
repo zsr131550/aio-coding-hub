@@ -693,8 +693,7 @@ pub(crate) fn list_enabled_for_gateway_in_mode(
 /// Resolve a source provider by ID for CX2CC chaining.
 fn source_cli_key_for_bridge_type(bridge_type: &str) -> Option<&'static str> {
     match bridge_type {
-        CX2CC_BRIDGE_TYPE | CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE => Some("codex"),
-        CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE => Some("claude"),
+        CX2CC_BRIDGE_TYPE => Some("codex"),
         _ => None,
     }
 }
@@ -705,11 +704,6 @@ pub(crate) fn get_source_provider_for_gateway(
     bridge_type: &str,
 ) -> crate::shared::error::AppResult<(ProviderForGateway, String)> {
     let conn = db.open_connection()?;
-    let expected_cli_key = source_cli_key_for_bridge_type(bridge_type).ok_or_else(|| {
-        crate::shared::error::AppError::from(format!(
-            "SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}"
-        ))
-    })?;
     let cli_key_owned = conn
         .query_row(
             "SELECT cli_key FROM providers WHERE id = ?1",
@@ -721,6 +715,17 @@ pub(crate) fn get_source_provider_for_gateway(
         .ok_or_else(|| {
             crate::shared::error::AppError::from("DB_NOT_FOUND: source provider not found")
         })?;
+    if let Some(expected_cli_key) = source_cli_key_for_bridge_type(bridge_type) {
+        if cli_key_owned != expected_cli_key {
+            return Err(crate::shared::error::AppError::from(format!(
+                "DB_NOT_FOUND: source provider not found"
+            )));
+        }
+    } else if !is_codex_bridge_type(bridge_type) {
+        return Err(crate::shared::error::AppError::from(format!(
+            "SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}"
+        )));
+    }
 
     let provider = conn
         .query_row(
@@ -749,9 +754,9 @@ SELECT
   stream_idle_timeout_seconds,
   upstream_retry_policy_json
 FROM providers
-WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND bridge_type IS NULL AND cli_key = ?2
+WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND bridge_type IS NULL
 "#,
-            params![source_provider_id, expected_cli_key],
+            params![source_provider_id],
             |row| map_gateway_provider_row(row, &cli_key_owned),
         )
         .optional()
@@ -760,6 +765,146 @@ WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND bridge_type IS 
             crate::shared::error::AppError::from("DB_NOT_FOUND: source provider not found")
         })?;
     Ok((provider, cli_key_owned))
+}
+
+/// Resolve the effective API credential for a provider.
+/// For `api_key` mode, returns the plaintext key.
+/// For `oauth` mode, checks token freshness and refreshes inline if needed.
+pub(crate) async fn resolve_effective_credential(
+    db: &db::Db,
+    client: &reqwest::Client,
+    cli_key: &str,
+    provider: &ProviderForGateway,
+) -> crate::shared::error::AppResult<String> {
+    resolve_effective_transport_credential(db, client, cli_key, &provider.transport_context()).await
+}
+
+pub(crate) async fn resolve_effective_transport_credential(
+    db: &db::Db,
+    client: &reqwest::Client,
+    cli_key: &str,
+    transport: &ProviderTransportContext,
+) -> crate::shared::error::AppResult<String> {
+    if transport.auth_mode != "oauth" {
+        let api_key = transport.api_key_plaintext.trim();
+        if api_key.is_empty() {
+            return Err("SEC_INVALID_INPUT: provider api_key is empty"
+                .to_string()
+                .into());
+        }
+        return Ok(api_key.to_string());
+    }
+
+    let details = get_oauth_details(db, transport.provider_id)?;
+    if details.cli_key != cli_key {
+        return Err(format!(
+            "SEC_INVALID_STATE: oauth details cli_key mismatch for provider_id={} (expected={cli_key}, actual={})",
+            transport.provider_id, details.cli_key
+        )
+        .into());
+    }
+
+    let oauth_adapter = crate::gateway::oauth::registry::resolve_oauth_adapter(
+        cli_key,
+        transport.provider_id,
+        Some(details.oauth_provider_type.as_str()),
+    )
+    .map_err(crate::shared::error::AppError::from)?;
+
+    let raw_token = details.oauth_access_token.trim().to_string();
+    if raw_token.is_empty() {
+        return Err("SEC_INVALID_INPUT: oauth access_token is empty"
+            .to_string()
+            .into());
+    }
+
+    let token = raw_token;
+    let now_unix = crate::shared::time::now_unix_seconds() as i64;
+    if crate::gateway::oauth::refresh::should_refresh_now(
+        details.oauth_expires_at,
+        details.oauth_refresh_lead_s,
+    ) {
+        if let (Some(ref refresh_token), Some(ref token_uri)) =
+            (&details.oauth_refresh_token, &details.oauth_token_uri)
+        {
+            if !refresh_token.trim().is_empty() && !token_uri.trim().is_empty() {
+                match crate::gateway::oauth::refresh::refresh_provider_token_with_retry(
+                    client,
+                    token_uri,
+                    details.oauth_client_id.as_deref().unwrap_or(""),
+                    details.oauth_client_secret.as_deref(),
+                    refresh_token,
+                )
+                .await
+                {
+                    Ok(refreshed) => {
+                        let new_token = refreshed.access_token.trim().to_string();
+                        if !new_token.is_empty() {
+                            match update_oauth_tokens_if_last_refreshed_matches(
+                                db,
+                                transport.provider_id,
+                                "oauth",
+                                oauth_adapter.provider_type(),
+                                &new_token,
+                                refreshed.refresh_token.as_deref().or(Some(refresh_token)),
+                                refreshed
+                                    .id_token
+                                    .as_deref()
+                                    .or(details.oauth_id_token.as_deref()),
+                                token_uri,
+                                details.oauth_client_id.as_deref().unwrap_or(""),
+                                details.oauth_client_secret.as_deref(),
+                                refreshed.expires_at.or(details.oauth_expires_at),
+                                details.oauth_email.as_deref(),
+                                details.oauth_last_refreshed_at,
+                            ) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    tracing::info!(
+                                        cli_key = %cli_key,
+                                        provider_id = transport.provider_id,
+                                        "OAuth inline refresh CAS conflict: skipped stale token write"
+                                    );
+                                }
+                                Err(persist_err) => {
+                                    tracing::warn!(
+                                        cli_key = %cli_key,
+                                        provider_id = transport.provider_id,
+                                        "OAuth token refresh persisted failed: {}",
+                                        persist_err
+                                    );
+                                }
+                            }
+                            tracing::info!(
+                                cli_key = %cli_key,
+                                provider_id = transport.provider_id,
+                                "OAuth token refreshed inline successfully"
+                            );
+                            return Ok(new_token);
+                        }
+                    }
+                    Err(err) => {
+                        let still_valid = details
+                            .oauth_expires_at
+                            .map(|exp| exp > now_unix)
+                            .unwrap_or(false);
+                        if still_valid {
+                            tracing::warn!(
+                                provider_id = transport.provider_id,
+                                cli_key = %cli_key,
+                                "oauth inline refresh failed; fallback to existing token: {}",
+                                err
+                            );
+                            return Ok(token);
+                        }
+                        return Err(format!("OAUTH_REFRESH_FAILED: {err}").into());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(token)
 }
 
 fn next_sort_order(conn: &Connection, cli_key: &str) -> crate::shared::error::AppResult<i64> {
@@ -872,13 +1017,16 @@ pub fn upsert(
                             .into(),
                     );
                 };
-                let expected_source_cli =
-                    source_cli_key_for_bridge_type(bridge_type).ok_or_else(|| {
-                        format!("SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}")
-                    })?;
-                if src_cli != expected_source_cli {
+                if let Some(expected_source_cli) = source_cli_key_for_bridge_type(bridge_type) {
+                    if src_cli != expected_source_cli {
+                        return Err(format!(
+                            "SEC_INVALID_INPUT: source provider must belong to {expected_source_cli} CLI for bridge_type={bridge_type}"
+                        )
+                        .into());
+                    }
+                } else if !is_codex_bridge_type(bridge_type) {
                     return Err(format!(
-                        "SEC_INVALID_INPUT: source provider must belong to {expected_source_cli} CLI for bridge_type={bridge_type}"
+                        "SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}"
                     )
                     .into());
                 }

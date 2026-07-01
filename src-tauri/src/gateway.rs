@@ -57,3 +57,10 @@ pub(crate) fn listen_rebind_required(
 ) -> bool {
     binder::listen_rebind_required(previous, next)
 }
+
+pub(crate) fn resolve_transport_base_url(
+    transport: &crate::providers::ProviderTransportContext,
+    cli_key: &str,
+) -> Result<String, String> {
+    proxy::resolve_transport_base_url(transport, cli_key)
+}

@@ -320,6 +320,15 @@ pub(crate) struct ProviderForGateway {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct ProviderTransportContext {
+    pub provider_id: i64,
+    pub base_urls: Vec<String>,
+    pub api_key_plaintext: String,
+    pub auth_mode: String,
+    pub oauth_provider_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct GatewayProvidersSelection {
     pub sort_mode_id: Option<i64>,
     pub providers: Vec<ProviderForGateway>,
@@ -335,6 +344,16 @@ pub(crate) struct ClaudeTerminalLaunchContext {
 impl ProviderForGateway {
     pub(crate) fn is_cx2cc_bridge(&self) -> bool {
         is_cx2cc_bridge(self.bridge_type.as_deref())
+    }
+
+    pub(crate) fn transport_context(&self) -> ProviderTransportContext {
+        ProviderTransportContext {
+            provider_id: self.id,
+            base_urls: self.base_urls.clone(),
+            api_key_plaintext: self.api_key_plaintext.clone(),
+            auth_mode: self.auth_mode.clone(),
+            oauth_provider_type: self.oauth_provider_type.clone(),
+        }
     }
 
     pub(crate) fn get_effective_claude_model(

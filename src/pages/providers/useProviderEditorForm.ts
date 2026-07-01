@@ -241,6 +241,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     cancelActiveOAuthLoginAttempt,
     newBaseUrlRow,
     setBaseUrlMode,
+    baseUrlRows,
     setBaseUrlRows,
     setPingingAll,
     setClaudeModels,

@@ -1,4 +1,4 @@
-use super::queries::pool_order_set;
+use super::queries::{get_source_provider_for_gateway, pool_order_set};
 use super::*;
 use rusqlite::OptionalExtension;
 
@@ -126,6 +126,52 @@ fn normalize_model_slot_truncates_multibyte_without_panic() {
     let long_name = "模".repeat(MAX_MODEL_NAME_LEN + 1);
     let result = normalize_model_slot(Some(long_name)).expect("normalized model");
     assert_eq!(result.chars().count(), MAX_MODEL_NAME_LEN);
+}
+
+#[test]
+fn get_source_provider_for_gateway_allows_cross_cli_codex_bridge_sources() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("providers.sqlite3");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut claude_params = default_provider_params("Claude source");
+    claude_params.base_urls = vec!["https://api.anthropic.com/v1".to_string()];
+    let claude_source = upsert(&db, claude_params).expect("insert claude source");
+
+    let mut codex_params = default_provider_params("Codex source");
+    codex_params.cli_key = "codex".to_string();
+    codex_params.base_urls = vec!["https://codex.example.com/v1".to_string()];
+    let codex_source = upsert(&db, codex_params).expect("insert codex source");
+
+    let (chat_source, chat_cli_key) =
+        get_source_provider_for_gateway(&db, claude_source.id, CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE)
+            .expect("chat bridge source");
+    assert_eq!(chat_source.id, claude_source.id);
+    assert_eq!(chat_cli_key, "claude");
+
+    let (anthropic_source, anthropic_cli_key) = get_source_provider_for_gateway(
+        &db,
+        codex_source.id,
+        CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
+    )
+    .expect("anthropic bridge source");
+    assert_eq!(anthropic_source.id, codex_source.id);
+    assert_eq!(anthropic_cli_key, "codex");
+}
+
+#[test]
+fn get_source_provider_for_gateway_keeps_cx2cc_codex_source_requirement() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("providers.sqlite3");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut claude_params = default_provider_params("Claude source");
+    claude_params.base_urls = vec!["https://api.anthropic.com/v1".to_string()];
+    let claude_source = upsert(&db, claude_params).expect("insert claude source");
+
+    let err = get_source_provider_for_gateway(&db, claude_source.id, CX2CC_BRIDGE_TYPE)
+        .expect_err("cx2cc should still reject non-codex source");
+    assert!(err.to_string().contains("source provider not found"));
 }
 
 // -- ModelMapping JSON compatibility --

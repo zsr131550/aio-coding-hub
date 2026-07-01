@@ -52,6 +52,7 @@ export type EffectDeps = {
   cancelActiveOAuthLoginAttempt: (resetUi?: boolean) => void;
   newBaseUrlRow: (url?: string) => BaseUrlRow;
   setBaseUrlMode: (v: ProviderBaseUrlMode) => void;
+  baseUrlRows: BaseUrlRow[];
   setBaseUrlRows: (v: BaseUrlRow[]) => void;
   setPingingAll: (v: boolean) => void;
   setClaudeModels: (v: ClaudeModels) => void;
@@ -103,6 +104,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     codexBridgeTarget,
     newBaseUrlRow,
     setBaseUrlMode,
+    baseUrlRows,
     setBaseUrlRows,
     setPingingAll,
     setClaudeModels,
@@ -263,6 +265,12 @@ export function useProviderEditorEffects(d: EffectDeps) {
   }, [authMode, cancelActiveOAuthLoginAttempt, open]);
 
   useEffect(() => {
+    if (!open || authMode !== "api_key") return;
+    if (baseUrlRows.length > 0) return;
+    setBaseUrlRows([newBaseUrlRow()]);
+  }, [authMode, baseUrlRows, newBaseUrlRow, open, setBaseUrlRows]);
+
+  useEffect(() => {
     if (authMode !== "cx2cc") return;
     const inheritedMultiplier = isCodexGatewaySource
       ? "0"
@@ -278,9 +286,14 @@ export function useProviderEditorEffects(d: EffectDeps) {
   useEffect(() => {
     if (!open || authMode !== "cx2cc" || cliKey !== "codex") return;
     if (!selectedCx2ccSourceProvider) return;
-    const expectedCliKey = codexBridgeTarget === "anthropic_messages" ? "claude" : "codex";
-    if (selectedCx2ccSourceProvider.cli_key === expectedCliKey) return;
-    setCx2ccSourceValue("");
+    if (
+      selectedCx2ccSourceProvider.id === editingProviderId ||
+      selectedCx2ccSourceProvider.source_provider_id != null ||
+      selectedCx2ccSourceProvider.bridge_type ||
+      !selectedCx2ccSourceProvider.enabled
+    ) {
+      setCx2ccSourceValue("");
+    }
   }, [authMode, cliKey, codexBridgeTarget, open, selectedCx2ccSourceProvider, setCx2ccSourceValue]);
 
   useEffect(() => {
