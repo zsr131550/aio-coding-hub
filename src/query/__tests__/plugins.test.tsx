@@ -11,9 +11,13 @@ import {
   pluginInstallFromFile,
   pluginInstallRemote,
   pluginInstallOfficial,
+  pluginListAuditLogs,
   pluginListExtensionRuntimeReports,
   pluginList,
   pluginListRuntimeReports,
+  pluginPreviewFromFile,
+  pluginPreviewRemoteUpdate,
+  pluginPreviewUpdateFromFile,
   pluginExportReplayFixture,
   pluginQuarantineRevoked,
   pluginRevokePermission,
@@ -33,6 +37,10 @@ import {
   usePluginInstallFromFileMutation,
   usePluginInstallOfficialMutation,
   usePluginInstallRemoteMutation,
+  usePluginAuditLogsQuery,
+  usePluginPreviewFromFileMutation,
+  usePluginPreviewRemoteUpdateMutation,
+  usePluginPreviewUpdateFromFileMutation,
   usePluginQuery,
   usePluginQuarantineRevokedMutation,
   usePluginExportReplayFixtureMutation,
@@ -57,8 +65,12 @@ vi.mock("../../services/plugins", async () => {
     pluginInstallFromFile: vi.fn(),
     pluginInstallRemote: vi.fn(),
     pluginInstallOfficial: vi.fn(),
+    pluginListAuditLogs: vi.fn(),
     pluginListExtensionRuntimeReports: vi.fn(),
     pluginListRuntimeReports: vi.fn(),
+    pluginPreviewFromFile: vi.fn(),
+    pluginPreviewRemoteUpdate: vi.fn(),
+    pluginPreviewUpdateFromFile: vi.fn(),
     pluginExportReplayFixture: vi.fn(),
     pluginQuarantineRevoked: vi.fn(),
     pluginUpdateFromFile: vi.fn(),
@@ -186,7 +198,52 @@ describe("query/plugins", () => {
     expect(client.getQueryState(pluginKeys.detail("community.prompt-helper"))).toBeTruthy();
   });
 
-  it("queries runtime reports and caches exported replay fixtures", async () => {
+  it("uses disabled query guards and default plugin report filters", async () => {
+    vi.mocked(pluginListRuntimeReports).mockResolvedValue([]);
+    vi.mocked(pluginListExtensionRuntimeReports).mockResolvedValue([]);
+    vi.mocked(pluginListAuditLogs).mockResolvedValue([]);
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+
+    renderHook(() => usePluginsListQuery({ enabled: false }), { wrapper });
+    renderHook(() => usePluginQuery(null), { wrapper });
+    renderHook(() => usePluginQuery("community.prompt-helper", { enabled: false }), { wrapper });
+    renderHook(() => usePluginRuntimeReportsQuery({ pluginId: null }), { wrapper });
+    renderHook(
+      () =>
+        usePluginExtensionRuntimeReportsQuery({
+          pluginId: " community.prompt-helper ",
+          contributionType: null,
+          contributionId: null,
+          traceId: null,
+          limit: null,
+        }),
+      { wrapper }
+    );
+    renderHook(() => usePluginAuditLogsQuery(" community.prompt-helper "), { wrapper });
+
+    await waitFor(() => {
+      expect(pluginListExtensionRuntimeReports).toHaveBeenCalledWith({
+        pluginId: "community.prompt-helper",
+        contributionType: null,
+        contributionId: null,
+        traceId: null,
+        limit: 50,
+      });
+      expect(pluginListAuditLogs).toHaveBeenCalledWith({
+        pluginId: "community.prompt-helper",
+        limit: 50,
+      });
+    });
+
+    expect(pluginList).not.toHaveBeenCalled();
+    expect(pluginGet).not.toHaveBeenCalled();
+    expect(pluginListRuntimeReports).not.toHaveBeenCalled();
+    expect(client.getQueryState(pluginKeys.detail(null))).toBeTruthy();
+    expect(client.getQueryState(pluginKeys.runtimeReports(null, null, null, 50))).toBeTruthy();
+  });
+
+  it("queries runtime reports and caches previews and exported replay fixtures", async () => {
     vi.mocked(pluginListRuntimeReports).mockResolvedValue([
       {
         id: 1,
@@ -230,6 +287,9 @@ describe("query/plugins", () => {
       },
     ]);
     vi.mocked(pluginExecuteCommand).mockResolvedValue({ ok: true });
+    vi.mocked(pluginPreviewFromFile).mockResolvedValue({ pluginId: "from-file" } as any);
+    vi.mocked(pluginPreviewUpdateFromFile).mockResolvedValue({ pluginId: "update-file" } as any);
+    vi.mocked(pluginPreviewRemoteUpdate).mockResolvedValue({ pluginId: "remote-update" } as any);
     vi.mocked(pluginExportReplayFixture).mockResolvedValue({
       schemaVersion: 1,
       traceId: "trace-replay-1",
@@ -355,6 +415,57 @@ describe("query/plugins", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: pluginKeys.detail("community.prompt-helper"),
     });
+
+    await act(async () => {
+      await commandResult.current.mutateAsync({
+        command: "community.prompt-helper.noop",
+        args: ["not-object"] as any,
+      });
+      await commandResult.current.mutateAsync({
+        command: "community.prompt-helper.empty",
+        args: { pluginId: "   " } as any,
+      });
+      await commandResult.current.mutateAsync({
+        command: "community.prompt-helper.null",
+      });
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledTimes(5);
+
+    const { result: previewFromFileResult } = renderHook(() => usePluginPreviewFromFileMutation(), {
+      wrapper,
+    });
+    const { result: previewUpdateFromFileResult } = renderHook(
+      () => usePluginPreviewUpdateFromFileMutation(),
+      { wrapper }
+    );
+    const { result: previewRemoteUpdateResult } = renderHook(
+      () => usePluginPreviewRemoteUpdateMutation(),
+      { wrapper }
+    );
+    await act(async () => {
+      await previewFromFileResult.current.mutateAsync("/tmp/plugin.aio-plugin");
+      await previewUpdateFromFileResult.current.mutateAsync("/tmp/plugin-update.aio-plugin");
+      await previewRemoteUpdateResult.current.mutateAsync({
+        pluginId: "community.prompt-helper",
+        downloadUrl: "https://github.com/acme/plugin/releases/download/v2/plugin.aio-plugin",
+        checksum: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      });
+    });
+
+    expect(client.getQueryData(pluginKeys.installPreview("/tmp/plugin.aio-plugin"))).toEqual({
+      pluginId: "from-file",
+    });
+    expect(client.getQueryData(pluginKeys.updatePreview("/tmp/plugin-update.aio-plugin"))).toEqual({
+      pluginId: "update-file",
+    });
+    expect(
+      client.getQueryData(
+        pluginKeys.updatePreview(
+          "https://github.com/acme/plugin/releases/download/v2/plugin.aio-plugin"
+        )
+      )
+    ).toEqual({ pluginId: "remote-update" });
 
     const { result } = renderHook(() => usePluginExportReplayFixtureMutation(), { wrapper });
     await act(async () => {
@@ -488,6 +599,38 @@ describe("query/plugins", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: pluginContributionKeys.active(),
     });
+  });
+
+  it("invalidates broad plugin state when install or update returns no detail", async () => {
+    vi.mocked(pluginInstallFromFile).mockResolvedValue(null as any);
+    vi.mocked(pluginInstallRemote).mockResolvedValue(null as any);
+    vi.mocked(pluginUpdateFromFile).mockResolvedValue(null as any);
+    const client = createTestQueryClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const wrapper = createQueryWrapper(client);
+    const { result: installFromFileResult } = renderHook(() => usePluginInstallFromFileMutation(), {
+      wrapper,
+    });
+    const { result: installRemoteResult } = renderHook(() => usePluginInstallRemoteMutation(), {
+      wrapper,
+    });
+    const { result: updateFromFileResult } = renderHook(() => usePluginUpdateFromFileMutation(), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await installFromFileResult.current.mutateAsync("/tmp/missing.aio-plugin");
+      await installRemoteResult.current.mutateAsync({
+        pluginId: "community.prompt-helper",
+        downloadUrl: "https://github.com/acme/plugin/releases/download/v3/plugin.aio-plugin",
+        checksum: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      });
+      await updateFromFileResult.current.mutateAsync("/tmp/no-update.aio-plugin");
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: pluginKeys.list() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: pluginContributionKeys.active() });
+    expect(client.getQueryData(pluginKeys.detail("community.prompt-helper"))).toBeUndefined();
   });
 
   it("updates the list cache with the returned summary after enabling a plugin", async () => {

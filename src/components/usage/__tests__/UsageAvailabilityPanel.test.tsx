@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { UsageAvailabilityPanel } from "../UsageAvailabilityPanel";
 import { buildAvailabilityTimeline } from "../usageAvailabilityTimeline";
 import type { RequestLogSummary } from "../../../services/gateway/requestLogs";
 import type { GatewayProviderCircuitStatus } from "../../../services/gateway/gateway";
@@ -341,5 +343,131 @@ describe("buildAvailabilityTimeline", () => {
     const p1 = result.providers[0]!;
     expect(p1.buckets).toHaveLength(result.bucketCount);
     expect(result.bucketCount).toBe(Math.ceil(DAY_MS / result.bucketSizeMs));
+  });
+});
+
+describe("UsageAvailabilityPanel", () => {
+  it("renders loading and empty states", () => {
+    const { rerender } = render(
+      <UsageAvailabilityPanel data={null} loading onRefresh={vi.fn()} refreshing={false} />
+    );
+
+    expect(screen.getByText("加载可用率数据中...")).toBeInTheDocument();
+    expect(screen.getByLabelText("Loading")).toBeInTheDocument();
+
+    rerender(
+      <UsageAvailabilityPanel
+        data={buildAvailabilityTimeline([], null, 0, DAY_MS)}
+        loading={false}
+        onRefresh={vi.fn()}
+        refreshing={false}
+      />
+    );
+
+    expect(screen.getByText("暂无请求记录")).toBeInTheDocument();
+    expect(screen.getByText("当有请求经过网关后，可用率数据将自动展示。")).toBeInTheDocument();
+    expect(screen.getByText("0 个供应商")).toBeInTheDocument();
+  });
+
+  it("renders provider rows, bucket dots, date ticks, and refresh state", () => {
+    const onRefresh = vi.fn();
+    const data = buildAvailabilityTimeline(
+      [
+        makeLog({
+          id: 1,
+          final_provider_id: 1,
+          final_provider_name: "Healthy",
+          status: 200,
+          created_at_ms: HOUR_MS,
+          duration_ms: 100,
+        }),
+        makeLog({
+          id: 2,
+          final_provider_id: 2,
+          final_provider_name: "Partial",
+          status: 200,
+          created_at_ms: DAY_MS,
+          duration_ms: 200,
+        }),
+        makeLog({
+          id: 3,
+          final_provider_id: 2,
+          final_provider_name: "Partial",
+          status: 500,
+          created_at_ms: DAY_MS + HOUR_MS,
+          duration_ms: 400,
+        }),
+        makeLog({
+          id: 4,
+          final_provider_id: 3,
+          final_provider_name: "Down",
+          status: 500,
+          created_at_ms: 2 * DAY_MS,
+          duration_ms: 600,
+        }),
+      ],
+      null,
+      0,
+      4 * DAY_MS
+    );
+
+    render(
+      <UsageAvailabilityPanel data={data} loading={false} onRefresh={onRefresh} refreshing={true} />
+    );
+
+    expect(screen.getByText("供应商可用性时间线")).toBeInTheDocument();
+    expect(screen.getByText(`时间分段: ${data.bucketSizeLabel}`)).toBeInTheDocument();
+    expect(screen.getByText("Healthy")).toBeInTheDocument();
+    expect(screen.getByText("Partial")).toBeInTheDocument();
+    expect(screen.getByText("Down")).toBeInTheDocument();
+    expect(screen.getAllByText("稀疏")).toHaveLength(3);
+
+    expect(screen.getAllByText(/\d+\/\d+ \d{2}:\d{2}/u).length).toBeGreaterThan(0);
+    const bucketTitles = Array.from(document.querySelectorAll<HTMLElement>("[title]")).map(
+      (element) => element.title
+    );
+    expect(
+      bucketTitles.some(
+        (title) =>
+          title.includes("请求: 1") && title.includes("成功: 1") && title.includes("100.0%")
+      )
+    ).toBe(true);
+    expect(
+      bucketTitles.some(
+        (title) => title.includes("请求: 1") && title.includes("成功: 0") && title.includes("0.0%")
+      )
+    ).toBe(true);
+
+    const refreshButton = screen.getByRole("button", { name: "刷新可用率数据" });
+    expect(refreshButton).toBeDisabled();
+    fireEvent.click(refreshButton);
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
+
+  it("invokes refresh and labels dense traffic", () => {
+    const onRefresh = vi.fn();
+    const denseLogs = Array.from({ length: 130 }, (_, index) =>
+      makeLog({
+        id: index + 1,
+        final_provider_id: 1,
+        final_provider_name: "Dense",
+        status: 200,
+        created_at_ms: index * 60_000,
+        duration_ms: 100,
+      })
+    );
+
+    render(
+      <UsageAvailabilityPanel
+        data={buildAvailabilityTimeline(denseLogs, null, 0, HOUR_MS)}
+        loading={false}
+        onRefresh={onRefresh}
+        refreshing={false}
+      />
+    );
+
+    expect(screen.getByText("密集")).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("刷新可用率数据"));
+    expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 });
