@@ -368,8 +368,8 @@ fn codex_app_is_running() -> AppResult<bool> {
 
     #[cfg(windows)]
     {
-        let output = std::process::Command::new("cmd")
-            .args(["/C", "tasklist /FI \"IMAGENAME eq Codex.exe\" /NH"])
+        let output = std::process::Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq Codex.exe", "/NH"])
             .output()
             .map_err(|err| codex_process_check_failed_message("tasklist", err.to_string()))?;
         if !output.status.success() {

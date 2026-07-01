@@ -517,9 +517,11 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.change(screen.getByLabelText("降智命中标签"), { target: { value: "守卫命中" } });
     fireEvent.click(screen.getByRole("button", { name: "详情" }));
     const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("降智命中标签"), {
+      target: { value: "守卫命中" },
+    });
     const input = within(dialog).getByDisplayValue("516, 1034, 1552") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "516, 1024" } });
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
@@ -931,8 +933,9 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.change(screen.getByLabelText("降智命中标签"), { target: { value: "   " } });
     fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("降智命中标签"), { target: { value: "   " } });
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 
     await waitFor(() =>
@@ -942,6 +945,32 @@ describe("components/cli-manager/tabs/CodexTab", () => {
         })
       )
     );
+  });
+
+  it("keeps the Codex reasoning guard hit label inside the guard details dialog", () => {
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={vi.fn().mockResolvedValue(true)}
+      />
+    );
+
+    expect(screen.queryByLabelText("降智命中标签")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    expect(within(screen.getByRole("dialog")).getByLabelText("降智命中标签")).toBeInTheDocument();
   });
 
   it("renders unavailable state", () => {

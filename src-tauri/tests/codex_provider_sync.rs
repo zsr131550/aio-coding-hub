@@ -223,6 +223,28 @@ base_url = "http://127.0.0.1:37124/v1"
 }
 
 #[test]
+fn codex_config_set_non_provider_patch_does_not_require_codex_to_be_closed() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+
+    write_codex_config(&handle, AIO_CONFIG);
+
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(Some(
+        true,
+    ));
+    let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_json(
+        &handle,
+        serde_json::json!({ "model_reasoning_effort": "high" }),
+    );
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    result.expect("non-provider config save should not run provider sync");
+    let got = read_codex_config(&handle);
+    assert!(got.contains("model_reasoning_effort = \"high\""), "{got}");
+    assert!(got.contains("model_provider = \"aio\""), "{got}");
+}
+
+#[test]
 fn codex_provider_sync_from_config_bytes_updates_rollout_sqlite_global_state_and_backup() {
     let app = support::TestApp::new();
     let handle = app.handle();

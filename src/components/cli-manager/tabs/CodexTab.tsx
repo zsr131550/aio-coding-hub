@@ -2175,6 +2175,22 @@ export function CliManagerCodexTab({
                       </div>
                       <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
                         <label className="text-xs font-medium text-secondary-foreground">
+                          <span className="block">降智命中标签</span>
+                          <Input
+                            aria-label="降智命中标签"
+                            value={codexReasoningGuardHitLabelText}
+                            onChange={(e) =>
+                              setCodexReasoningGuardHitLabelText(e.currentTarget.value)
+                            }
+                            placeholder="降智命中"
+                            className="mt-3 text-xs"
+                            disabled={reasoningGuardControlsDisabled}
+                          />
+                          <span className="mt-2 block text-[11px] font-normal leading-relaxed text-muted-foreground">
+                            只影响请求记录和详情里的降智命中标签前缀；命中次数和规则后缀仍自动拼接。
+                          </span>
+                        </label>
+                        <label className="text-xs font-medium text-secondary-foreground">
                           <span className="block">reasoning_tokens 规则值</span>
                           <Input
                             value={codexReasoningGuardValuesText}
@@ -2723,24 +2739,6 @@ export function CliManagerCodexTab({
                     placeholder={DEFAULT_CODEX_PROVIDER_TEST_MODEL}
                     className="font-mono w-[280px] max-w-full"
                     disabled={providerTestModelControlsDisabled}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="降智命中标签"
-                  subtitle="只影响请求记录和详情里的降智命中标签前缀；命中次数和规则后缀仍自动拼接。"
-                >
-                  <Input
-                    aria-label="降智命中标签"
-                    value={codexReasoningGuardHitLabelText}
-                    onChange={(e) => setCodexReasoningGuardHitLabelText(e.currentTarget.value)}
-                    onBlur={(e) => {
-                      const normalized = e.currentTarget.value.trim() || "降智命中";
-                      setCodexReasoningGuardHitLabelText(normalized);
-                    }}
-                    placeholder="降智命中"
-                    className="w-[220px] max-w-full"
-                    disabled={reasoningGuardControlsDisabled}
                   />
                 </SettingItem>
 
