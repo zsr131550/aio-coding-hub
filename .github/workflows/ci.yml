@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# A new push to the same PR/branch supersedes the in-flight run. This also
+# cancels the doomed pre-sync run on release-please PRs once
+# sync-release-pr-cargo-lock pushes the updated Cargo.lock.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pr-title:
     if: github.event_name == 'pull_request'
