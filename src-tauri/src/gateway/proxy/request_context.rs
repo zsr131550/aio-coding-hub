@@ -48,6 +48,8 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_active_template_id: String,
     pub(super) codex_reasoning_guard_custom_templates:
         Vec<crate::settings::CodexReasoningGuardRuleTemplate>,
+    pub(super) codex_reasoning_guard_post_match_strategy:
+        crate::settings::CodexReasoningGuardPostMatchStrategy,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -146,6 +148,8 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_custom_templates: self
                 .codex_reasoning_guard_custom_templates
                 .clone(),
+            codex_reasoning_guard_post_match_strategy: self
+                .codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget: self
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: self
@@ -225,6 +229,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_model_rules,
             codex_reasoning_guard_active_template_id,
             codex_reasoning_guard_custom_templates,
+            codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms,
@@ -328,6 +333,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_model_rules,
             codex_reasoning_guard_active_template_id,
             codex_reasoning_guard_custom_templates,
+            codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms,
@@ -452,6 +458,8 @@ pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_active_template_id: String,
     pub(super) codex_reasoning_guard_custom_templates:
         Vec<crate::settings::CodexReasoningGuardRuleTemplate>,
+    pub(super) codex_reasoning_guard_post_match_strategy:
+        crate::settings::CodexReasoningGuardPostMatchStrategy,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,

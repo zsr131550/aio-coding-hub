@@ -3,7 +3,8 @@
 use super::defaults::*;
 use super::types::{
     AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, CodexReasoningGuardExhaustedAction,
-    CodexReasoningGuardModelRule, CodexReasoningGuardRuleMode, CodexReasoningGuardRuleTemplate,
+    CodexReasoningGuardModelRule, CodexReasoningGuardPostMatchStrategy,
+    CodexReasoningGuardRuleMode, CodexReasoningGuardRuleTemplate,
     CodexReasoningGuardTemplateFilter, CodexReasoningGuardTemplateFilterField,
     CodexReasoningGuardTemplateFilterOperator, CodexReasoningGuardTemplateRule,
     CodexReasoningGuardTemplateRuleAction, CodexReasoningGuardTemplateRuleLogic,
@@ -162,7 +163,7 @@ pub(super) fn sanitize_codex_reasoning_guard_runtime_settings(settings: &mut App
         .trim()
         .to_string();
     let active_template_id = if active_template_id.is_empty() {
-        CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string()
+        CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID.to_string()
     } else {
         active_template_id
     };
@@ -255,6 +256,7 @@ fn legacy_equals_custom_template(values: &[i64]) -> CodexReasoningGuardRuleTempl
                 id: format!("legacy-token-{value}-{index}"),
                 name: format!("reasoning_tokens == {value}"),
                 reasoning_tokens: Some(value),
+                reasoning_tokens_formula: None,
                 action: CodexReasoningGuardTemplateRuleAction::Intercept,
                 logic: CodexReasoningGuardTemplateRuleLogic::And,
                 filters: Vec::new(),
@@ -443,6 +445,7 @@ fn legacy_less_than_or_equal_custom_template(values: &[i64]) -> CodexReasoningGu
                 id: format!("legacy-reasoning-tokens-threshold-{value}"),
                 name: format!("legacy reasoning_tokens <= {value}"),
                 reasoning_tokens: None,
+                reasoning_tokens_formula: None,
                 action: CodexReasoningGuardTemplateRuleAction::Intercept,
                 logic: CodexReasoningGuardTemplateRuleLogic::And,
                 filters: vec![legacy_number_filter(
@@ -480,6 +483,7 @@ fn push_legacy_token_rule(
         },
         name: legacy_bounded_rule_name(&model_name, &format!(" reasoning_tokens == {value}")),
         reasoning_tokens: Some(value),
+        reasoning_tokens_formula: None,
         action: CodexReasoningGuardTemplateRuleAction::Intercept,
         logic,
         filters,
@@ -525,6 +529,7 @@ fn push_legacy_threshold_rule(
         },
         name: legacy_bounded_rule_name(&model_name, &format!(" reasoning_tokens <= {value}")),
         reasoning_tokens: None,
+        reasoning_tokens_formula: None,
         action: CodexReasoningGuardTemplateRuleAction::Intercept,
         logic: CodexReasoningGuardTemplateRuleLogic::And,
         filters,
@@ -1625,9 +1630,36 @@ fn migrate_add_codex_reasoning_guard_continuation_repair(
     )
 }
 
+fn migrate_unify_codex_reasoning_guard(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD,
+    ) {
+        return false;
+    }
+
+    settings.codex_reasoning_guard_rule_mode = CodexReasoningGuardRuleMode::ReasoningTokens;
+    settings.codex_reasoning_guard_compare_mode = CodexReasoningGuardCompareMode::Equals;
+    settings.codex_reasoning_guard_reasoning_equals =
+        DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.to_vec();
+    settings.codex_reasoning_guard_model_rules.clear();
+    settings.codex_reasoning_guard_active_template_id =
+        CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID.to_string();
+    settings.codex_reasoning_guard_custom_templates.clear();
+    settings.codex_reasoning_guard_post_match_strategy =
+        CodexReasoningGuardPostMatchStrategy::ContinuationRepair;
+    settings.codex_reasoning_guard_exhausted_action =
+        CodexReasoningGuardExhaustedAction::ReturnError;
+    true
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
-const SETTINGS_MIGRATIONS: [SettingsMigration; 41] = [
+const SETTINGS_MIGRATIONS: [SettingsMigration; 42] = [
     migrate_disable_upstream_timeouts,
     migrate_add_gateway_rectifiers,
     migrate_add_circuit_breaker_notice,
@@ -1669,6 +1701,7 @@ const SETTINGS_MIGRATIONS: [SettingsMigration; 41] = [
     migrate_add_codex_reasoning_guard_rule_mode,
     migrate_add_codex_reasoning_guard_rule_templates,
     migrate_add_codex_reasoning_guard_continuation_repair,
+    migrate_unify_codex_reasoning_guard,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -2951,6 +2984,7 @@ mod tests {
                         id: format!("rule-{index}"),
                         name: format!("rule {index}"),
                         reasoning_tokens: Some(index as i64),
+                        reasoning_tokens_formula: None,
                         action: CodexReasoningGuardTemplateRuleAction::Intercept,
                         logic: CodexReasoningGuardTemplateRuleLogic::And,
                         filters: Vec::new(),

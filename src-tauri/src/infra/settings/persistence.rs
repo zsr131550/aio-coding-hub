@@ -6,8 +6,9 @@ use super::migration::{
 };
 use super::types::{
     AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, CodexReasoningGuardExhaustedAction,
-    CodexReasoningGuardRetryPolicy, CodexReasoningGuardRuleMode,
-    CodexReasoningGuardTemplateFilterField, CodexReasoningGuardTemplateFilterOperator,
+    CodexReasoningGuardPostMatchStrategy, CodexReasoningGuardRetryPolicy,
+    CodexReasoningGuardRuleMode, CodexReasoningGuardTemplateFilterField,
+    CodexReasoningGuardTemplateFilterOperator, CodexReasoningGuardTemplateRuleFormula,
     GatewayListenMode, WslHostAddressMode,
 };
 use crate::app_paths;
@@ -358,6 +359,7 @@ fn validate_codex_reasoning_guard_templates(settings: &AppSettings) -> AppResult
 
         let mut seen_rule_ids = HashSet::new();
         let mut seen_tokens = HashSet::new();
+        let mut seen_formulas = HashSet::new();
         let mut catch_all_wildcard_seen = false;
         for (rule_index, rule) in template.rules.iter().enumerate() {
             let rule_prefix = format!("{template_prefix}.rules[{rule_index}]");
@@ -378,6 +380,12 @@ fn validate_codex_reasoning_guard_templates(settings: &AppSettings) -> AppResult
                 &rule.name,
                 MAX_CODEX_REASONING_GUARD_TEMPLATE_NAME_LEN,
             )?;
+            if rule.reasoning_tokens.is_some() && rule.reasoning_tokens_formula.is_some() {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: {rule_prefix} must not set both reasoning_tokens and reasoning_tokens_formula"
+                )
+                .into());
+            }
             if let Some(token) = rule.reasoning_tokens {
                 if !(0..=MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE).contains(&token) {
                     return Err(format!(
@@ -388,6 +396,16 @@ fn validate_codex_reasoning_guard_templates(settings: &AppSettings) -> AppResult
                 if !seen_tokens.insert(token) {
                     return Err(format!(
                         "SEC_INVALID_INPUT: duplicate codex reasoning guard template token {token}"
+                    )
+                    .into());
+                }
+            } else if let Some(formula) = rule.reasoning_tokens_formula {
+                match formula {
+                    CodexReasoningGuardTemplateRuleFormula::ReasoningTokens518NMinus2 => {}
+                }
+                if !seen_formulas.insert(formula) {
+                    return Err(format!(
+                        "SEC_INVALID_INPUT: duplicate codex reasoning guard template formula {formula:?}"
                     )
                     .into());
                 }
@@ -438,6 +456,7 @@ fn is_builtin_codex_reasoning_guard_template_id(template_id: &str) -> bool {
     matches!(
         template_id,
         CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID
+            | CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
             | CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID
     )
 }
@@ -446,6 +465,7 @@ fn is_reserved_codex_reasoning_guard_template_id(template_id: &str) -> bool {
     matches!(
         template_id,
         CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID
+            | CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
             | CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID
             | CODEX_REASONING_GUARD_TEMPLATE_LEGACY_COMPATIBILITY_ID
     )
@@ -701,6 +721,10 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
         CodexReasoningGuardExhaustedAction::ReturnError
         | CodexReasoningGuardExhaustedAction::SwitchProvider
         | CodexReasoningGuardExhaustedAction::SwitchModel => {}
+    }
+    match settings.codex_reasoning_guard_post_match_strategy {
+        CodexReasoningGuardPostMatchStrategy::RetrySameProvider
+        | CodexReasoningGuardPostMatchStrategy::ContinuationRepair => {}
     }
     match settings.codex_reasoning_guard_retry_policy {
         CodexReasoningGuardRetryPolicy::Single | CodexReasoningGuardRetryPolicy::Concurrent => {}
@@ -1063,6 +1087,7 @@ mod tests {
                 id: "rule-516".to_string(),
                 name: "516 rule".to_string(),
                 reasoning_tokens: Some(516),
+                reasoning_tokens_formula: None,
                 action: super::super::types::CodexReasoningGuardTemplateRuleAction::Intercept,
                 logic: super::super::types::CodexReasoningGuardTemplateRuleLogic::And,
                 filters: vec![super::super::types::CodexReasoningGuardTemplateFilter {
@@ -1345,6 +1370,7 @@ mod tests {
                 id: "rule-516-duplicate".to_string(),
                 name: "duplicate".to_string(),
                 reasoning_tokens: Some(516),
+                reasoning_tokens_formula: None,
                 action: super::super::types::CodexReasoningGuardTemplateRuleAction::Intercept,
                 logic: super::super::types::CodexReasoningGuardTemplateRuleLogic::And,
                 filters: Vec::new(),
@@ -1363,6 +1389,7 @@ mod tests {
                 id: "wildcard-a".to_string(),
                 name: "wildcard a".to_string(),
                 reasoning_tokens: None,
+                reasoning_tokens_formula: None,
                 action: super::super::types::CodexReasoningGuardTemplateRuleAction::Intercept,
                 logic: super::super::types::CodexReasoningGuardTemplateRuleLogic::And,
                 filters: Vec::new(),
@@ -1371,6 +1398,7 @@ mod tests {
                 id: "wildcard-b".to_string(),
                 name: "wildcard b".to_string(),
                 reasoning_tokens: None,
+                reasoning_tokens_formula: None,
                 action: super::super::types::CodexReasoningGuardTemplateRuleAction::Intercept,
                 logic: super::super::types::CodexReasoningGuardTemplateRuleLogic::And,
                 filters: Vec::new(),

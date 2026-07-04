@@ -288,14 +288,16 @@ describe("components/home/HomeLogShared", () => {
         },
       ]),
     });
-    expect(continuationRepair.tags.map((tag) => tag.label)).toEqual(["思考补救成功"]);
+    expect(continuationRepair.tags.map((tag) => tag.label)).toEqual([
+      "降智命中 2 reasoning_tokens == 518*n-2",
+    ]);
     expect(continuationRepair.tags[0]?.title).toBe(
-      "本次请求触发 3 次思考补救，2 次补救失败后使用预算重试，最终补救成功。"
+      "命中 Codex 降智拦截规则 reasoning_tokens == 518*n-2 后继续重试，不计入熔断"
     );
     expect(continuationRepair.summary).toBe(
-      "本次请求触发 3 次思考补救，2 次补救失败后使用预算重试，最终补救成功。"
+      "本次请求命中了 2 次 Codex 降智拦截（规则 reasoning_tokens == 518*n-2），继续重试。"
     );
-    expect(continuationRepair.reasoningTokens).toBeNull();
+    expect(continuationRepair.reasoningTokens).toBe(516);
 
     const mixedReasoningGuardAndContinuation = buildRequestLogAuditMeta({
       cli_key: "codex",
@@ -331,13 +333,12 @@ describe("components/home/HomeLogShared", () => {
       ]),
     });
     expect(mixedReasoningGuardAndContinuation.tags.map((tag) => tag.label)).toEqual([
-      "降智命中 <= 516",
-      "思考补救成功",
+      "降智命中 2 reasoning_tokens == 518*n-2",
     ]);
     expect(mixedReasoningGuardAndContinuation.summary).toBe(
-      "本次请求命中了 Codex 降智拦截（规则 <= 516），继续重试；同时触发 2 次思考补救，1 次补救失败后使用预算重试，最终补救成功。"
+      "本次请求命中了 2 次 Codex 降智拦截（规则 reasoning_tokens == 518*n-2），继续重试。"
     );
-    expect(mixedReasoningGuardAndContinuation.reasoningTokens).toBe(300);
+    expect(mixedReasoningGuardAndContinuation.reasoningTokens).toBe(516);
 
     const clientAbort = buildRequestLogAuditMeta({
       cli_key: "claude",

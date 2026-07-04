@@ -333,6 +333,7 @@ where
         codex_reasoning_guard_model_rules: &input.codex_reasoning_guard_model_rules,
         codex_reasoning_guard_active_template_id: &input.codex_reasoning_guard_active_template_id,
         codex_reasoning_guard_custom_templates: &input.codex_reasoning_guard_custom_templates,
+        codex_reasoning_guard_post_match_strategy: input.codex_reasoning_guard_post_match_strategy,
         codex_reasoning_guard_immediate_retry_budget: input
             .codex_reasoning_guard_immediate_retry_budget,
         codex_reasoning_guard_delayed_retry_budget: input

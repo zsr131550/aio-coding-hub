@@ -183,6 +183,8 @@ impl<R: tauri::Runtime> ProbeCtx<R> {
             codex_reasoning_guard_active_template_id: &self
                 .codex_reasoning_guard_active_template_id,
             codex_reasoning_guard_custom_templates: &self.codex_reasoning_guard_custom_templates,
+            codex_reasoning_guard_post_match_strategy:
+                crate::settings::CodexReasoningGuardPostMatchStrategy::RetrySameProvider,
             codex_reasoning_guard_immediate_retry_budget: 0,
             codex_reasoning_guard_delayed_retry_budget: 0,
             codex_reasoning_guard_delayed_retry_ms: 0,
@@ -576,6 +578,7 @@ mod tests {
                     id: "gpt-55-token-516".to_string(),
                     name: "gpt-5.5 reasoning_tokens == 516".to_string(),
                     reasoning_tokens: Some(516),
+                    reasoning_tokens_formula: None,
                     action: crate::settings::CodexReasoningGuardTemplateRuleAction::Intercept,
                     logic: crate::settings::CodexReasoningGuardTemplateRuleLogic::And,
                     filters: vec![crate::settings::CodexReasoningGuardTemplateFilter {
@@ -594,6 +597,7 @@ mod tests {
                     id: "gpt-54-token-999".to_string(),
                     name: "gpt-5.4 reasoning_tokens == 999".to_string(),
                     reasoning_tokens: Some(999),
+                    reasoning_tokens_formula: None,
                     action: crate::settings::CodexReasoningGuardTemplateRuleAction::Intercept,
                     logic: crate::settings::CodexReasoningGuardTemplateRuleLogic::And,
                     filters: vec![crate::settings::CodexReasoningGuardTemplateFilter {

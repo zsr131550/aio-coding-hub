@@ -13,8 +13,12 @@ use crate::gateway::proxy::provider_router;
 use crate::gateway::proxy::request_context::RequestContext;
 use crate::gateway::proxy::status_override;
 use crate::gateway::proxy::upstream_client_error_rules;
+use futures_core::Stream;
 use serde_json::Value;
-use std::time::Duration;
+use std::fmt::Display;
+use std::future::poll_fn;
+use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 fn resolve_requested_model_for_log(
     requested_model: Option<String>,
@@ -125,6 +129,8 @@ fn buffered_stream_error_code(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContinuationRepairStatus {
     NotApplicable,
+    Unavailable,
+    BudgetExhausted,
     MissingEncrypted,
     Repaired,
     CappedMaxOutputTokens,
@@ -136,6 +142,8 @@ impl ContinuationRepairStatus {
     fn as_str(self) -> &'static str {
         match self {
             ContinuationRepairStatus::NotApplicable => "not_applicable",
+            ContinuationRepairStatus::Unavailable => "unavailable",
+            ContinuationRepairStatus::BudgetExhausted => "budget_exhausted",
             ContinuationRepairStatus::MissingEncrypted => "missing_encrypted",
             ContinuationRepairStatus::Repaired => "repaired",
             ContinuationRepairStatus::CappedMaxOutputTokens => "capped_max_output_tokens",
@@ -144,19 +152,11 @@ impl ContinuationRepairStatus {
         }
     }
 
-    fn forces_guard_budget(self) -> bool {
-        matches!(
-            self,
-            ContinuationRepairStatus::MissingEncrypted
-                | ContinuationRepairStatus::CappedMaxOutputTokens
-                | ContinuationRepairStatus::StillMatched
-                | ContinuationRepairStatus::Failed
-        )
-    }
-
     fn default_failure_kind(self) -> Option<&'static str> {
         match self {
             ContinuationRepairStatus::NotApplicable | ContinuationRepairStatus::Repaired => None,
+            ContinuationRepairStatus::Unavailable => Some("unavailable"),
+            ContinuationRepairStatus::BudgetExhausted => Some("budget_exhausted"),
             ContinuationRepairStatus::MissingEncrypted => Some("missing_encrypted"),
             ContinuationRepairStatus::CappedMaxOutputTokens => Some("capped_max_output_tokens"),
             ContinuationRepairStatus::StillMatched => Some("still_matched"),
@@ -445,7 +445,7 @@ where
             }
         };
         let aggregated =
-            match protocol_bridge::stream::aggregate_responses_event_stream(raw.as_ref()) {
+            match crate::gateway::proxy::sse::aggregate_responses_event_stream(raw.as_ref()) {
                 Ok(value) => value,
                 Err(err) => {
                     return ContinuationRepairOutcome::terminal_with_kind(
@@ -468,52 +468,25 @@ where
 }
 
 async fn read_buffered_event_stream_body(
-    mut resp: reqwest::Response,
+    resp: reqwest::Response,
     response_headers: &mut HeaderMap,
     upstream_stream_idle_timeout: Option<Duration>,
     enable_response_fixer: bool,
     response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     special_settings: &std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
 ) -> Result<Bytes, String> {
-    let mut raw = Vec::new();
-    loop {
-        let next_chunk = match upstream_stream_idle_timeout {
-            Some(timeout) => match tokio::time::timeout(timeout, resp.chunk()).await {
-                Ok(Ok(chunk)) => chunk,
-                Ok(Err(err)) => {
-                    return Err(format!("failed to read continuation event-stream: {err}"));
-                }
-                Err(_) => {
-                    return Err("continuation event-stream idle timeout".to_string());
-                }
-            },
-            None => match resp.chunk().await {
-                Ok(chunk) => chunk,
-                Err(err) => {
-                    return Err(format!("failed to read continuation event-stream: {err}"));
-                }
-            },
-        };
-        let Some(chunk) = next_chunk else {
-            break;
-        };
-        raw.extend_from_slice(chunk.as_ref());
-        if raw.len() > MAX_NON_SSE_BODY_BYTES {
-            return Err(format!(
-                "continuation event-stream exceeded gateway buffer limit ({} bytes)",
-                MAX_NON_SSE_BODY_BYTES
-            ));
-        }
-    }
+    let mut body_stream = resp.bytes_stream();
+    let raw = read_buffered_event_stream_chunks(
+        &mut body_stream,
+        upstream_stream_idle_timeout,
+        !has_non_identity_content_encoding(response_headers),
+    )
+    .await?;
 
     let raw = if has_gzip_content_encoding(response_headers) {
-        maybe_gunzip_response_body_bytes_with_limit(
-            Bytes::from(raw),
-            response_headers,
-            MAX_NON_SSE_BODY_BYTES,
-        )
+        maybe_gunzip_response_body_bytes_with_limit(raw, response_headers, MAX_NON_SSE_BODY_BYTES)
     } else {
-        Bytes::from(raw)
+        raw
     };
 
     if enable_response_fixer && !has_non_identity_content_encoding(response_headers) {
@@ -526,6 +499,119 @@ async fn read_buffered_event_stream_body(
     } else {
         Ok(raw)
     }
+}
+
+async fn read_buffered_event_stream_chunks<S, E>(
+    stream: &mut S,
+    upstream_stream_idle_timeout: Option<Duration>,
+    detect_terminal_events: bool,
+) -> Result<Bytes, String>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: Display,
+{
+    read_buffered_event_stream_chunks_with_round_timeout(
+        stream,
+        upstream_stream_idle_timeout,
+        detect_terminal_events,
+        continuation_round_timeout(),
+    )
+    .await
+}
+
+async fn read_buffered_event_stream_chunks_with_round_timeout<S, E>(
+    stream: &mut S,
+    upstream_stream_idle_timeout: Option<Duration>,
+    detect_terminal_events: bool,
+    round_timeout: Duration,
+) -> Result<Bytes, String>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: Display,
+{
+    let mut raw = Vec::new();
+    let mut terminal_scan_cursor = 0usize;
+    let round_started = Instant::now();
+    loop {
+        let Some(round_remaining) = continuation_round_remaining(round_started, round_timeout)
+        else {
+            return Err("continuation event-stream round timeout".to_string());
+        };
+        let next_chunk = match upstream_stream_idle_timeout {
+            Some(timeout) => {
+                match tokio::time::timeout(timeout.min(round_remaining), stream_next(stream)).await
+                {
+                    Ok(Some(Ok(chunk))) => Some(chunk),
+                    Ok(Some(Err(err))) => {
+                        return Err(format!("failed to read continuation event-stream: {err}"));
+                    }
+                    Ok(None) => None,
+                    Err(_) => {
+                        if continuation_round_remaining(round_started, round_timeout).is_none() {
+                            return Err("continuation event-stream round timeout".to_string());
+                        }
+                        return Err("continuation event-stream idle timeout".to_string());
+                    }
+                }
+            }
+            None => match tokio::time::timeout(round_remaining, stream_next(stream)).await {
+                Ok(Some(Ok(chunk))) => Some(chunk),
+                Ok(Some(Err(err))) => {
+                    return Err(format!("failed to read continuation event-stream: {err}"));
+                }
+                Ok(None) => None,
+                Err(_) => return Err("continuation event-stream round timeout".to_string()),
+            },
+        };
+        let Some(chunk) = next_chunk else {
+            break;
+        };
+        raw.extend_from_slice(chunk.as_ref());
+        if raw.len() > MAX_NON_SSE_BODY_BYTES {
+            return Err(format!(
+                "continuation event-stream exceeded gateway buffer limit ({} bytes)",
+                MAX_NON_SSE_BODY_BYTES
+            ));
+        }
+        if detect_terminal_events
+            && buffered_event_stream_has_terminal_event(&raw, &mut terminal_scan_cursor)?
+        {
+            break;
+        }
+    }
+
+    Ok(Bytes::from(raw))
+}
+
+async fn stream_next<S, E>(stream: &mut S) -> Option<Result<Bytes, E>>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+{
+    poll_fn(|cx| Pin::new(&mut *stream).poll_next(cx)).await
+}
+
+fn continuation_round_timeout() -> Duration {
+    Duration::from_secs(300)
+}
+
+fn continuation_round_remaining(started: Instant, timeout: Duration) -> Option<Duration> {
+    timeout.checked_sub(started.elapsed())
+}
+
+fn buffered_event_stream_has_terminal_event(
+    raw: &[u8],
+    cursor: &mut usize,
+) -> Result<bool, String> {
+    while let Some(relative_end) = crate::gateway::proxy::sse::find_sse_event_end(&raw[*cursor..]) {
+        let event_end = *cursor + relative_end;
+        let frame = std::str::from_utf8(&raw[*cursor..event_end])
+            .map_err(|err| format!("invalid utf-8 in continuation SSE frame: {err}"))?;
+        *cursor = event_end;
+        if crate::gateway::proxy::sse::sse_frame_has_terminal_event(frame) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn push_continuation_special_setting(
@@ -804,15 +890,8 @@ where
             active_bridge_type,
             response_headers.get(header::CONTENT_LENGTH).is_some(),
         );
-    let should_buffer_codex_continuation_repair = common
-        .codex_reasoning_guard_continuation_repair_enabled
-        && prepared.codex_reasoning_continuation_request_eligible
-        && codex_reasoning_continuation::request_reasoning_enabled(
-            prepared.upstream_body_bytes.as_ref(),
-        );
-    let should_buffer_codex_event_stream = should_buffer_empty_response
-        || should_buffer_codex_reasoning_guard
-        || should_buffer_codex_continuation_repair;
+    let should_buffer_codex_event_stream =
+        should_buffer_empty_response || should_buffer_codex_reasoning_guard;
 
     let LoopState {
         attempts,
@@ -1313,7 +1392,7 @@ where
             }
 
             let aggregated = if should_buffer_codex_responses_event_stream {
-                match protocol_bridge::stream::aggregate_responses_event_stream(raw.as_ref()) {
+                match crate::gateway::proxy::sse::aggregate_responses_event_stream(raw.as_ref()) {
                     Ok(value) => value,
                     Err(err) => {
                         let error_code = GatewayErrorCode::InternalError.as_str();
@@ -1376,142 +1455,176 @@ where
                             .map(ToOwned::to_owned)
                     });
 
-            let continuation_outcome = if should_buffer_codex_continuation_repair {
-                run_codex_reasoning_continuation_repair(
-                    ctx,
-                    input,
-                    &prepared,
-                    retry_state,
-                    retry_index,
-                    attempt_index,
-                    &aggregated,
-                    upstream_stream_idle_timeout,
-                    enable_response_fixer,
-                    response_fixer_stream_config,
-                    common.codex_reasoning_guard_continuation_max_rounds,
-                    common.codex_reasoning_guard_continuation_max_output_tokens,
+            if let Some(decision) = if should_buffer_codex_reasoning_guard {
+                codex_reasoning_guard::evaluate_decision(
+                    codex_reasoning_guard::CodexReasoningGuardDecisionEvaluationInput {
+                        base: codex_reasoning_guard::CodexReasoningGuardEvaluationInput {
+                            cli_key: common.cli_key.as_str(),
+                            requested_model: active_guard_model.as_deref(),
+                            value: &aggregated,
+                            rule_mode: common.codex_reasoning_guard_rule_mode,
+                            feature_sample: feature_sample.as_ref(),
+                        },
+                        active_template_id: common
+                            .codex_reasoning_guard_active_template_id
+                            .as_str(),
+                        custom_templates: common.codex_reasoning_guard_custom_templates.as_slice(),
+                        duration_ms: Some(started.elapsed().as_millis()),
+                        ttfb_ms: initial_first_byte_ms,
+                    },
                 )
-                .await
             } else {
-                ContinuationRepairOutcome::not_applicable()
-            };
-            push_continuation_special_setting(
-                &common.special_settings,
-                provider_id,
-                provider_ctx_owned.provider_name_base.as_str(),
-                retry_index,
-                common.codex_reasoning_guard_continuation_max_rounds,
-                common.codex_reasoning_guard_continuation_max_output_tokens,
-                &continuation_outcome,
-            );
-            if continuation_outcome.status == ContinuationRepairStatus::Repaired {
-                if let Some(folded_raw) = continuation_outcome.folded_raw.clone() {
-                    raw = folded_raw;
-                    response_headers.remove(header::CONTENT_LENGTH);
-                    response_headers.remove(header::CONTENT_ENCODING);
-                    response_headers.insert(
-                        header::CONTENT_TYPE,
-                        HeaderValue::from_static("text/event-stream; charset=utf-8"),
-                    );
-                }
-            }
-            if continuation_outcome.status == ContinuationRepairStatus::Repaired {
-                if let Ok(repaired_aggregated) =
-                    protocol_bridge::stream::aggregate_responses_event_stream(raw.as_ref())
+                None
+            } {
+                let matched = &decision.matched;
+                if decision.action
+                    == crate::settings::CodexReasoningGuardTemplateRuleAction::NoIntercept
                 {
-                    let repaired_sample = codex_reasoning_features::build_complete_sample(
-                        common.cli_key.as_str(),
-                        common.codex_reasoning_guard_rule_mode,
-                        Some(&input.base_headers),
-                        input.introspection_json.as_ref(),
-                        special_settings_snapshot.as_slice(),
-                        &repaired_aggregated,
-                    );
-                    if let Some(sample) = repaired_sample.as_ref() {
+                    if let Some(sample) = feature_sample.as_ref() {
                         codex_reasoning_features::push_special_setting(
                             &common.special_settings,
                             sample,
                         );
                     }
-                }
-            } else if let Some(sample) = feature_sample.as_ref() {
-                codex_reasoning_features::push_special_setting(&common.special_settings, sample);
-            }
-
-            let forced_continuation_decision =
-                continuation_outcome.status.forces_guard_budget().then(|| {
-                    codex_reasoning_guard::CodexReasoningGuardEvaluationDecision {
-                        action: crate::settings::CodexReasoningGuardTemplateRuleAction::Intercept,
-                        matched: codex_reasoning_guard::continuation_repair_match(
-                            continuation_outcome.reasoning_tokens,
-                            continuation_outcome.reasoning_tokens_pointer,
-                            active_guard_model.as_deref(),
-                            feature_sample.as_ref(),
-                        ),
-                    }
-                });
-
-            if continuation_outcome.status != ContinuationRepairStatus::Repaired {
-                if let Some(decision) = forced_continuation_decision.or_else(|| {
-                    if should_buffer_codex_reasoning_guard {
-                        codex_reasoning_guard::evaluate_decision(
-                            codex_reasoning_guard::CodexReasoningGuardDecisionEvaluationInput {
-                                base: codex_reasoning_guard::CodexReasoningGuardEvaluationInput {
-                                    cli_key: common.cli_key.as_str(),
-                                    requested_model: active_guard_model.as_deref(),
-                                    value: &aggregated,
-                                    rule_mode: common.codex_reasoning_guard_rule_mode,
-                                    feature_sample: feature_sample.as_ref(),
-                                },
-                                active_template_id: common
-                                    .codex_reasoning_guard_active_template_id
-                                    .as_str(),
-                                custom_templates: common
-                                    .codex_reasoning_guard_custom_templates
-                                    .as_slice(),
-                                duration_ms: Some(started.elapsed().as_millis()),
-                                ttfb_ms: initial_first_byte_ms,
-                            },
-                        )
-                    } else {
-                        None
-                    }
-                }) {
-                    let matched = &decision.matched;
-                    if decision.action
-                        == crate::settings::CodexReasoningGuardTemplateRuleAction::NoIntercept
+                    codex_reasoning_guard::push_decision_special_setting(
+                        &common.special_settings,
+                        provider_id,
+                        provider_ctx_owned.provider_name_base.as_str(),
+                        retry_index,
+                        matched,
+                    );
+                } else if common.codex_reasoning_guard_post_match_strategy
+                    == crate::settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepair
+                {
+                    let current_token =
+                        codex_reasoning_features::extract_reasoning_tokens(&aggregated);
+                    let continuation_outcome = if common
+                        .codex_reasoning_guard_immediate_retry_budget
+                        == 0
                     {
-                        codex_reasoning_guard::push_decision_special_setting(
+                        ContinuationRepairOutcome::terminal(
+                            ContinuationRepairStatus::BudgetExhausted,
+                            current_token,
+                            0,
+                            Some("continuation repair retry budget is 0".to_string()),
+                        )
+                    } else if !prepared.codex_reasoning_continuation_request_eligible
+                        || !codex_reasoning_continuation::request_reasoning_enabled(
+                            prepared.upstream_body_bytes.as_ref(),
+                        )
+                    {
+                        ContinuationRepairOutcome::terminal(
+                                    ContinuationRepairStatus::Unavailable,
+                                    current_token,
+                                    0,
+                                    Some(
+                                        "continuation repair requires native Codex Responses streaming with encrypted reasoning replay"
+                                            .to_string(),
+                                    ),
+                                )
+                    } else {
+                        run_codex_reasoning_continuation_repair(
+                            ctx,
+                            input,
+                            &prepared,
+                            retry_state,
+                            retry_index,
+                            attempt_index,
+                            &aggregated,
+                            upstream_stream_idle_timeout,
+                            enable_response_fixer,
+                            response_fixer_stream_config,
+                            common.codex_reasoning_guard_immediate_retry_budget,
+                            common.codex_reasoning_guard_continuation_max_output_tokens,
+                        )
+                        .await
+                    };
+                    push_continuation_special_setting(
+                        &common.special_settings,
+                        provider_id,
+                        provider_ctx_owned.provider_name_base.as_str(),
+                        retry_index,
+                        common.codex_reasoning_guard_immediate_retry_budget,
+                        common.codex_reasoning_guard_continuation_max_output_tokens,
+                        &continuation_outcome,
+                    );
+                    if continuation_outcome.status == ContinuationRepairStatus::Repaired {
+                        if let Some(folded_raw) = continuation_outcome.folded_raw.clone() {
+                            raw = folded_raw;
+                            response_headers.remove(header::CONTENT_LENGTH);
+                            response_headers.remove(header::CONTENT_ENCODING);
+                            response_headers.insert(
+                                header::CONTENT_TYPE,
+                                HeaderValue::from_static("text/event-stream; charset=utf-8"),
+                            );
+                        }
+                        if let Ok(repaired_aggregated) =
+                            crate::gateway::proxy::sse::aggregate_responses_event_stream(
+                                raw.as_ref(),
+                            )
+                        {
+                            let repaired_sample = codex_reasoning_features::build_complete_sample(
+                                common.cli_key.as_str(),
+                                common.codex_reasoning_guard_rule_mode,
+                                Some(&input.base_headers),
+                                input.introspection_json.as_ref(),
+                                special_settings_snapshot.as_slice(),
+                                &repaired_aggregated,
+                            );
+                            if let Some(sample) = repaired_sample.as_ref() {
+                                codex_reasoning_features::push_special_setting(
+                                    &common.special_settings,
+                                    sample,
+                                );
+                            }
+                        }
+                        let strategy_decision =
+                            codex_reasoning_guard::continuation_repaired_decision(
+                                retry_state.codex_reasoning_guard_hits,
+                                common.codex_reasoning_guard_immediate_retry_budget,
+                                continuation_outcome.sent_rounds,
+                                common.codex_reasoning_guard_exhausted_action,
+                            );
+                        codex_reasoning_guard::push_special_setting_with_strategy(
                             &common.special_settings,
                             provider_id,
                             provider_ctx_owned.provider_name_base.as_str(),
                             retry_index,
                             matched,
+                            strategy_decision,
+                            common.codex_reasoning_guard_post_match_strategy,
+                            Some("continuation_repaired"),
+                            Some(continuation_outcome.sent_rounds),
+                            continuation_outcome.failure_kind,
+                            continuation_outcome.reason.as_deref(),
+                            StatusCode::OK.as_u16(),
                         );
                     } else {
-                        let budget_decision = codex_reasoning_guard::budget_decision(
-                            retry_state.codex_reasoning_guard_hits,
-                            codex_reasoning_guard::CodexReasoningGuardBudgetConfig {
-                                immediate_budget: common
-                                    .codex_reasoning_guard_immediate_retry_budget,
-                                delayed_budget: common.codex_reasoning_guard_delayed_retry_budget,
-                                delayed_retry_ms: common.codex_reasoning_guard_delayed_retry_ms,
-                                exhausted_action: common.codex_reasoning_guard_exhausted_action,
-                                retry_policy: common.codex_reasoning_guard_retry_policy,
-                                concurrent_max: common.codex_reasoning_guard_concurrent_max,
-                                concurrent_interval_ms: common
-                                    .codex_reasoning_guard_concurrent_interval_ms,
-                                concurrent_max_attempts: common
-                                    .codex_reasoning_guard_concurrent_max_attempts,
-                            },
-                        );
-                        codex_reasoning_guard::push_special_setting(
+                        if let Some(sample) = feature_sample.as_ref() {
+                            codex_reasoning_features::push_special_setting(
+                                &common.special_settings,
+                                sample,
+                            );
+                        }
+                        let budget_decision =
+                            codex_reasoning_guard::continuation_exhausted_decision(
+                                retry_state.codex_reasoning_guard_hits,
+                                common.codex_reasoning_guard_immediate_retry_budget,
+                                common.codex_reasoning_guard_exhausted_action,
+                            );
+                        codex_reasoning_guard::push_special_setting_with_strategy(
                             &common.special_settings,
                             provider_id,
                             provider_ctx_owned.provider_name_base.as_str(),
                             retry_index,
                             matched,
                             budget_decision,
+                            common.codex_reasoning_guard_post_match_strategy,
+                            Some(continuation_outcome.status.as_str()),
+                            Some(continuation_outcome.sent_rounds),
+                            continuation_outcome.failure_kind,
+                            continuation_outcome.reason.as_deref(),
+                            StatusCode::BAD_GATEWAY.as_u16(),
                         );
                         codex_reasoning_guard::record_guard_retry_attempt(
                             attempts,
@@ -1530,19 +1643,19 @@ where
                             budget_decision,
                         );
                         let outcome = match budget_decision.action {
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
-                        "codex_reasoning_guard_retry"
-                    }
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::ReturnError => {
-                        "codex_reasoning_guard_exhausted"
-                    }
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
-                        "codex_reasoning_guard_switch_provider"
-                    }
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
-                        "codex_reasoning_guard_switch_model"
-                    }
-                };
+                                codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
+                                    "codex_reasoning_guard_retry"
+                                }
+                                codex_reasoning_guard::CodexReasoningGuardBudgetAction::ReturnError => {
+                                    "codex_reasoning_guard_exhausted"
+                                }
+                                codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
+                                    "codex_reasoning_guard_switch_provider"
+                                }
+                                codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
+                                    "codex_reasoning_guard_switch_model"
+                                }
+                            };
                         emit_attempt_event_and_log(
                             ctx,
                             provider_ctx,
@@ -1558,6 +1671,218 @@ where
                         )
                         .await;
                         match budget_decision.action {
+                                codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
+                                    return LoopControl::ContinueRetry;
+                                }
+                                codex_reasoning_guard::CodexReasoningGuardBudgetAction::ReturnError => {
+                                    *last_outcome = Some(AttemptOutcome::new(
+                                        ErrorCategory::SystemError.as_str(),
+                                        codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                    ));
+                                    let duration_ms = started.elapsed().as_millis();
+                                    let requested_model_for_log = active_guard_model
+                                        .clone()
+                                        .or_else(|| common.requested_model.clone());
+                                    emit_request_event_and_enqueue_request_log(
+                                        RequestEndArgs::from_context(RequestEndContextArgs {
+                                            deps: RequestEndDeps::new(
+                                                &common.state.app,
+                                                &common.state.db,
+                                                &common.state.log_tx,
+                                                &common.state.plugin_pipeline,
+                                                &common.state.active_requests,
+                                            ),
+                                            trace_id: common.trace_id.as_str(),
+                                            cli_key: common.cli_key.as_str(),
+                                            method: common.method_hint.as_str(),
+                                            path: common.forwarded_path.as_str(),
+                                            observe: common.observe,
+                                            query: common.query.as_deref(),
+                                            excluded_from_stats: false,
+                                            duration_ms,
+                                            attempts: attempts.as_slice(),
+                                            special_settings_json:
+                                                response_fixer::special_settings_json(
+                                                    &common.special_settings,
+                                                ),
+                                            session_id: common.session_id.clone(),
+                                            requested_model: requested_model_for_log,
+                                            created_at_ms: common.created_at_ms,
+                                            created_at: common.created_at,
+                                        })
+                                        .with_completion(
+                                            RequestCompletion::failure_with_visible_ttfb(
+                                                StatusCode::BAD_GATEWAY.as_u16(),
+                                                Some(ErrorCategory::SystemError.as_str()),
+                                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                                initial_first_byte_ms,
+                                                Some(duration_ms),
+                                            ),
+                                        ),
+                                    )
+                                    .await;
+                                    abort_guard.disarm();
+                                    return LoopControl::Return(error_response(
+                                        StatusCode::BAD_GATEWAY,
+                                        common.trace_id.clone(),
+                                        codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                        "Codex reasoning guard continuation repair failed"
+                                            .to_string(),
+                                        attempts.clone(),
+                                    ));
+                                }
+                                codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
+                                    failed_provider_ids.insert(provider_id);
+                                    *last_outcome = Some(AttemptOutcome::new(
+                                        ErrorCategory::SystemError.as_str(),
+                                        codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                    ));
+                                    return LoopControl::BreakRetry;
+                                }
+                                codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
+                                    retry_state.codex_reasoning_guard_next_retry_wave = None;
+                                    if let Some(next_model) =
+                                        codex_reasoning_guard::select_next_model_fallback(
+                                            active_guard_model.as_deref(),
+                                            common.codex_reasoning_guard_model_fallbacks.as_slice(),
+                                        )
+                                    {
+                                        return LoopControl::SwitchModel(next_model.to_string());
+                                    }
+
+                                    *last_outcome = Some(AttemptOutcome::new(
+                                        ErrorCategory::SystemError.as_str(),
+                                        codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                    ));
+                                    let duration_ms = started.elapsed().as_millis();
+                                    let requested_model_for_log = active_guard_model
+                                        .clone()
+                                        .or_else(|| common.requested_model.clone());
+                                    emit_request_event_and_enqueue_request_log(
+                                        RequestEndArgs::from_context(RequestEndContextArgs {
+                                            deps: RequestEndDeps::new(
+                                                &common.state.app,
+                                                &common.state.db,
+                                                &common.state.log_tx,
+                                                &common.state.plugin_pipeline,
+                                                &common.state.active_requests,
+                                            ),
+                                            trace_id: common.trace_id.as_str(),
+                                            cli_key: common.cli_key.as_str(),
+                                            method: common.method_hint.as_str(),
+                                            path: common.forwarded_path.as_str(),
+                                            observe: common.observe,
+                                            query: common.query.as_deref(),
+                                            excluded_from_stats: false,
+                                            duration_ms,
+                                            attempts: attempts.as_slice(),
+                                            special_settings_json:
+                                                response_fixer::special_settings_json(
+                                                    &common.special_settings,
+                                                ),
+                                            session_id: common.session_id.clone(),
+                                            requested_model: requested_model_for_log,
+                                            created_at_ms: common.created_at_ms,
+                                            created_at: common.created_at,
+                                        })
+                                        .with_completion(
+                                            RequestCompletion::failure_with_visible_ttfb(
+                                                StatusCode::BAD_GATEWAY.as_u16(),
+                                                Some(ErrorCategory::SystemError.as_str()),
+                                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                                initial_first_byte_ms,
+                                                Some(duration_ms),
+                                            ),
+                                        ),
+                                    )
+                                    .await;
+                                    abort_guard.disarm();
+                                    return LoopControl::Return(error_response(
+                                        StatusCode::BAD_GATEWAY,
+                                        common.trace_id.clone(),
+                                        codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                        "Codex reasoning guard model fallback exhausted"
+                                            .to_string(),
+                                        attempts.clone(),
+                                    ));
+                                }
+                            }
+                    }
+                } else {
+                    if let Some(sample) = feature_sample.as_ref() {
+                        codex_reasoning_features::push_special_setting(
+                            &common.special_settings,
+                            sample,
+                        );
+                    }
+                    let budget_decision = codex_reasoning_guard::budget_decision(
+                        retry_state.codex_reasoning_guard_hits,
+                        codex_reasoning_guard::CodexReasoningGuardBudgetConfig {
+                            immediate_budget: common.codex_reasoning_guard_immediate_retry_budget,
+                            delayed_budget: common.codex_reasoning_guard_delayed_retry_budget,
+                            delayed_retry_ms: common.codex_reasoning_guard_delayed_retry_ms,
+                            exhausted_action: common.codex_reasoning_guard_exhausted_action,
+                            retry_policy: common.codex_reasoning_guard_retry_policy,
+                            concurrent_max: common.codex_reasoning_guard_concurrent_max,
+                            concurrent_interval_ms: common
+                                .codex_reasoning_guard_concurrent_interval_ms,
+                            concurrent_max_attempts: common
+                                .codex_reasoning_guard_concurrent_max_attempts,
+                        },
+                    );
+                    codex_reasoning_guard::push_special_setting(
+                        &common.special_settings,
+                        provider_id,
+                        provider_ctx_owned.provider_name_base.as_str(),
+                        retry_index,
+                        matched,
+                        budget_decision,
+                    );
+                    codex_reasoning_guard::record_guard_retry_attempt(
+                        attempts,
+                        provider_id,
+                        provider_ctx_owned.provider_name_base.as_str(),
+                        provider_ctx_owned.provider_base_url_base.as_str(),
+                        provider_index,
+                        retry_index,
+                        session_reuse,
+                        attempt_started_ms,
+                        attempt_started.elapsed().as_millis(),
+                        circuit_before.state.as_str(),
+                        circuit_before.failure_count,
+                        circuit_before.failure_threshold,
+                        matched,
+                        budget_decision,
+                    );
+                    let outcome = match budget_decision.action {
+                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
+                        "codex_reasoning_guard_retry"
+                    }
+                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::ReturnError => {
+                        "codex_reasoning_guard_exhausted"
+                    }
+                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
+                        "codex_reasoning_guard_switch_provider"
+                    }
+                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
+                        "codex_reasoning_guard_switch_model"
+                    }
+                };
+                    emit_attempt_event_and_log(
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        outcome.to_string(),
+                        Some(StatusCode::BAD_GATEWAY.as_u16()),
+                        AttemptCircuitFields {
+                            state_before: Some(circuit_before.state.as_str()),
+                            state_after: Some(circuit_before.state.as_str()),
+                            failure_count: Some(circuit_before.failure_count),
+                            failure_threshold: Some(circuit_before.failure_threshold),
+                        },
+                    )
+                    .await;
+                    match budget_decision.action {
                     codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
                         retry_state.codex_reasoning_guard_hits =
                             retry_state.codex_reasoning_guard_hits.saturating_add(1);
@@ -1693,9 +2018,10 @@ where
                             attempts.clone(),
                         ));
                     }
-                }
                     }
                 }
+            } else if let Some(sample) = feature_sample.as_ref() {
+                codex_reasoning_features::push_special_setting(&common.special_settings, sample);
             }
 
             if let (Some(namespace), Some(input)) =
@@ -2180,9 +2506,72 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
+        buffered_event_stream_has_terminal_event, continuation_round_timeout,
+        read_buffered_event_stream_chunks, read_buffered_event_stream_chunks_with_round_timeout,
         resolve_requested_model_for_log, should_buffer_native_codex_responses_for_empty_detection,
         should_buffer_native_codex_responses_for_reasoning_guard,
     };
+    use axum::body::Bytes;
+    use futures_core::Stream;
+    use std::collections::VecDeque;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::time::{Duration, Instant};
+
+    struct SequenceThenPendingStream {
+        chunks: VecDeque<Result<Bytes, &'static str>>,
+    }
+
+    impl SequenceThenPendingStream {
+        fn new(chunks: Vec<Result<Bytes, &'static str>>) -> Self {
+            Self {
+                chunks: VecDeque::from(chunks),
+            }
+        }
+    }
+
+    impl Stream for SequenceThenPendingStream {
+        type Item = Result<Bytes, &'static str>;
+
+        fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.chunks
+                .pop_front()
+                .map_or(Poll::Pending, |chunk| Poll::Ready(Some(chunk)))
+        }
+    }
+
+    struct DelayedKeepaliveStream {
+        interval: Duration,
+        sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+    }
+
+    impl DelayedKeepaliveStream {
+        fn new(interval: Duration) -> Self {
+            Self {
+                interval,
+                sleep: None,
+            }
+        }
+    }
+
+    impl Stream for DelayedKeepaliveStream {
+        type Item = Result<Bytes, &'static str>;
+
+        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            if self.sleep.is_none() {
+                self.sleep = Some(Box::pin(tokio::time::sleep(self.interval)));
+            }
+            let sleep = self.sleep.as_mut().expect("sleep initialized");
+            match sleep.as_mut().poll(cx) {
+                Poll::Ready(()) => {
+                    self.sleep = None;
+                    Poll::Ready(Some(Ok(Bytes::from_static(b": keepalive\n\n"))))
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        }
+    }
 
     #[test]
     fn native_codex_stream_buffering_excludes_bridge_paths() {
@@ -2260,5 +2649,116 @@ mod tests {
         let requested_model = resolve_requested_model_for_log(None, None, "codex", raw.as_bytes());
 
         assert_eq!(requested_model.as_deref(), Some("gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn continuation_terminal_scan_stops_after_complete_terminal_frame() {
+        let mut raw = Vec::new();
+        let mut cursor = 0usize;
+        raw.extend_from_slice(
+            b"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"}\n\n",
+        );
+        assert!(!buffered_event_stream_has_terminal_event(&raw, &mut cursor).unwrap());
+        assert_eq!(cursor, raw.len());
+
+        raw.extend_from_slice(
+            b"event: response.completed\ndata: {\"response\":{\"id\":\"r\"}}\n\n",
+        );
+        assert!(buffered_event_stream_has_terminal_event(&raw, &mut cursor).unwrap());
+        assert_eq!(cursor, raw.len());
+    }
+
+    #[test]
+    fn continuation_terminal_scan_waits_for_split_frame_and_handles_done() {
+        let mut raw = b"data: [DO".to_vec();
+        let mut cursor = 0usize;
+        assert!(!buffered_event_stream_has_terminal_event(&raw, &mut cursor).unwrap());
+        assert_eq!(cursor, 0);
+
+        raw.extend_from_slice(b"NE]\n\n: keepalive\n\n");
+        assert!(buffered_event_stream_has_terminal_event(&raw, &mut cursor).unwrap());
+        assert_eq!(cursor, "data: [DONE]\n\n".len());
+    }
+
+    #[test]
+    fn continuation_round_timeout_uses_independent_default_budget() {
+        assert_eq!(continuation_round_timeout(), Duration::from_secs(300));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn continuation_reader_returns_on_terminal_event_without_waiting_for_eof() {
+        let mut stream = SequenceThenPendingStream::new(vec![
+            Ok(Bytes::from_static(
+                b"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\"}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_done\"}}\n\n",
+            )),
+        ]);
+
+        let raw = tokio::time::timeout(
+            Duration::from_millis(100),
+            read_buffered_event_stream_chunks(&mut stream, Some(Duration::from_secs(5)), true),
+        )
+        .await
+        .expect("terminal event should finish before EOF")
+        .expect("read stream");
+        let text = std::str::from_utf8(raw.as_ref()).expect("utf-8");
+
+        assert!(text.contains("response.output_item.done"));
+        assert!(text.contains("response.completed"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn continuation_reader_returns_on_incomplete_terminal_event_without_waiting_for_eof() {
+        let mut stream = SequenceThenPendingStream::new(vec![Ok(Bytes::from_static(
+            b"event: response.incomplete\ndata: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_incomplete\",\"status\":\"incomplete\"}}\n\n",
+        ))]);
+
+        let raw = tokio::time::timeout(
+            Duration::from_millis(100),
+            read_buffered_event_stream_chunks(&mut stream, Some(Duration::from_secs(5)), true),
+        )
+        .await
+        .expect("incomplete terminal event should finish before EOF")
+        .expect("read stream");
+        let text = std::str::from_utf8(raw.as_ref()).expect("utf-8");
+
+        assert!(text.contains("response.incomplete"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn continuation_reader_round_timeout_limits_keepalive_only_streams() {
+        let mut stream = DelayedKeepaliveStream::new(Duration::from_millis(2));
+        let started = Instant::now();
+
+        let err = read_buffered_event_stream_chunks_with_round_timeout(
+            &mut stream,
+            Some(Duration::from_millis(20)),
+            true,
+            Duration::from_millis(20),
+        )
+        .await
+        .expect_err("keepalive-only stream should hit round timeout");
+
+        assert_eq!(err, "continuation event-stream round timeout");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn continuation_reader_can_disable_terminal_scan_for_encoded_streams() {
+        let mut stream =
+            SequenceThenPendingStream::new(vec![Ok(Bytes::from_static(&[0x1f, 0x8b, 0x08, 0x00]))]);
+
+        let err = read_buffered_event_stream_chunks_with_round_timeout(
+            &mut stream,
+            Some(Duration::from_millis(20)),
+            false,
+            Duration::from_millis(20),
+        )
+        .await
+        .expect_err("encoded stream without EOF should hit round timeout");
+
+        assert_eq!(err, "continuation event-stream round timeout");
     }
 }

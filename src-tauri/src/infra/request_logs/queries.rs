@@ -667,7 +667,6 @@ guard_hit_attempts AS (
   JOIN request_logs ON request_logs.id = codex_requests.id
   JOIN json_each(request_logs.special_settings_json) AS special
   WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
-    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.ruleSource'), ''))) != 'continuation_repair'
 ),
 feature_samples AS (
   SELECT
@@ -685,7 +684,28 @@ feature_samples AS (
   JOIN json_each(request_logs.special_settings_json) AS special
   WHERE json_extract(special.value, '$.type') = 'codex_reasoning_features'
 ),
-continuation_attempts AS (
+unified_continuation_attempts AS (
+  SELECT
+    codex_requests.id AS request_id,
+    CASE COALESCE(
+      NULLIF(LOWER(TRIM(json_extract(special.value, '$.guardStrategyOutcome'))), ''),
+      'unknown'
+    )
+      WHEN 'continuation_repaired' THEN 'repaired'
+      ELSE COALESCE(
+        NULLIF(LOWER(TRIM(json_extract(special.value, '$.guardStrategyOutcome'))), ''),
+        'unknown'
+      )
+    END AS status,
+    MAX(COALESCE(CAST(json_extract(special.value, '$.continuationSentRounds') AS INTEGER), 0), 0) AS sent_rounds
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.guardPostMatchStrategy'), ''))) = 'continuation_repair'
+    AND NULLIF(TRIM(COALESCE(json_extract(special.value, '$.guardStrategyOutcome'), '')), '') IS NOT NULL
+),
+legacy_continuation_attempts AS (
   SELECT
     codex_requests.id AS request_id,
     COALESCE(
@@ -697,6 +717,16 @@ continuation_attempts AS (
   JOIN request_logs ON request_logs.id = codex_requests.id
   JOIN json_each(request_logs.special_settings_json) AS special
   WHERE json_extract(special.value, '$.type') = 'codex_reasoning_continuation'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM unified_continuation_attempts AS unified
+      WHERE unified.request_id = codex_requests.id
+    )
+),
+continuation_attempts AS (
+  SELECT request_id, status, sent_rounds FROM unified_continuation_attempts
+  UNION ALL
+  SELECT request_id, status, sent_rounds FROM legacy_continuation_attempts
 ),
 guard_hit_requests AS (
   SELECT request_id, requested_model, COUNT(1) AS hit_attempt_count
@@ -884,7 +914,6 @@ guard_hit_attempts AS (
   WHERE request_logs.cli_key = 'codex'
     {hit_time_filter}
     AND json_extract(special.value, '$.type') = 'codex_reasoning_guard'
-    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.ruleSource'), ''))) != 'continuation_repair'
 ),
 guard_hit_requests AS (
   SELECT request_id, requested_model, COUNT(1) AS hit_attempt_count
@@ -1018,7 +1047,6 @@ guard_hit_attempts AS (
   JOIN request_logs ON request_logs.id = codex_requests.id
   JOIN json_each(request_logs.special_settings_json) AS special
   WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
-    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.ruleSource'), ''))) != 'continuation_repair'
 ),
 guard_hit_requests AS (
   SELECT request_id, requested_model, reasoning_effort, COUNT(1) AS hit_attempt_count
@@ -1125,7 +1153,28 @@ WITH codex_requests AS (
   FROM request_logs
   WHERE cli_key = 'codex'{time_filter}
 ),
-continuation_attempts AS (
+unified_continuation_attempts AS (
+  SELECT
+    codex_requests.id AS request_id,
+    CASE COALESCE(
+      NULLIF(LOWER(TRIM(json_extract(special.value, '$.guardStrategyOutcome'))), ''),
+      'unknown'
+    )
+      WHEN 'continuation_repaired' THEN 'repaired'
+      ELSE COALESCE(
+        NULLIF(LOWER(TRIM(json_extract(special.value, '$.guardStrategyOutcome'))), ''),
+        'unknown'
+      )
+    END AS status,
+    MAX(COALESCE(CAST(json_extract(special.value, '$.continuationSentRounds') AS INTEGER), 0), 0) AS sent_rounds
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.guardPostMatchStrategy'), ''))) = 'continuation_repair'
+    AND NULLIF(TRIM(COALESCE(json_extract(special.value, '$.guardStrategyOutcome'), '')), '') IS NOT NULL
+),
+legacy_continuation_attempts AS (
   SELECT
     codex_requests.id AS request_id,
     COALESCE(
@@ -1137,6 +1186,16 @@ continuation_attempts AS (
   JOIN request_logs ON request_logs.id = codex_requests.id
   JOIN json_each(request_logs.special_settings_json) AS special
   WHERE json_extract(special.value, '$.type') = 'codex_reasoning_continuation'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM unified_continuation_attempts AS unified
+      WHERE unified.request_id = codex_requests.id
+    )
+),
+continuation_attempts AS (
+  SELECT request_id, status, sent_rounds FROM unified_continuation_attempts
+  UNION ALL
+  SELECT request_id, status, sent_rounds FROM legacy_continuation_attempts
 )
 SELECT
   status,
@@ -1790,7 +1849,7 @@ INSERT INTO request_logs (
             "trace-continuation-repaired",
             Some("gpt-5-codex"),
             Some(
-                r#"[{"type":"codex_reasoning_continuation","status":"repaired","sentRounds":1},{"type":"codex_reasoning_guard","ruleSource":"continuation_repair","hitSource":"reasoning_tokens","matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+                r#"[{"type":"codex_reasoning_continuation","status":"repaired","sentRounds":1},{"type":"codex_reasoning_guard","ruleSource":"template_builtin","hitSource":"reasoning_tokens","guardPostMatchStrategy":"continuation_repair","guardStrategyOutcome":"continuation_repaired","continuationSentRounds":1,"matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
             ),
         );
         seed_codex_request_log_with_special_settings(
@@ -1823,20 +1882,27 @@ INSERT INTO request_logs (
         let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
 
         assert_eq!(stats.total_request_count, 4);
-        assert_eq!(stats.hit_request_count, 0);
-        assert_eq!(stats.hit_attempt_count, 0);
-        assert_eq!(stats.token_hit_attempt_count, 0);
+        assert_eq!(stats.hit_request_count, 3);
+        assert_eq!(stats.hit_attempt_count, 4);
+        assert_eq!(stats.token_hit_attempt_count, 4);
         assert_eq!(stats.feature_hit_attempt_count, 0);
-        assert_eq!(stats.reasoning_token_hit_request_count, 0);
+        assert_eq!(stats.reasoning_token_hit_request_count, 3);
         assert_eq!(stats.final_answer_only_high_xhigh_hit_request_count, 0);
-        assert!(stats
+        assert_eq!(stats.normal_request_count, 1);
+        let codex_model = stats
             .by_model
             .iter()
-            .all(|row| row.hit_request_count == 0 && row.hit_attempt_count == 0));
-        assert!(stats
-            .by_model_and_effort
+            .find(|row| row.requested_model == "gpt-5-codex")
+            .expect("gpt-5-codex model stats");
+        assert_eq!(codex_model.hit_request_count, 2);
+        assert_eq!(codex_model.hit_attempt_count, 3);
+        let mini_model = stats
+            .by_model
             .iter()
-            .all(|row| row.hit_request_count == 0 && row.hit_attempt_count == 0));
+            .find(|row| row.requested_model == "gpt-5-mini-codex")
+            .expect("gpt-5-mini-codex model stats");
+        assert_eq!(mini_model.hit_request_count, 1);
+        assert_eq!(mini_model.hit_attempt_count, 1);
         assert_eq!(stats.continuation_triggered_request_count, 3);
         assert_eq!(stats.continuation_triggered_attempt_count, 4);
         assert_eq!(stats.continuation_repaired_request_count, 1);
@@ -1886,8 +1952,8 @@ INSERT INTO request_logs (
 
         assert_eq!(stats.total_request_count, 1);
         assert_eq!(stats.hit_request_count, 1);
-        assert_eq!(stats.hit_attempt_count, 1);
-        assert_eq!(stats.token_hit_attempt_count, 1);
+        assert_eq!(stats.hit_attempt_count, 2);
+        assert_eq!(stats.token_hit_attempt_count, 2);
         assert_eq!(stats.feature_hit_attempt_count, 0);
         assert_eq!(stats.reasoning_token_hit_request_count, 1);
         assert_eq!(stats.continuation_triggered_request_count, 1);
@@ -1902,7 +1968,7 @@ INSERT INTO request_logs (
             .find(|row| row.requested_model == "gpt-5-codex")
             .expect("gpt-5-codex model stats");
         assert_eq!(model_stats.hit_request_count, 1);
-        assert_eq!(model_stats.hit_attempt_count, 1);
+        assert_eq!(model_stats.hit_attempt_count, 2);
 
         let high_stats = stats
             .by_model_and_effort
@@ -1910,7 +1976,7 @@ INSERT INTO request_logs (
             .find(|row| row.requested_model == "gpt-5-codex" && row.reasoning_effort == "high")
             .expect("gpt-5-codex high stats");
         assert_eq!(high_stats.hit_request_count, 1);
-        assert_eq!(high_stats.hit_attempt_count, 1);
+        assert_eq!(high_stats.hit_attempt_count, 2);
     }
 
     #[test]

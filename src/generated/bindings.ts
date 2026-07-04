@@ -2558,6 +2558,7 @@ export type CodexReasoningGuardModelStat = {
   hit_attempt_count: number;
   hit_rate: number;
 };
+export type CodexReasoningGuardPostMatchStrategy = "retry_same_provider" | "continuation_repair";
 export type CodexReasoningGuardRetryPolicy = "single" | "concurrent";
 export type CodexReasoningGuardRuleMode = "reasoning_tokens" | "final_answer_only_high_xhigh";
 export type CodexReasoningGuardRuleTemplate = {
@@ -2634,11 +2635,13 @@ export type CodexReasoningGuardTemplateRule = {
   id: string;
   name: string;
   reasoning_tokens: number | null;
+  reasoning_tokens_formula: CodexReasoningGuardTemplateRuleFormula | null;
   action: CodexReasoningGuardTemplateRuleAction;
   logic: CodexReasoningGuardTemplateRuleLogic;
   filters: CodexReasoningGuardTemplateFilter[];
 };
 export type CodexReasoningGuardTemplateRuleAction = "intercept" | "no_intercept";
+export type CodexReasoningGuardTemplateRuleFormula = "reasoning_tokens_518n_minus_2";
 export type CodexReasoningGuardTemplateRuleLogic = "and" | "or";
 export type CodexSessionIdCompletionUpdate = { enableCodexSessionIdCompletion: boolean };
 export type CommandContribution = { command: string; title: string; category?: string | null };
@@ -3751,6 +3754,7 @@ export type SettingsUpdate = {
   codexReasoningGuardModelRules: CodexReasoningGuardModelRule[] | null;
   codexReasoningGuardActiveTemplateId: string | null;
   codexReasoningGuardCustomTemplates: CodexReasoningGuardRuleTemplate[] | null;
+  codexReasoningGuardPostMatchStrategy: CodexReasoningGuardPostMatchStrategy | null;
   codexReasoningGuardImmediateRetryBudget: number | null;
   codexReasoningGuardDelayedRetryBudget: number | null;
   codexReasoningGuardDelayedRetryMs: number | null;
@@ -3806,6 +3810,7 @@ export type SettingsView = {
   codex_reasoning_guard_model_rules: CodexReasoningGuardModelRule[];
   codex_reasoning_guard_active_template_id: string;
   codex_reasoning_guard_custom_templates: CodexReasoningGuardRuleTemplate[];
+  codex_reasoning_guard_post_match_strategy: CodexReasoningGuardPostMatchStrategy;
   codex_reasoning_guard_immediate_retry_budget: number;
   codex_reasoning_guard_delayed_retry_budget: number;
   codex_reasoning_guard_delayed_retry_ms: number;

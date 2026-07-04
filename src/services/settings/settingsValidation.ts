@@ -2,6 +2,7 @@ import type {
   CodexReasoningGuardCompareMode,
   CodexReasoningGuardExhaustedAction,
   CodexReasoningGuardModelRule,
+  CodexReasoningGuardPostMatchStrategy,
   CodexReasoningGuardRetryPolicy,
   CodexReasoningGuardRuleTemplate,
   CodexReasoningGuardRuleMode,
@@ -9,6 +10,7 @@ import type {
   CodexReasoningGuardTemplateFilterField,
   CodexReasoningGuardTemplateFilterOperator,
   CodexReasoningGuardTemplateRuleAction,
+  CodexReasoningGuardTemplateRuleFormula,
   CodexReasoningGuardTemplateRuleLogic,
   GatewayListenMode,
   SensitiveStringUpdate,
@@ -39,6 +41,8 @@ export const DEFAULT_CODEX_REASONING_GUARD_RULE_MODE: CodexReasoningGuardRuleMod
   "reasoning_tokens";
 export const CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID =
   "builtin-legacy-reasoning-tokens";
+export const CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID =
+  "builtin-reasoning-tokens-518n-minus-2";
 export const CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID =
   "builtin-final-answer-only-high-xhigh";
 export const CODEX_REASONING_GUARD_TEMPLATE_LEGACY_COMPATIBILITY_ID = "legacy-compatibility";
@@ -49,6 +53,8 @@ export const DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET = 5;
 export const DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS = 1_000;
 export const DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION: CodexReasoningGuardExhaustedAction =
   "return_error";
+export const DEFAULT_CODEX_REASONING_GUARD_POST_MATCH_STRATEGY: CodexReasoningGuardPostMatchStrategy =
+  "continuation_repair";
 export const DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY: CodexReasoningGuardRetryPolicy = "single";
 export const DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX = 5;
 export const DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS = 1_000;
@@ -98,10 +104,12 @@ const SUPPORTED_PROXY_SCHEMES = new Set(["http", "https", "socks5", "socks5h"]);
 const SUPPORTED_UPSTREAM_RETRY_TRANSPORT_ERRORS = new Set(["connect", "timeout", "read"]);
 const CODEX_REASONING_GUARD_ACTIVE_BUILTIN_TEMPLATE_IDS = new Set([
   CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
+  CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID,
   CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID,
 ]);
 const CODEX_REASONING_GUARD_RESERVED_TEMPLATE_IDS = new Set([
   CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
+  CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID,
   CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID,
   CODEX_REASONING_GUARD_TEMPLATE_LEGACY_COMPATIBILITY_ID,
 ]);
@@ -113,6 +121,8 @@ const CODEX_REASONING_GUARD_TEMPLATE_RULE_LOGICS = new Set<CodexReasoningGuardTe
   "and",
   "or",
 ]);
+const CODEX_REASONING_GUARD_TEMPLATE_RULE_FORMULAS =
+  new Set<CodexReasoningGuardTemplateRuleFormula>(["reasoning_tokens_518n_minus_2"]);
 const CODEX_REASONING_GUARD_TEMPLATE_FILTER_FIELDS =
   new Set<CodexReasoningGuardTemplateFilterField>([
     "duration_ms",
@@ -638,6 +648,7 @@ function validateCodexReasoningGuardTemplates(input: {
 
     const seenRuleIds = new Set<string>();
     const seenTokens = new Set<number>();
+    const seenFormulas = new Set<CodexReasoningGuardTemplateRuleFormula>();
     let catchAllWildcardSeen = false;
     for (const [ruleIndex, rule] of template.rules.entries()) {
       const ruleLabel = `${templateLabel}规则 ${ruleIndex + 1}`;
@@ -664,7 +675,19 @@ function validateCodexReasoningGuardTemplates(input: {
         return `${ruleLabel} logic 仅支持 and 或 or`;
       }
 
-      if (rule.reasoning_tokens == null) {
+      const reasoningFormula = rule.reasoning_tokens_formula ?? null;
+      if (rule.reasoning_tokens != null && reasoningFormula != null) {
+        return `${ruleLabel} 不能同时配置 reasoning_tokens 和 reasoning_tokens_formula`;
+      }
+      if (reasoningFormula != null) {
+        if (!CODEX_REASONING_GUARD_TEMPLATE_RULE_FORMULAS.has(reasoningFormula)) {
+          return `${ruleLabel} reasoning_tokens_formula 不支持`;
+        }
+        if (seenFormulas.has(reasoningFormula)) {
+          return `${templateLabel}不能重复配置公式：${reasoningFormula}`;
+        }
+        seenFormulas.add(reasoningFormula);
+      } else if (rule.reasoning_tokens == null) {
         const isCatchAllWildcard = Array.isArray(rule.filters) && rule.filters.length === 0;
         if (isCatchAllWildcard && catchAllWildcardSeen) {
           return `${templateLabel}只能有一条无过滤 wildcard 规则`;
@@ -750,6 +773,7 @@ export type SettingsSetValidationInput = {
   codexReasoningGuardModelRules?: CodexReasoningGuardModelRule[] | null;
   codexReasoningGuardActiveTemplateId?: string | null;
   codexReasoningGuardCustomTemplates?: CodexReasoningGuardRuleTemplate[] | null;
+  codexReasoningGuardPostMatchStrategy?: CodexReasoningGuardPostMatchStrategy | null;
   codexReasoningGuardImmediateRetryBudget?: number | null;
   codexReasoningGuardDelayedRetryBudget?: number | null;
   codexReasoningGuardDelayedRetryMs?: number | null;
@@ -937,6 +961,15 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
       input.codexReasoningGuardExhaustedAction !== "switch_model"
     ) {
       return "Codex 降智拦截预算耗尽动作仅支持 return_error、switch_provider 或 switch_model";
+    }
+  }
+
+  if (input.codexReasoningGuardPostMatchStrategy != null) {
+    if (
+      input.codexReasoningGuardPostMatchStrategy !== "retry_same_provider" &&
+      input.codexReasoningGuardPostMatchStrategy !== "continuation_repair"
+    ) {
+      return "Codex 降智拦截命中后策略仅支持 retry_same_provider 或 continuation_repair";
     }
   }
 

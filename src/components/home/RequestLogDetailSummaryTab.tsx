@@ -10,10 +10,7 @@ import {
   resolveTtfbDisplayMetrics,
 } from "../../utils/formatters";
 import { RequestLogErrorObservationCard } from "./RequestLogErrorObservationCard";
-import {
-  resolveCodexReasoningContinuationSummary,
-  resolveCodexReasoningGuardSummary,
-} from "../../services/gateway/requestLogSpecialSettings";
+import { resolveCodexReasoningGuardSummary } from "../../services/gateway/requestLogSpecialSettings";
 import {
   buildRequestLogAuditMeta,
   computeStatusBadge,
@@ -57,17 +54,8 @@ export function RequestLogDetailSummaryTab({
     selectedLog.cli_key === "codex"
       ? resolveCodexReasoningGuardSummary(selectedLog.special_settings_json)
       : null;
-  const codexReasoningContinuation =
-    selectedLog.cli_key === "codex"
-      ? resolveCodexReasoningContinuationSummary(selectedLog.special_settings_json)
-      : null;
   const showCodexReasoningSignals = (codexReasoningGuard?.count ?? 0) > 0;
-  const showCodexReasoningContinuation = (codexReasoningContinuation?.count ?? 0) > 0;
-  const showKeyMetrics =
-    hasTokens ||
-    codexReasoningEffort != null ||
-    showCodexReasoningSignals ||
-    showCodexReasoningContinuation;
+  const showKeyMetrics = hasTokens || codexReasoningEffort != null || showCodexReasoningSignals;
   const isPriorityServiceTier =
     selectedLog.cli_key === "codex" &&
     hasPriorityServiceTierSpecialSetting(selectedLog.special_settings_json);
@@ -150,24 +138,21 @@ export function RequestLogDetailSummaryTab({
                   value={formatCodexReasoningHitSource(codexReasoningGuard?.latestHitSource)}
                 />
                 <MetricCard label="命中次数" value={codexReasoningGuard?.count ?? 0} />
-              </>
-            ) : null}
-            {showCodexReasoningContinuation ? (
-              <>
                 <MetricCard
-                  label="补救状态"
-                  value={formatCodexReasoningContinuationStatus(
-                    codexReasoningContinuation?.latestStatus
+                  label="命中后策略"
+                  value={formatCodexReasoningPostMatchStrategy(
+                    codexReasoningGuard?.latestPostMatchStrategy
                   )}
                 />
-                <MetricCard label="补救触发" value={codexReasoningContinuation?.count ?? 0} />
                 <MetricCard
-                  label="补救轮数"
-                  value={codexReasoningContinuation?.totalSentRounds ?? 0}
+                  label="策略结果"
+                  value={formatCodexReasoningContinuationStatus(
+                    codexReasoningGuard?.latestStrategyOutcome
+                  )}
                 />
                 <MetricCard
-                  label="补救重试"
-                  value={codexReasoningContinuation?.continuationRepairGuardCount ?? 0}
+                  label="续写轮数"
+                  value={codexReasoningGuard?.latestContinuationSentRounds}
                 />
               </>
             ) : null}
@@ -241,6 +226,12 @@ function formatCodexReasoningRuleMode(value: string | null | undefined) {
 function formatCodexReasoningHitSource(value: string | null | undefined) {
   if (value === "reasoning_tokens") return "token";
   if (value === "final_answer_only_high_xhigh") return "final-only";
+  return value || "—";
+}
+
+function formatCodexReasoningPostMatchStrategy(value: string | null | undefined) {
+  if (value === "continuation_repair") return "思考续写";
+  if (value === "retry_same_provider") return "自动重试";
   return value || "—";
 }
 

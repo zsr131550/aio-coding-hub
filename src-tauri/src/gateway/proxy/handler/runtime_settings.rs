@@ -27,6 +27,8 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) codex_reasoning_guard_active_template_id: String,
     pub(super) codex_reasoning_guard_custom_templates:
         Vec<settings::CodexReasoningGuardRuleTemplate>,
+    pub(super) codex_reasoning_guard_post_match_strategy:
+        settings::CodexReasoningGuardPostMatchStrategy,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -157,6 +159,9 @@ pub(super) fn handler_runtime_settings(
         codex_reasoning_guard_custom_templates: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_custom_templates.clone())
             .unwrap_or_default(),
+        codex_reasoning_guard_post_match_strategy: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_post_match_strategy)
+            .unwrap_or_default(),
         codex_reasoning_guard_immediate_retry_budget: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_immediate_retry_budget)
             .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET),
@@ -237,6 +242,8 @@ mod tests {
             codex_reasoning_guard_concurrent_interval_ms: 250,
             codex_reasoning_guard_concurrent_max_attempts: 12,
             codex_reasoning_guard_model_fallbacks: vec!["gpt-5.4".to_string()],
+            codex_reasoning_guard_post_match_strategy:
+                settings::CodexReasoningGuardPostMatchStrategy::RetrySameProvider,
             codex_reasoning_guard_continuation_repair_enabled: true,
             codex_reasoning_guard_continuation_max_rounds: 4,
             codex_reasoning_guard_continuation_max_output_tokens: 12_345,
@@ -268,6 +275,10 @@ mod tests {
         assert_eq!(
             runtime.codex_reasoning_guard_model_fallbacks,
             vec!["gpt-5.4".to_string()]
+        );
+        assert_eq!(
+            runtime.codex_reasoning_guard_post_match_strategy,
+            settings::CodexReasoningGuardPostMatchStrategy::RetrySameProvider
         );
         assert!(runtime.codex_reasoning_guard_continuation_repair_enabled);
         assert_eq!(runtime.codex_reasoning_guard_continuation_max_rounds, 4);

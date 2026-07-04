@@ -288,7 +288,80 @@ fn upsert_output_item(output: &mut Vec<Value>, item: Value) {
             return;
         }
     }
+    if let Some(item_text) = visible_message_output_text(&item) {
+        if let Some((index, relationship)) = output
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                visible_message_output_text(candidate).map(|candidate_text| {
+                    (
+                        index,
+                        message_text_relationship(candidate_text.as_str(), item_text.as_str()),
+                    )
+                })
+            })
+            .find(|(_, relationship)| *relationship != MessageTextRelationship::Distinct)
+        {
+            match relationship {
+                MessageTextRelationship::ReplaceExisting => output[index] = item,
+                MessageTextRelationship::KeepExisting => {}
+                MessageTextRelationship::Distinct => unreachable!(),
+            }
+            return;
+        }
+    }
     output.push(item);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessageTextRelationship {
+    Distinct,
+    KeepExisting,
+    ReplaceExisting,
+}
+
+fn message_text_relationship(existing: &str, next: &str) -> MessageTextRelationship {
+    let existing = normalize_visible_message_text(existing);
+    let next = normalize_visible_message_text(next);
+    if existing.is_empty() || next.is_empty() {
+        return MessageTextRelationship::Distinct;
+    }
+    if existing == next || next.starts_with(&existing) {
+        return MessageTextRelationship::ReplaceExisting;
+    }
+    if existing.starts_with(&next) {
+        return MessageTextRelationship::KeepExisting;
+    }
+    MessageTextRelationship::Distinct
+}
+
+fn normalize_visible_message_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn visible_message_output_text(item: &Value) -> Option<String> {
+    if item.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    if item
+        .get("role")
+        .and_then(Value::as_str)
+        .is_some_and(|role| role != "assistant")
+    {
+        return None;
+    }
+    if item.get("phase").and_then(Value::as_str) == Some("commentary") {
+        return None;
+    }
+    let text = item
+        .get("content")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|content| content.get("type").and_then(Value::as_str) == Some("output_text"))
+        .filter_map(|content| content.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("");
+    (!text.is_empty()).then_some(text)
 }
 
 fn summed_usage(responses: &[Value]) -> Option<Value> {
@@ -380,6 +453,16 @@ mod tests {
 
     fn merged_json(outcome: &IncludeMergeOutcome) -> Value {
         serde_json::from_slice(outcome.body.as_ref()).unwrap()
+    }
+
+    fn folded_output_items(responses: &[Value]) -> Vec<Value> {
+        let raw = fold_responses_to_sse(responses).expect("fold");
+        let aggregated = crate::gateway::proxy::sse::aggregate_responses_event_stream(raw.as_ref())
+            .expect("aggregate folded");
+        aggregated["output"]
+            .as_array()
+            .expect("output array")
+            .clone()
     }
 
     fn merge_body_with_path(path: &str, body: Value) -> IncludeMergeOutcome {
@@ -631,5 +714,261 @@ mod tests {
         assert!(text.contains("\"id\":\"msg_1\""));
         assert!(text.contains("\"output_tokens\":13"));
         assert!(text.contains("\"reasoning_tokens\":518"));
+    }
+
+    #[test]
+    fn folded_sse_deduplicates_repeated_visible_message_text_across_rounds() {
+        let first = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [
+                {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc"},
+                {"id": "msg_first", "type": "message", "content": [{"type": "output_text", "text": "收到。现在先不创建新 worktree，也不改代码。"}]}
+            ],
+            "usage": {"output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 516}}
+        });
+        let second = json!({
+            "id": "resp_2",
+            "status": "completed",
+            "output": [
+                {"id": "msg_second", "type": "message", "content": [{"type": "output_text", "text": "收到。现在先不创建新 worktree，也不改代码。"}]}
+            ],
+            "usage": {"output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 2}}
+        });
+
+        let raw = fold_responses_to_sse(&[first, second]).expect("fold");
+        let text = std::str::from_utf8(raw.as_ref()).unwrap();
+        let aggregated = crate::gateway::proxy::sse::aggregate_responses_event_stream(raw.as_ref())
+            .expect("aggregate folded");
+        let output = aggregated["output"].as_array().expect("output array");
+
+        assert!(!text.contains("\"id\":\"msg_first\""));
+        assert!(text.contains("\"id\":\"msg_second\""));
+        assert_eq!(
+            output
+                .iter()
+                .filter(|item| item["type"] == "message")
+                .count(),
+            1
+        );
+        assert!(text.contains("\"output_tokens\":13"));
+        assert!(text.contains("\"reasoning_tokens\":518"));
+    }
+
+    #[test]
+    fn folded_sse_keeps_one_extended_visible_message_text_across_rounds() {
+        let first = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [
+                {"id": "msg_first", "type": "message", "content": [{"type": "output_text", "text": "答案是 21。"}]}
+            ],
+            "usage": {"output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 516}}
+        });
+        let second = json!({
+            "id": "resp_2",
+            "status": "completed",
+            "output": [
+                {"id": "msg_second", "type": "message", "content": [{"type": "output_text", "text": "答案是 21。最少取出 21 个糖果。"}]}
+            ],
+            "usage": {"output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 2}}
+        });
+
+        let raw = fold_responses_to_sse(&[first, second]).expect("fold");
+        let text = std::str::from_utf8(raw.as_ref()).unwrap();
+        let aggregated = crate::gateway::proxy::sse::aggregate_responses_event_stream(raw.as_ref())
+            .expect("aggregate folded");
+        let output = aggregated["output"].as_array().expect("output array");
+        let message = output
+            .iter()
+            .find(|item| item["type"] == "message")
+            .expect("message item");
+
+        assert!(!text.contains("\"id\":\"msg_first\""));
+        assert!(text.contains("\"id\":\"msg_second\""));
+        assert_eq!(
+            message.pointer("/content/0/text").and_then(Value::as_str),
+            Some("答案是 21。最少取出 21 个糖果。")
+        );
+    }
+
+    #[test]
+    fn folded_sse_preserves_distinct_visible_message_text_across_rounds() {
+        let first = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [
+                {"id": "msg_first", "type": "message", "content": [{"type": "output_text", "text": "答案是 21。"}]}
+            ],
+            "usage": {"output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 516}}
+        });
+        let second = json!({
+            "id": "resp_2",
+            "status": "completed",
+            "output": [
+                {"id": "msg_second", "type": "message", "content": [{"type": "output_text", "text": "还需要说明最坏情况的抽取策略。"}]}
+            ],
+            "usage": {"output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 2}}
+        });
+
+        let output = folded_output_items(&[first, second]);
+        let messages: Vec<&Value> = output
+            .iter()
+            .filter(|item| item["type"] == "message")
+            .collect();
+
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().any(|item| item["id"] == "msg_first"));
+        assert!(messages.iter().any(|item| item["id"] == "msg_second"));
+    }
+
+    #[test]
+    fn folded_sse_preserves_quoted_visible_message_text_across_rounds() {
+        let first = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [
+                {"id": "msg_first", "type": "message", "content": [{"type": "output_text", "text": "答案是 21。"}]}
+            ],
+            "usage": {"output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 516}}
+        });
+        let second = json!({
+            "id": "resp_2",
+            "status": "completed",
+            "output": [
+                {"id": "msg_second", "type": "message", "content": [{"type": "output_text", "text": "你前面说“答案是 21。”，这里还要补充最坏情况证明。"}]}
+            ],
+            "usage": {"output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 2}}
+        });
+
+        let output = folded_output_items(&[first, second]);
+        let messages: Vec<&Value> = output
+            .iter()
+            .filter(|item| item["type"] == "message")
+            .collect();
+
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().any(|item| item["id"] == "msg_first"));
+        assert!(messages.iter().any(|item| item["id"] == "msg_second"));
+    }
+
+    #[test]
+    fn folded_sse_preserves_non_visible_items_and_commentary_markers() {
+        let commentary = commentary_marker_item();
+        let first = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [
+                {"id": "rs_first", "type": "reasoning", "summary": [{"type": "summary_text", "text": "same"}], "encrypted_content": "enc_1"},
+                {"id": "call_first", "type": "function_call", "name": "lookup", "call_id": "call_1", "arguments": "{}"},
+                commentary
+            ],
+            "usage": {"output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 516}}
+        });
+        let second = json!({
+            "id": "resp_2",
+            "status": "completed",
+            "output": [
+                {"id": "rs_second", "type": "reasoning", "summary": [{"type": "summary_text", "text": "same"}], "encrypted_content": "enc_2"},
+                {"id": "call_second", "type": "function_call", "name": "lookup", "call_id": "call_2", "arguments": "{}"},
+                {"id": "msg_visible", "type": "message", "content": [{"type": "output_text", "text": CONTINUATION_MARKER_TEXT}]}
+            ],
+            "usage": {"output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 2}}
+        });
+
+        let output = folded_output_items(&[first, second]);
+
+        assert_eq!(
+            output
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count(),
+            2
+        );
+        assert_eq!(
+            output
+                .iter()
+                .filter(|item| item["type"] == "function_call")
+                .count(),
+            2
+        );
+        assert_eq!(
+            output
+                .iter()
+                .filter(|item| item["phase"] == "commentary")
+                .count(),
+            1
+        );
+        assert!(output.iter().any(|item| item["id"] == "msg_visible"));
+    }
+
+    #[test]
+    fn folded_sse_does_not_dedupe_explicit_non_assistant_messages() {
+        let first = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [
+                {"id": "msg_user_like_first", "type": "message", "role": "user", "content": [{"type": "output_text", "text": "same visible text"}]}
+            ],
+            "usage": {"output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 516}}
+        });
+        let second = json!({
+            "id": "resp_2",
+            "status": "completed",
+            "output": [
+                {"id": "msg_user_like_second", "type": "message", "role": "user", "content": [{"type": "output_text", "text": "same visible text"}]}
+            ],
+            "usage": {"output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 2}}
+        });
+
+        let output = folded_output_items(&[first, second]);
+        let user_messages: Vec<&Value> = output
+            .iter()
+            .filter(|item| item["role"] == "user")
+            .collect();
+
+        assert_eq!(user_messages.len(), 2);
+        assert!(user_messages
+            .iter()
+            .any(|item| item["id"] == "msg_user_like_first"));
+        assert!(user_messages
+            .iter()
+            .any(|item| item["id"] == "msg_user_like_second"));
+    }
+
+    #[test]
+    fn folded_sse_compares_all_visible_output_text_segments() {
+        let first = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [
+                {"id": "msg_first", "type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "共同开头。"},
+                    {"type": "output_text", "text": "第一条后续。"}
+                ]}
+            ],
+            "usage": {"output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 516}}
+        });
+        let second = json!({
+            "id": "resp_2",
+            "status": "completed",
+            "output": [
+                {"id": "msg_second", "type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "共同开头。"},
+                    {"type": "output_text", "text": "第二条后续。"}
+                ]}
+            ],
+            "usage": {"output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 2}}
+        });
+
+        let output = folded_output_items(&[first, second]);
+        let messages: Vec<&Value> = output
+            .iter()
+            .filter(|item| item["type"] == "message")
+            .collect();
+
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().any(|item| item["id"] == "msg_first"));
+        assert!(messages.iter().any(|item| item["id"] == "msg_second"));
     }
 }

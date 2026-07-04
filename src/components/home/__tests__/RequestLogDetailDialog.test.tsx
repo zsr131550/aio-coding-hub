@@ -386,7 +386,7 @@ describe("home/RequestLogDetailDialog", () => {
     expect(screen.queryByText("跳过原因")).not.toBeInTheDocument();
   });
 
-  it("shows Codex reasoning continuation repair independently from guard hits", () => {
+  it("shows Codex reasoning continuation repair as a guard post-match strategy", () => {
     setRequestLogQueryState({
       selectedLog: createSelectedLog({
         cli_key: "codex",
@@ -395,23 +395,12 @@ describe("home/RequestLogDetailDialog", () => {
         error_code: null,
         special_settings_json: JSON.stringify([
           {
-            type: "codex_reasoning_continuation",
-            status: "failed",
-            sentRounds: 1,
-            reasoningTokens: 2070,
-            failureKind: "aggregate",
-          },
-          {
             type: "codex_reasoning_guard",
-            ruleSource: "continuation_repair",
             matchedRuleName: "reasoning_tokens == 518*n-2",
             reasoningTokens: 516,
-          },
-          {
-            type: "codex_reasoning_continuation",
-            status: "repaired",
-            sentRounds: 2,
-            reasoningTokens: 51,
+            guardPostMatchStrategy: "continuation_repair",
+            guardStrategyOutcome: "continuation_repaired",
+            continuationSentRounds: 2,
           },
         ]),
       }),
@@ -421,17 +410,16 @@ describe("home/RequestLogDetailDialog", () => {
     render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
     expect(screen.getByText("审计语义")).toBeInTheDocument();
-    expect(screen.getByText("思考补救成功")).toBeInTheDocument();
+    expect(screen.getByText("降智命中 reasoning_tokens == 518*n-2")).toBeInTheDocument();
     expect(
-      screen.getByText("本次请求触发 2 次思考补救，1 次补救失败后使用预算重试，最终补救成功。")
+      screen.getByText(
+        "本次请求命中了 Codex 降智拦截（规则 reasoning_tokens == 518*n-2），思考续写成功（2 次）。"
+      )
     ).toBeInTheDocument();
-    expectMetricValue("补救状态", "已修复");
-    expectMetricValue("补救触发", "2");
-    expectMetricValue("补救轮数", "3");
-    expectMetricValue("补救重试", "1");
-    expect(screen.queryByText(/降智命中/)).not.toBeInTheDocument();
-    expect(screen.queryByText("规则模式")).not.toBeInTheDocument();
-    expect(screen.queryByText("命中来源")).not.toBeInTheDocument();
+    expectMetricValue("命中次数", "1");
+    expectMetricValue("命中后策略", "思考续写");
+    expectMetricValue("策略结果", "已修复");
+    expectMetricValue("续写轮数", "2");
   });
 
   it("shows mixed Codex reasoning guard and continuation repair details together", () => {
@@ -461,12 +449,9 @@ describe("home/RequestLogDetailDialog", () => {
             ruleSource: " Continuation_Repair ",
             matchedRuleName: "reasoning_tokens == 518*n-2",
             reasoningTokens: 516,
-          },
-          {
-            type: "codex_reasoning_continuation",
-            status: "repaired",
-            sentRounds: 2,
-            reasoningTokens: 51,
+            guardPostMatchStrategy: "continuation_repair",
+            guardStrategyOutcome: "continuation_repaired",
+            continuationSentRounds: 2,
           },
         ]),
       }),
@@ -476,18 +461,16 @@ describe("home/RequestLogDetailDialog", () => {
     render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
     expect(screen.getByText("审计语义")).toBeInTheDocument();
-    expect(screen.getByText("降智命中 <= 516")).toBeInTheDocument();
-    expect(screen.getByText("思考补救成功")).toBeInTheDocument();
+    expect(screen.getByText("降智命中 2 reasoning_tokens == 518*n-2")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "本次请求命中了 Codex 降智拦截（规则 <= 516），继续重试；同时触发 2 次思考补救，1 次补救失败后使用预算重试，最终补救成功。"
+        "本次请求命中了 2 次 Codex 降智拦截（规则 reasoning_tokens == 518*n-2），思考续写成功（2 次）。"
       )
     ).toBeInTheDocument();
-    expectMetricValue("命中次数", "1");
-    expectMetricValue("补救状态", "已修复");
-    expectMetricValue("补救触发", "2");
-    expectMetricValue("补救轮数", "3");
-    expectMetricValue("补救重试", "1");
+    expectMetricValue("命中次数", "2");
+    expectMetricValue("命中后策略", "思考续写");
+    expectMetricValue("策略结果", "已修复");
+    expectMetricValue("续写轮数", "2");
   });
 
   it("renders not-found state when the selected log detail is unavailable", () => {
@@ -558,6 +541,37 @@ describe("home/RequestLogDetailDialog", () => {
 
     expect(screen.getByText("关键指标")).toBeInTheDocument();
     expectMetricValue("思考 Token", "516");
+  });
+
+  it("keeps reasoning token labels stable when legacy continuation repair was recorded", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        status: 200,
+        error_code: null,
+        usage_json: JSON.stringify({
+          output_tokens_details: {
+            reasoning_tokens: 516,
+          },
+        }),
+        special_settings_json: JSON.stringify([
+          {
+            type: "codex_reasoning_continuation",
+            status: "repaired",
+            sentRounds: 1,
+            reasoningTokens: 51,
+          },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expect(screen.getByText("关键指标")).toBeInTheDocument();
+    expectMetricValue("思考 Token", "516");
+    expect(screen.queryByText("最终思考 Token")).not.toBeInTheDocument();
+    expect(screen.queryByText("补救状态")).not.toBeInTheDocument();
   });
 
   it("uses the final successful response metrics for Codex reasoning-guard retries", () => {

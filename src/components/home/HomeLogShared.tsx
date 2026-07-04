@@ -11,7 +11,6 @@ import {
   formatCodexReasoningEffortSource,
   hasClaudeModelMappingSpecialSetting,
   parseRequestLogSpecialSettings,
-  resolveCodexReasoningContinuationSummary,
   resolveCodexReasoningEffort,
   resolveCodexReasoningGuardSummary,
   resolveClaudeModelMappingFromSpecialSettings,
@@ -70,7 +69,25 @@ export function hasCodexReasoningGuardSpecialSetting(
 function formatCodexReasoningGuardActionText(summary: {
   latestActionTaken: string | null;
   latestDelayMs: number | null;
+  latestPostMatchStrategy?: string | null;
+  latestStrategyOutcome?: string | null;
+  latestContinuationSentRounds?: number | null;
 }): string {
+  if (
+    summary.latestPostMatchStrategy === "continuation_repair" &&
+    (summary.latestStrategyOutcome === "continuation_repaired" ||
+      summary.latestStrategyOutcome === "repaired")
+  ) {
+    return `思考续写成功${
+      summary.latestContinuationSentRounds != null
+        ? `（${summary.latestContinuationSentRounds} 次）`
+        : ""
+    }`;
+  }
+  if (summary.latestPostMatchStrategy === "continuation_repair") {
+    const status = formatCodexReasoningContinuationStatus(summary.latestStrategyOutcome);
+    return summary.latestStrategyOutcome ? `思考续写后${status}` : "思考续写";
+  }
   if (summary.latestActionTaken === "switch_provider_no_circuit") {
     return "预算耗尽后切换供应商";
   }
@@ -90,39 +107,16 @@ function formatCodexReasoningGuardActionText(summary: {
 }
 
 export function formatCodexReasoningContinuationStatus(status: string | null | undefined): string {
+  if (status === "continuation_repaired") return "已修复";
   if (status === "repaired") return "已修复";
   if (status === "failed") return "补救失败";
   if (status === "still_matched") return "仍命中";
   if (status === "missing_encrypted") return "缺少 encrypted";
   if (status === "capped_max_output_tokens") return "输出上限";
+  if (status === "unsupported") return "不支持";
+  if (status === "unavailable") return "不可用";
   if (status === "unknown") return "未知状态";
   return status || "未知状态";
-}
-
-function formatCodexReasoningContinuationSummary(summary: {
-  count: number;
-  continuationRepairGuardCount: number;
-  latestStatus: string | null;
-}): string {
-  return `本次请求${formatCodexReasoningContinuationSummaryClause(summary)}。`;
-}
-
-function formatCodexReasoningContinuationSummaryClause(summary: {
-  count: number;
-  continuationRepairGuardCount: number;
-  latestStatus: string | null;
-}): string {
-  const triggerText = summary.count > 1 ? `触发 ${summary.count} 次思考补救` : "触发思考补救";
-  const retryText =
-    summary.continuationRepairGuardCount > 0
-      ? `，${summary.continuationRepairGuardCount} 次补救失败后使用预算重试`
-      : "";
-
-  if (summary.latestStatus === "repaired") {
-    return `${triggerText}${retryText}，最终补救成功`;
-  }
-
-  return `${triggerText}${retryText}，最终状态：${formatCodexReasoningContinuationStatus(summary.latestStatus)}`;
 }
 
 function formatCodexReasoningGuardSummaryClause(summary: {
@@ -292,11 +286,7 @@ export function buildRequestLogAuditMeta(
   const isAllProvidersUnavailable = log.error_code === GatewayErrorCodes.ALL_PROVIDERS_UNAVAILABLE;
   const excludedFromStats = !!log.excluded_from_stats;
   const codexReasoningGuard = resolveCodexReasoningGuardSummary(log.special_settings_json);
-  const codexReasoningContinuation = resolveCodexReasoningContinuationSummary(
-    log.special_settings_json
-  );
   const codexReasoningGuardHitCount = codexReasoningGuard.count;
-  const codexReasoningContinuationCount = codexReasoningContinuation.count;
   const codexReasoningGuardRuleSuffix = codexReasoningGuard.latestRuleLabel
     ? ` ${codexReasoningGuard.latestRuleLabel}`
     : "";
@@ -362,20 +352,6 @@ export function buildRequestLogAuditMeta(
     );
   }
 
-  if (codexReasoningContinuationCount > 0) {
-    tags.push(
-      auditTag(
-        codexReasoningContinuation.latestStatus === "repaired"
-          ? "思考补救成功"
-          : codexReasoningContinuationCount > 1
-            ? `思考补救 ${codexReasoningContinuationCount}`
-            : "思考补救",
-        "bg-emerald-50/80 text-emerald-700 ring-1 ring-inset ring-emerald-500/10 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-400/20",
-        formatCodexReasoningContinuationSummary(codexReasoningContinuation)
-      )
-    );
-  }
-
   if (excludedFromStats) {
     tags.push(
       auditTag(
@@ -394,13 +370,7 @@ export function buildRequestLogAuditMeta(
   } else if (codexReasoningGuardHitCount > 0) {
     summary = `本次请求${formatCodexReasoningGuardSummaryClause(
       codexReasoningGuard
-    )}，${codexReasoningGuardActionText}${
-      codexReasoningContinuationCount > 0
-        ? `；同时${formatCodexReasoningContinuationSummaryClause(codexReasoningContinuation)}`
-        : ""
-    }。`;
-  } else if (codexReasoningContinuationCount > 0) {
-    summary = formatCodexReasoningContinuationSummary(codexReasoningContinuation);
+    )}，${codexReasoningGuardActionText}。`;
   } else if (isAllProvidersUnavailable) {
     summary = "当前没有可用 Provider，网关未继续向已熔断或冷却中的供应商发起上游请求。";
   } else if (isClientAbort) {

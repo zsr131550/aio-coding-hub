@@ -12,7 +12,7 @@ fn default_codex_reasoning_guard_hit_label() -> String {
 }
 
 fn default_codex_reasoning_guard_active_template_id() -> String {
-    CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string()
+    CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID.to_string()
 }
 
 fn default_codex_reasoning_guard_immediate_retry_budget() -> u32 {
@@ -126,10 +126,27 @@ pub enum CodexReasoningGuardRetryPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum CodexReasoningGuardPostMatchStrategy {
+    RetrySameProvider,
+    #[default]
+    ContinuationRepair,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum CodexReasoningGuardTemplateRuleAction {
     #[default]
     Intercept,
     NoIntercept,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexReasoningGuardTemplateRuleFormula {
+    #[default]
+    ReasoningTokens518NMinus2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
@@ -206,6 +223,7 @@ pub struct CodexReasoningGuardTemplateRule {
     pub id: String,
     pub name: String,
     pub reasoning_tokens: Option<i64>,
+    pub reasoning_tokens_formula: Option<CodexReasoningGuardTemplateRuleFormula>,
     pub action: CodexReasoningGuardTemplateRuleAction,
     pub logic: CodexReasoningGuardTemplateRuleLogic,
     pub filters: Vec<CodexReasoningGuardTemplateFilter>,
@@ -217,6 +235,7 @@ impl Default for CodexReasoningGuardTemplateRule {
             id: String::new(),
             name: String::new(),
             reasoning_tokens: None,
+            reasoning_tokens_formula: None,
             action: CodexReasoningGuardTemplateRuleAction::Intercept,
             logic: CodexReasoningGuardTemplateRuleLogic::And,
             filters: Vec::new(),
@@ -354,6 +373,8 @@ pub struct AppSettings {
     pub codex_reasoning_guard_active_template_id: String,
     #[serde(default)]
     pub codex_reasoning_guard_custom_templates: Vec<CodexReasoningGuardRuleTemplate>,
+    #[serde(default)]
+    pub codex_reasoning_guard_post_match_strategy: CodexReasoningGuardPostMatchStrategy,
     #[serde(default = "default_codex_reasoning_guard_immediate_retry_budget")]
     pub codex_reasoning_guard_immediate_retry_budget: u32,
     #[serde(default = "default_codex_reasoning_guard_delayed_retry_budget")]
@@ -475,8 +496,10 @@ impl Default for AppSettings {
                 .to_vec(),
             codex_reasoning_guard_model_rules: Vec::new(),
             codex_reasoning_guard_active_template_id:
-                CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string(),
+                CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID.to_string(),
             codex_reasoning_guard_custom_templates: Vec::new(),
+            codex_reasoning_guard_post_match_strategy:
+                CodexReasoningGuardPostMatchStrategy::default(),
             codex_reasoning_guard_immediate_retry_budget:
                 DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
             codex_reasoning_guard_delayed_retry_budget:

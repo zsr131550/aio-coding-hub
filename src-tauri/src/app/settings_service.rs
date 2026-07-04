@@ -92,6 +92,8 @@ pub(crate) struct SettingsUpdate {
     pub codex_reasoning_guard_active_template_id: Option<String>,
     pub codex_reasoning_guard_custom_templates:
         Option<Vec<settings::CodexReasoningGuardRuleTemplate>>,
+    pub codex_reasoning_guard_post_match_strategy:
+        Option<settings::CodexReasoningGuardPostMatchStrategy>,
     pub codex_reasoning_guard_immediate_retry_budget: Option<u32>,
     pub codex_reasoning_guard_delayed_retry_budget: Option<u32>,
     pub codex_reasoning_guard_delayed_retry_ms: Option<u32>,
@@ -180,6 +182,7 @@ pub(crate) struct SettingsView {
     pub codex_reasoning_guard_model_rules: Vec<settings::CodexReasoningGuardModelRule>,
     pub codex_reasoning_guard_active_template_id: String,
     pub codex_reasoning_guard_custom_templates: Vec<settings::CodexReasoningGuardRuleTemplate>,
+    pub codex_reasoning_guard_post_match_strategy: settings::CodexReasoningGuardPostMatchStrategy,
     pub codex_reasoning_guard_immediate_retry_budget: u32,
     pub codex_reasoning_guard_delayed_retry_budget: u32,
     pub codex_reasoning_guard_delayed_retry_ms: u32,
@@ -329,6 +332,8 @@ impl From<&settings::AppSettings> for SettingsView {
             codex_reasoning_guard_custom_templates: value
                 .codex_reasoning_guard_custom_templates
                 .clone(),
+            codex_reasoning_guard_post_match_strategy: value
+                .codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget: value
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: value
@@ -677,6 +682,7 @@ pub(crate) async fn settings_set_impl(
         codex_reasoning_guard_model_rules,
         codex_reasoning_guard_active_template_id,
         codex_reasoning_guard_custom_templates,
+        codex_reasoning_guard_post_match_strategy,
         codex_reasoning_guard_immediate_retry_budget,
         codex_reasoning_guard_delayed_retry_budget,
         codex_reasoning_guard_delayed_retry_ms,
@@ -785,6 +791,9 @@ pub(crate) async fn settings_set_impl(
                 .to_string();
             let codex_reasoning_guard_custom_templates = codex_reasoning_guard_custom_templates
                 .unwrap_or(previous.codex_reasoning_guard_custom_templates.clone());
+            let codex_reasoning_guard_post_match_strategy =
+                codex_reasoning_guard_post_match_strategy
+                    .unwrap_or(previous.codex_reasoning_guard_post_match_strategy);
             let codex_reasoning_guard_immediate_retry_budget =
                 codex_reasoning_guard_immediate_retry_budget
                     .unwrap_or(previous.codex_reasoning_guard_immediate_retry_budget);
@@ -961,6 +970,7 @@ pub(crate) async fn settings_set_impl(
                 codex_reasoning_guard_model_rules,
                 codex_reasoning_guard_active_template_id,
                 codex_reasoning_guard_custom_templates,
+                codex_reasoning_guard_post_match_strategy,
                 codex_reasoning_guard_immediate_retry_budget,
                 codex_reasoning_guard_delayed_retry_budget,
                 codex_reasoning_guard_delayed_retry_ms,

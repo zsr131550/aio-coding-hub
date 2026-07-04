@@ -18,6 +18,9 @@ export type CodexReasoningGuardSummary = {
   latestHasReasoningItem: boolean | null;
   latestPhase: string | null;
   latestActionTaken: string | null;
+  latestPostMatchStrategy: string | null;
+  latestStrategyOutcome: string | null;
+  latestContinuationSentRounds: number | null;
   latestExhaustedAction: string | null;
   latestDelayMs: number | null;
   latestBudgetRemaining: number | null;
@@ -257,15 +260,6 @@ export function countCodexReasoningFeatureSpecialSettings(
   return resolveCodexReasoningFeatureSummary(specialSettingsJson).count;
 }
 
-function isCodexReasoningContinuationRepairGuardSetting(
-  setting: ParsedRequestLogSpecialSetting
-): boolean {
-  return (
-    setting.type === "codex_reasoning_guard" &&
-    normalizeSpecialSettingToken(setting.ruleSource)?.toLowerCase() === "continuation_repair"
-  );
-}
-
 function normalizeCodexReasoningGuardCompareSymbol(
   compareMode: unknown,
   compareModeSymbol: unknown
@@ -302,16 +296,16 @@ export function resolveCodexReasoningGuardSummary(
   let latestHasReasoningItem: boolean | null = null;
   let latestPhase: string | null = null;
   let latestActionTaken: string | null = null;
+  let latestPostMatchStrategy: string | null = null;
+  let latestStrategyOutcome: string | null = null;
+  let latestContinuationSentRounds: number | null = null;
   let latestExhaustedAction: string | null = null;
   let latestDelayMs: number | null = null;
   let latestBudgetRemaining: number | null = null;
   let latestBudgetTotal: number | null = null;
 
   for (const setting of settings) {
-    if (
-      setting.type === "codex_reasoning_guard" &&
-      !isCodexReasoningContinuationRepairGuardSetting(setting)
-    ) {
+    if (setting.type === "codex_reasoning_guard") {
       count += 1;
       latestRuleMode = normalizeSpecialSettingToken(setting.ruleMode);
       latestHitSource = normalizeSpecialSettingToken(setting.hitSource);
@@ -322,8 +316,10 @@ export function resolveCodexReasoningGuardSummary(
       const matchedRuleValue = parsedSettingNumber(setting.matchedRuleValue);
       const matchedRuleToken = parsedSettingNumber(setting.matchedRuleToken);
       const matchedRuleName = normalizeSpecialSettingToken(setting.matchedRuleName);
+      const matchedCondition = normalizeSpecialSettingToken(setting.matchedCondition);
       const reasoningTokens = parsedSettingNumber(setting.reasoningTokens);
       latestRuleLabel =
+        matchedCondition ??
         matchedRuleName ??
         (compareSymbol && Number.isFinite(matchedRuleValue)
           ? `${compareSymbol} ${matchedRuleValue}`
@@ -341,6 +337,9 @@ export function resolveCodexReasoningGuardSummary(
       latestPhase = parsedSettingString(setting.guardRetryPhase) || null;
       latestActionTaken =
         parsedSettingString(setting.actionTaken) || parsedSettingString(setting.action) || null;
+      latestPostMatchStrategy = normalizeSpecialSettingToken(setting.guardPostMatchStrategy);
+      latestStrategyOutcome = normalizeSpecialSettingToken(setting.guardStrategyOutcome);
+      latestContinuationSentRounds = parsedSettingNullableNumber(setting.continuationSentRounds);
       latestExhaustedAction = parsedSettingString(setting.guardExhaustedAction) || null;
       const delayMs = parsedSettingNumber(setting.backoffMs);
       const budgetRemaining = parsedSettingNumber(setting.guardBudgetRemaining);
@@ -364,6 +363,9 @@ export function resolveCodexReasoningGuardSummary(
     latestHasReasoningItem,
     latestPhase,
     latestActionTaken,
+    latestPostMatchStrategy,
+    latestStrategyOutcome,
+    latestContinuationSentRounds,
     latestExhaustedAction,
     latestDelayMs,
     latestBudgetRemaining,
@@ -375,6 +377,12 @@ export function resolveCodexReasoningContinuationSummary(
   specialSettingsJson: string | null | undefined
 ): CodexReasoningContinuationSummary {
   const settings = parseRequestLogSpecialSettings(specialSettingsJson);
+  const hasUnifiedContinuationRecords = settings.some(
+    (setting) =>
+      setting.type === "codex_reasoning_guard" &&
+      normalizeSpecialSettingToken(setting.guardPostMatchStrategy) === "continuation_repair" &&
+      normalizeSpecialSettingToken(setting.guardStrategyOutcome) != null
+  );
   let count = 0;
   let repairedCount = 0;
   let nonRepairedCount = 0;
@@ -387,12 +395,41 @@ export function resolveCodexReasoningContinuationSummary(
   let latestReason: string | null = null;
 
   for (const setting of settings) {
-    if (isCodexReasoningContinuationRepairGuardSetting(setting)) {
+    const guardPostMatchStrategy = normalizeSpecialSettingToken(setting.guardPostMatchStrategy);
+    if (
+      setting.type === "codex_reasoning_guard" &&
+      guardPostMatchStrategy === "continuation_repair"
+    ) {
       continuationRepairGuardCount += 1;
+      const outcome = normalizeSpecialSettingToken(setting.guardStrategyOutcome);
+      if (outcome) {
+        count += 1;
+        const status = outcome === "continuation_repaired" ? "repaired" : outcome;
+        const sentRounds = parsedSettingNullableNumber(setting.continuationSentRounds);
+        const nonNegativeSentRounds =
+          sentRounds != null && sentRounds > 0
+            ? Math.floor(sentRounds)
+            : sentRounds === 0
+              ? 0
+              : null;
+        if (status === "repaired") {
+          repairedCount += 1;
+        } else {
+          nonRepairedCount += 1;
+        }
+        latestStatus = status;
+        latestSentRounds = nonNegativeSentRounds;
+        if (nonNegativeSentRounds != null) totalSentRounds += nonNegativeSentRounds;
+        latestReasoningTokens = parsedSettingNullableNumber(setting.reasoningTokens);
+        latestFailureKind = normalizeSpecialSettingToken(setting.continuationFailureKind);
+        latestReason =
+          normalizeSpecialSettingToken(setting.strategyReason) ??
+          normalizeSpecialSettingToken(setting.reason);
+      }
       continue;
     }
 
-    if (setting.type !== "codex_reasoning_continuation") continue;
+    if (setting.type !== "codex_reasoning_continuation" || hasUnifiedContinuationRecords) continue;
 
     count += 1;
     const status = normalizeSpecialSettingToken(setting.status) ?? "unknown";

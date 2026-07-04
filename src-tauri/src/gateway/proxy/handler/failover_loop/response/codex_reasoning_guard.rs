@@ -6,10 +6,11 @@ use crate::gateway::proxy::ErrorCategory;
 use crate::gateway::response_fixer;
 use crate::settings::{
     CodexReasoningGuardCompareMode, CodexReasoningGuardExhaustedAction,
-    CodexReasoningGuardModelRule, CodexReasoningGuardRetryPolicy, CodexReasoningGuardRuleMode,
-    CodexReasoningGuardRuleTemplate, CodexReasoningGuardTemplateFilter,
-    CodexReasoningGuardTemplateFilterField, CodexReasoningGuardTemplateFilterOperator,
-    CodexReasoningGuardTemplateRule, CodexReasoningGuardTemplateRuleAction,
+    CodexReasoningGuardModelRule, CodexReasoningGuardPostMatchStrategy,
+    CodexReasoningGuardRetryPolicy, CodexReasoningGuardRuleMode, CodexReasoningGuardRuleTemplate,
+    CodexReasoningGuardTemplateFilter, CodexReasoningGuardTemplateFilterField,
+    CodexReasoningGuardTemplateFilterOperator, CodexReasoningGuardTemplateRule,
+    CodexReasoningGuardTemplateRuleAction, CodexReasoningGuardTemplateRuleFormula,
     CodexReasoningGuardTemplateRuleLogic,
 };
 use axum::http::StatusCode;
@@ -21,10 +22,11 @@ pub(super) const CODEX_REASONING_GUARD_REASON_CODE: &str = "codex_reasoning_guar
 const CODEX_REASONING_GUARD_RULE_SOURCE_GLOBAL_DEFAULT: &str = "global_default";
 const CODEX_REASONING_GUARD_RULE_SOURCE_MODEL_RULE: &str = "model_rule";
 const CODEX_REASONING_GUARD_RULE_SOURCE_FEATURE: &str = "feature";
-const CODEX_REASONING_GUARD_RULE_SOURCE_CONTINUATION: &str = "continuation_repair";
 const CODEX_REASONING_GUARD_RULE_SOURCE_TEMPLATE_BUILTIN: &str = "template_builtin";
 const CODEX_REASONING_GUARD_RULE_SOURCE_TEMPLATE_CUSTOM: &str = "template_custom";
 const CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_NAME: &str = "Legacy reasoning tokens";
+const CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_NAME: &str =
+    "Reasoning tokens 518*N-2";
 const CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_NAME: &str =
     "Final-answer-only high/xhigh";
 
@@ -57,10 +59,26 @@ pub(super) struct CodexReasoningGuardMatch {
     pub(super) rule_id: Option<String>,
     pub(super) rule_name: Option<String>,
     pub(super) rule_token: Option<i64>,
+    pub(super) rule_formula: Option<CodexReasoningGuardTemplateRuleFormula>,
+    pub(super) matched_condition: Option<String>,
     pub(super) matched_filter_ids: Vec<String>,
 }
 
 impl CodexReasoningGuardMatch {
+    fn reasoning_token_condition_summary(&self) -> String {
+        if let Some(condition) = self.matched_condition.as_deref() {
+            return condition.to_string();
+        }
+
+        format!(
+            "{} {}",
+            self.compare_mode.map(compare_mode_symbol).unwrap_or("?"),
+            self.matched_rule_value
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        )
+    }
+
     fn reason_summary(&self, budget: CodexReasoningGuardBudgetDecision) -> String {
         let template = self
             .template_id
@@ -74,10 +92,9 @@ impl CodexReasoningGuardMatch {
             .unwrap_or_default();
         match self.hit_source {
             CodexReasoningGuardHitSource::ReasoningTokens => format!(
-                "codex reasoning guard matched reasoning_tokens={} {} {} via {} ({}){}{} rule_action={:?} hit={} phase={} action={}",
+                "codex reasoning guard matched reasoning_tokens={} {} via {} ({}){}{} rule_action={:?} hit={} phase={} action={}",
                 self.reasoning_tokens.unwrap_or_default(),
-                self.compare_mode.map(compare_mode_symbol).unwrap_or("?"),
-                self.matched_rule_value.unwrap_or_default(),
+                self.reasoning_token_condition_summary(),
                 self.pointer.unwrap_or(""),
                 self.rule_source,
                 template,
@@ -118,10 +135,9 @@ impl CodexReasoningGuardMatch {
             .unwrap_or_default();
         match self.hit_source {
             CodexReasoningGuardHitSource::ReasoningTokens => format!(
-                "codex reasoning guard decision matched reasoning_tokens={} {} {} via {} ({}){}{} rule_action={:?} action=allow",
+                "codex reasoning guard decision matched reasoning_tokens={} {} via {} ({}){}{} rule_action={:?} action=allow",
                 self.reasoning_tokens.unwrap_or_default(),
-                self.compare_mode.map(compare_mode_symbol).unwrap_or("?"),
-                self.matched_rule_value.unwrap_or_default(),
+                self.reasoning_token_condition_summary(),
                 self.pointer.unwrap_or(""),
                 self.rule_source,
                 template,
@@ -219,6 +235,8 @@ fn detect_from_json(
                 rule_id: None,
                 rule_name: None,
                 rule_token: Some(matched_rule_value),
+                rule_formula: None,
+                matched_condition: None,
                 matched_filter_ids: Vec::new(),
             });
         }
@@ -254,38 +272,6 @@ pub(super) struct CodexReasoningGuardDecisionEvaluationInput<'a> {
 pub(super) struct CodexReasoningGuardEvaluationDecision {
     pub(super) action: CodexReasoningGuardTemplateRuleAction,
     pub(super) matched: CodexReasoningGuardMatch,
-}
-
-pub(super) fn continuation_repair_match(
-    reasoning_tokens: Option<i64>,
-    pointer: Option<&'static str>,
-    requested_model: Option<&str>,
-    feature_sample: Option<&CodexReasoningFeatureSample>,
-) -> CodexReasoningGuardMatch {
-    CodexReasoningGuardMatch {
-        rule_mode: CodexReasoningGuardRuleMode::ReasoningTokens,
-        hit_source: CodexReasoningGuardHitSource::ReasoningTokens,
-        reasoning_tokens,
-        pointer,
-        compare_mode: Some(CodexReasoningGuardCompareMode::Equals),
-        matched_rule_value: reasoning_tokens,
-        requested_model: requested_model.map(ToOwned::to_owned),
-        rule_source: CODEX_REASONING_GUARD_RULE_SOURCE_CONTINUATION,
-        rule_model: None,
-        request_reasoning_effort: feature_sample
-            .and_then(|sample| sample.request_reasoning_effort.clone()),
-        final_answer_only: feature_sample.and_then(|sample| sample.final_answer_only),
-        commentary_observed: feature_sample.and_then(|sample| sample.commentary_observed),
-        has_tool_call: feature_sample.and_then(|sample| sample.has_tool_call),
-        has_reasoning_item: feature_sample.and_then(|sample| sample.has_reasoning_item),
-        rule_action: CodexReasoningGuardTemplateRuleAction::Intercept,
-        template_id: Some("builtin-continuation-repair".to_string()),
-        template_name: Some("Continuation repair".to_string()),
-        rule_id: Some("continuation-518n-minus-2".to_string()),
-        rule_name: Some("reasoning_tokens == 518*n-2".to_string()),
-        rule_token: reasoning_tokens,
-        matched_filter_ids: Vec::new(),
-    }
 }
 
 #[allow(dead_code)]
@@ -378,6 +364,11 @@ fn resolve_template(
             rules: Vec::new(),
         };
     }
+    if active_template_id
+        == crate::settings::CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
+    {
+        return reasoning_tokens_518n_minus_2_template();
+    }
 
     if let Some(template) = custom_templates
         .iter()
@@ -394,6 +385,26 @@ fn resolve_template(
     legacy_reasoning_tokens_template()
 }
 
+fn reasoning_tokens_518n_minus_2_template() -> ResolvedGuardTemplate {
+    ResolvedGuardTemplate {
+        id: crate::settings::CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
+            .to_string(),
+        name: CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_NAME.to_string(),
+        source: CODEX_REASONING_GUARD_RULE_SOURCE_TEMPLATE_BUILTIN,
+        rules: vec![CodexReasoningGuardTemplateRule {
+            id: "reasoning-tokens-518n-minus-2".to_string(),
+            name: "reasoning_tokens == 518*N-2".to_string(),
+            reasoning_tokens: None,
+            reasoning_tokens_formula: Some(
+                CodexReasoningGuardTemplateRuleFormula::ReasoningTokens518NMinus2,
+            ),
+            action: CodexReasoningGuardTemplateRuleAction::Intercept,
+            logic: CodexReasoningGuardTemplateRuleLogic::And,
+            filters: Vec::new(),
+        }],
+    }
+}
+
 fn legacy_reasoning_tokens_template() -> ResolvedGuardTemplate {
     ResolvedGuardTemplate {
         id: crate::settings::CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string(),
@@ -407,6 +418,7 @@ fn legacy_reasoning_tokens_template() -> ResolvedGuardTemplate {
                 id: format!("builtin-token-{value}-{index}"),
                 name: format!("reasoning_tokens == {value}"),
                 reasoning_tokens: Some(value),
+                reasoning_tokens_formula: None,
                 action: CodexReasoningGuardTemplateRuleAction::Intercept,
                 logic: CodexReasoningGuardTemplateRuleLogic::And,
                 filters: Vec::new(),
@@ -429,6 +441,7 @@ fn evaluate_template(
             "builtin-final-answer-only-high-xhigh",
             CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_NAME,
             None,
+            None,
             Vec::new(),
             CodexReasoningGuardTemplateRuleAction::Intercept,
         );
@@ -439,18 +452,20 @@ fn evaluate_template(
     }
 
     let fields = NormalizedTemplateFields::from_input(&input);
-    let concrete_rules = fields.reasoning_tokens.and_then(|reasoning_tokens| {
+    let concrete_rules = fields.reasoning_tokens.and_then(|_| {
         template
             .rules
             .iter()
-            .filter(|rule| rule.reasoning_tokens == Some(reasoning_tokens))
+            .filter(|rule| template_rule_condition_matches(rule, &fields))
             .find_map(|rule| evaluate_template_rule(rule, &fields).map(|ids| (rule, ids)))
     });
     let wildcard_rule = || {
         template
             .rules
             .iter()
-            .filter(|rule| rule.reasoning_tokens.is_none())
+            .filter(|rule| {
+                rule.reasoning_tokens.is_none() && rule.reasoning_tokens_formula.is_none()
+            })
             .find_map(|rule| evaluate_template_rule(rule, &fields).map(|ids| (rule, ids)))
     };
     let (rule, matched_filter_ids) = concrete_rules.or_else(wildcard_rule)?;
@@ -478,6 +493,8 @@ fn evaluate_template(
         rule_id: None,
         rule_name: None,
         rule_token: rule.reasoning_tokens,
+        rule_formula: rule.reasoning_tokens_formula,
+        matched_condition: rule_condition_label(rule, fields.reasoning_tokens),
         matched_filter_ids: Vec::new(),
     };
     let rule_id = rule.id.trim();
@@ -496,6 +513,7 @@ fn evaluate_template(
             rule_name
         },
         rule.reasoning_tokens,
+        rule.reasoning_tokens_formula,
         matched_filter_ids,
         rule.action,
     );
@@ -506,12 +524,32 @@ fn evaluate_template(
     })
 }
 
+fn template_rule_condition_matches(
+    rule: &CodexReasoningGuardTemplateRule,
+    fields: &NormalizedTemplateFields,
+) -> bool {
+    if let Some(token) = rule.reasoning_tokens {
+        return fields.reasoning_tokens == Some(token);
+    }
+    if let Some(formula) = rule.reasoning_tokens_formula {
+        return match formula {
+            CodexReasoningGuardTemplateRuleFormula::ReasoningTokens518NMinus2 => {
+                super::codex_reasoning_continuation::is_truncation_continuation_pattern(
+                    fields.reasoning_tokens,
+                )
+            }
+        };
+    }
+    true
+}
+
 fn apply_template_evidence(
     matched: &mut CodexReasoningGuardMatch,
     template: &ResolvedGuardTemplate,
     rule_id: &str,
     rule_name: &str,
     rule_token: Option<i64>,
+    rule_formula: Option<CodexReasoningGuardTemplateRuleFormula>,
     matched_filter_ids: Vec<String>,
     action: CodexReasoningGuardTemplateRuleAction,
 ) {
@@ -521,6 +559,7 @@ fn apply_template_evidence(
     matched.rule_id = Some(rule_id.to_string());
     matched.rule_name = Some(rule_name.to_string());
     matched.rule_token = rule_token;
+    matched.rule_formula = rule_formula;
     matched.matched_filter_ids = matched_filter_ids;
     matched.rule_action = action;
 }
@@ -532,6 +571,17 @@ fn matched_template_rule_value(
 ) -> (Option<CodexReasoningGuardCompareMode>, Option<i64>) {
     if let Some(value) = rule.reasoning_tokens {
         return (Some(CodexReasoningGuardCompareMode::Equals), Some(value));
+    }
+    if let Some(CodexReasoningGuardTemplateRuleFormula::ReasoningTokens518NMinus2) =
+        rule.reasoning_tokens_formula
+    {
+        if super::codex_reasoning_continuation::is_truncation_continuation_pattern(reasoning_tokens)
+        {
+            return (
+                Some(CodexReasoningGuardCompareMode::Equals),
+                reasoning_tokens,
+            );
+        }
     }
 
     let Some(reasoning_tokens) = reasoning_tokens else {
@@ -569,6 +619,24 @@ fn matched_template_rule_value(
         );
     }
     (None, None)
+}
+
+fn rule_condition_label(
+    rule: &CodexReasoningGuardTemplateRule,
+    reasoning_tokens: Option<i64>,
+) -> Option<String> {
+    if let Some(token) = rule.reasoning_tokens {
+        return Some(format!("reasoning_tokens == {token}"));
+    }
+    if let Some(CodexReasoningGuardTemplateRuleFormula::ReasoningTokens518NMinus2) =
+        rule.reasoning_tokens_formula
+    {
+        if super::codex_reasoning_continuation::is_truncation_continuation_pattern(reasoning_tokens)
+        {
+            return Some("reasoning_tokens == 518*N-2".to_string());
+        }
+    }
+    None
 }
 
 fn number_filter_value_to_i64(value: f64) -> Option<i64> {
@@ -899,6 +967,8 @@ fn detect_final_answer_only_high_xhigh(
         rule_id: None,
         rule_name: None,
         rule_token: None,
+        rule_formula: None,
+        matched_condition: None,
         matched_filter_ids: Vec::new(),
     })
 }
@@ -963,6 +1033,15 @@ fn compare_mode_symbol(compare_mode: CodexReasoningGuardCompareMode) -> &'static
     }
 }
 
+pub(super) fn post_match_strategy_label(
+    strategy: CodexReasoningGuardPostMatchStrategy,
+) -> &'static str {
+    match strategy {
+        CodexReasoningGuardPostMatchStrategy::RetrySameProvider => "retry_same_provider",
+        CodexReasoningGuardPostMatchStrategy::ContinuationRepair => "continuation_repair",
+    }
+}
+
 pub(super) fn push_special_setting(
     special_settings: &Arc<Mutex<Vec<serde_json::Value>>>,
     provider_id: i64,
@@ -970,6 +1049,37 @@ pub(super) fn push_special_setting(
     retry_index: u32,
     matched: &CodexReasoningGuardMatch,
     budget: CodexReasoningGuardBudgetDecision,
+) {
+    push_special_setting_with_strategy(
+        special_settings,
+        provider_id,
+        provider_name,
+        retry_index,
+        matched,
+        budget,
+        CodexReasoningGuardPostMatchStrategy::RetrySameProvider,
+        Some(budget.action_taken),
+        None,
+        None,
+        None,
+        StatusCode::BAD_GATEWAY.as_u16(),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn push_special_setting_with_strategy(
+    special_settings: &Arc<Mutex<Vec<serde_json::Value>>>,
+    provider_id: i64,
+    provider_name: &str,
+    retry_index: u32,
+    matched: &CodexReasoningGuardMatch,
+    budget: CodexReasoningGuardBudgetDecision,
+    post_match_strategy: CodexReasoningGuardPostMatchStrategy,
+    strategy_outcome: Option<&str>,
+    continuation_sent_rounds: Option<u32>,
+    continuation_failure_kind: Option<&str>,
+    strategy_reason: Option<&str>,
+    display_status: u16,
 ) {
     let mut setting = serde_json::json!({
             "type": "codex_reasoning_guard",
@@ -994,7 +1104,7 @@ pub(super) fn push_special_setting(
             "hasReasoningItem": matched.has_reasoning_item,
             "retryAttemptNumber": retry_index,
             "retryAttemptNumberNext": retry_index.saturating_add(1),
-            "displayStatus": StatusCode::BAD_GATEWAY.as_u16(),
+            "displayStatus": display_status,
             "action": budget.action_taken,
             "actionTaken": budget.action_taken,
             "backoffApplied": budget.delay_ms > 0,
@@ -1015,6 +1125,28 @@ pub(super) fn push_special_setting(
             "guardRetryWaveExhausted": budget.retry_wave.map(|wave| wave.exhausted),
             "reason": matched.reason_summary(budget),
     });
+    if let Some(object) = setting.as_object_mut() {
+        object.insert(
+            "guardPostMatchStrategy".to_string(),
+            serde_json::Value::String(post_match_strategy_label(post_match_strategy).to_string()),
+        );
+        object.insert(
+            "guardStrategyOutcome".to_string(),
+            serde_json::to_value(strategy_outcome).unwrap_or(serde_json::Value::Null),
+        );
+        object.insert(
+            "continuationSentRounds".to_string(),
+            serde_json::to_value(continuation_sent_rounds).unwrap_or(serde_json::Value::Null),
+        );
+        object.insert(
+            "continuationFailureKind".to_string(),
+            serde_json::to_value(continuation_failure_kind).unwrap_or(serde_json::Value::Null),
+        );
+        object.insert(
+            "strategyReason".to_string(),
+            serde_json::to_value(strategy_reason).unwrap_or(serde_json::Value::Null),
+        );
+    }
     insert_template_match_evidence(&mut setting, matched);
     response_fixer::push_special_setting(special_settings, setting);
 }
@@ -1086,6 +1218,14 @@ fn insert_template_match_evidence(
         serde_json::to_value(matched.rule_token).unwrap_or(serde_json::Value::Null),
     );
     object.insert(
+        "matchedRuleFormula".to_string(),
+        serde_json::to_value(matched.rule_formula).unwrap_or(serde_json::Value::Null),
+    );
+    object.insert(
+        "matchedCondition".to_string(),
+        serde_json::to_value(&matched.matched_condition).unwrap_or(serde_json::Value::Null),
+    );
+    object.insert(
         "matchedRuleAction".to_string(),
         serde_json::to_value(matched.rule_action).unwrap_or(serde_json::Value::Null),
     );
@@ -1130,6 +1270,81 @@ pub(super) struct CodexReasoningGuardBudgetConfig {
     pub(super) concurrent_max_attempts: u32,
 }
 
+fn exhausted_action_label(action: CodexReasoningGuardExhaustedAction) -> &'static str {
+    match action {
+        CodexReasoningGuardExhaustedAction::ReturnError => "return_error",
+        CodexReasoningGuardExhaustedAction::SwitchProvider => "switch_provider",
+        CodexReasoningGuardExhaustedAction::SwitchModel => "switch_model",
+    }
+}
+
+fn exhausted_budget_action(
+    action: CodexReasoningGuardExhaustedAction,
+) -> CodexReasoningGuardBudgetAction {
+    match action {
+        CodexReasoningGuardExhaustedAction::ReturnError => {
+            CodexReasoningGuardBudgetAction::ReturnError
+        }
+        CodexReasoningGuardExhaustedAction::SwitchProvider => {
+            CodexReasoningGuardBudgetAction::SwitchProvider
+        }
+        CodexReasoningGuardExhaustedAction::SwitchModel => {
+            CodexReasoningGuardBudgetAction::SwitchModel
+        }
+    }
+}
+
+fn exhausted_action_taken(action: CodexReasoningGuardExhaustedAction) -> &'static str {
+    match action {
+        CodexReasoningGuardExhaustedAction::ReturnError => "return_guard_error_no_circuit",
+        CodexReasoningGuardExhaustedAction::SwitchProvider => "switch_provider_no_circuit",
+        CodexReasoningGuardExhaustedAction::SwitchModel => "switch_model_no_circuit",
+    }
+}
+
+pub(super) fn continuation_repaired_decision(
+    current_hits: u32,
+    immediate_budget: u32,
+    sent_rounds: u32,
+    exhausted_action: CodexReasoningGuardExhaustedAction,
+) -> CodexReasoningGuardBudgetDecision {
+    let hit_number = current_hits.saturating_add(1);
+    CodexReasoningGuardBudgetDecision {
+        action: CodexReasoningGuardBudgetAction::RetrySameProvider,
+        hit_number,
+        phase: "continuation",
+        delay_ms: 0,
+        retry_wave: None,
+        immediate_budget,
+        delayed_budget: 0,
+        total_budget: immediate_budget,
+        remaining_budget: immediate_budget.saturating_sub(sent_rounds),
+        exhausted_action: exhausted_action_label(exhausted_action),
+        action_taken: "continuation_repaired",
+    }
+}
+
+pub(super) fn continuation_exhausted_decision(
+    current_hits: u32,
+    immediate_budget: u32,
+    exhausted_action: CodexReasoningGuardExhaustedAction,
+) -> CodexReasoningGuardBudgetDecision {
+    let hit_number = current_hits.saturating_add(1);
+    CodexReasoningGuardBudgetDecision {
+        action: exhausted_budget_action(exhausted_action),
+        hit_number,
+        phase: "continuation_exhausted",
+        delay_ms: 0,
+        retry_wave: None,
+        immediate_budget,
+        delayed_budget: 0,
+        total_budget: immediate_budget,
+        remaining_budget: 0,
+        exhausted_action: exhausted_action_label(exhausted_action),
+        action_taken: exhausted_action_taken(exhausted_action),
+    }
+}
+
 pub(super) fn budget_decision(
     current_hits: u32,
     config: CodexReasoningGuardBudgetConfig,
@@ -1145,11 +1360,7 @@ pub(super) fn budget_decision(
         config.concurrent_interval_ms,
         config.concurrent_max_attempts,
     );
-    let exhausted_action_label = match config.exhausted_action {
-        CodexReasoningGuardExhaustedAction::ReturnError => "return_error",
-        CodexReasoningGuardExhaustedAction::SwitchProvider => "switch_provider",
-        CodexReasoningGuardExhaustedAction::SwitchModel => "switch_model",
-    };
+    let exhausted_action_label_value = exhausted_action_label(config.exhausted_action);
 
     if hit_number <= config.immediate_budget && !wave.exhausted {
         return CodexReasoningGuardBudgetDecision {
@@ -1162,7 +1373,7 @@ pub(super) fn budget_decision(
             delayed_budget: config.delayed_budget,
             total_budget,
             remaining_budget: total_budget.saturating_sub(hit_number),
-            exhausted_action: exhausted_action_label,
+            exhausted_action: exhausted_action_label_value,
             action_taken: "retry_same_provider_no_circuit",
         };
     }
@@ -1178,7 +1389,7 @@ pub(super) fn budget_decision(
             delayed_budget: config.delayed_budget,
             total_budget,
             remaining_budget: total_budget.saturating_sub(hit_number),
-            exhausted_action: exhausted_action_label,
+            exhausted_action: exhausted_action_label_value,
             action_taken: "retry_same_provider_delayed_no_circuit",
         };
     }
@@ -1194,7 +1405,7 @@ pub(super) fn budget_decision(
             delayed_budget: config.delayed_budget,
             total_budget,
             remaining_budget: 0,
-            exhausted_action: exhausted_action_label,
+            exhausted_action: exhausted_action_label_value,
             action_taken: "return_guard_error_no_circuit",
         },
         CodexReasoningGuardExhaustedAction::SwitchProvider => CodexReasoningGuardBudgetDecision {
@@ -1207,7 +1418,7 @@ pub(super) fn budget_decision(
             delayed_budget: config.delayed_budget,
             total_budget,
             remaining_budget: 0,
-            exhausted_action: exhausted_action_label,
+            exhausted_action: exhausted_action_label_value,
             action_taken: "switch_provider_no_circuit",
         },
         CodexReasoningGuardExhaustedAction::SwitchModel => CodexReasoningGuardBudgetDecision {
@@ -1220,7 +1431,7 @@ pub(super) fn budget_decision(
             delayed_budget: config.delayed_budget,
             total_budget,
             remaining_budget: 0,
-            exhausted_action: exhausted_action_label,
+            exhausted_action: exhausted_action_label_value,
             action_taken: "switch_model_no_circuit",
         },
     }
@@ -1396,6 +1607,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             reasoning_tokens,
+            reasoning_tokens_formula: None,
             action,
             logic: CodexReasoningGuardTemplateRuleLogic::And,
             filters,

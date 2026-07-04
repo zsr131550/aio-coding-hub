@@ -127,7 +127,7 @@ describe("services/gateway/requestLogSpecialSettings", () => {
     });
   });
 
-  it("excludes continuation repair budget retries from ordinary Codex reasoning guard hits", () => {
+  it("counts continuation repair guard records as ordinary Codex reasoning guard hits", () => {
     const specialSettings = JSON.stringify([
       {
         type: "codex_reasoning_guard",
@@ -143,9 +143,9 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       },
     ]);
 
-    expect(countCodexReasoningGuardSpecialSettings(specialSettings)).toBe(1);
+    expect(countCodexReasoningGuardSpecialSettings(specialSettings)).toBe(2);
     expect(resolveCodexReasoningGuardSummary(specialSettings)).toMatchObject({
-      count: 1,
+      count: 2,
       latestRuleLabel: "<= 300",
       latestReasoningTokens: 300,
     });
@@ -159,7 +159,7 @@ describe("services/gateway/requestLogSpecialSettings", () => {
           },
         ])
       )
-    ).toBe(0);
+    ).toBe(1);
 
     const mixedSpecialSettings = JSON.stringify([
       {
@@ -179,13 +179,19 @@ describe("services/gateway/requestLogSpecialSettings", () => {
         ruleSource: " Continuation_Repair ",
         matchedRuleName: "reasoning_tokens == 518*n-2",
         reasoningTokens: 516,
+        guardPostMatchStrategy: "continuation_repair",
+        guardStrategyOutcome: "continuation_repaired",
+        continuationSentRounds: 2,
       },
     ]);
-    expect(countCodexReasoningGuardSpecialSettings(mixedSpecialSettings)).toBe(1);
+    expect(countCodexReasoningGuardSpecialSettings(mixedSpecialSettings)).toBe(2);
     expect(resolveCodexReasoningGuardSummary(mixedSpecialSettings)).toMatchObject({
-      count: 1,
-      latestRuleLabel: "<= 516",
-      latestReasoningTokens: 300,
+      count: 2,
+      latestRuleLabel: "reasoning_tokens == 518*n-2",
+      latestReasoningTokens: 516,
+      latestPostMatchStrategy: "continuation_repair",
+      latestStrategyOutcome: "continuation_repaired",
+      latestContinuationSentRounds: 2,
     });
     expect(resolveCodexReasoningContinuationSummary(mixedSpecialSettings)).toMatchObject({
       count: 1,
@@ -210,6 +216,9 @@ describe("services/gateway/requestLogSpecialSettings", () => {
         ruleSource: "continuation_repair",
         matchedRuleName: "reasoning_tokens == 518*n-2",
         reasoningTokens: 516,
+        guardPostMatchStrategy: "continuation_repair",
+        guardStrategyOutcome: "continuation_repaired",
+        continuationSentRounds: 2,
       },
       {
         type: "codex_reasoning_continuation",
@@ -220,14 +229,14 @@ describe("services/gateway/requestLogSpecialSettings", () => {
     ]);
 
     expect(resolveCodexReasoningContinuationSummary(specialSettings)).toEqual({
-      count: 2,
+      count: 1,
       repairedCount: 1,
-      nonRepairedCount: 1,
+      nonRepairedCount: 0,
       continuationRepairGuardCount: 1,
       latestStatus: "repaired",
       latestSentRounds: 2,
-      totalSentRounds: 3,
-      latestReasoningTokens: 51,
+      totalSentRounds: 2,
+      latestReasoningTokens: 516,
       latestFailureKind: null,
       latestReason: null,
     });
@@ -276,6 +285,9 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       latestHasReasoningItem: null,
       latestPhase: "delayed",
       latestActionTaken: "retry_same_provider_delayed_no_circuit",
+      latestPostMatchStrategy: null,
+      latestStrategyOutcome: null,
+      latestContinuationSentRounds: null,
       latestExhaustedAction: "return_error",
       latestDelayMs: 1000,
       latestBudgetRemaining: 4,

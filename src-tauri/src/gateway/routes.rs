@@ -4539,6 +4539,8 @@ mod tests {
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         app_settings.codex_reasoning_guard_exhausted_action =
             settings::CodexReasoningGuardExhaustedAction::ReturnError;
+        app_settings.codex_reasoning_guard_post_match_strategy =
+            settings::CodexReasoningGuardPostMatchStrategy::RetrySameProvider;
         disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
 
@@ -4624,6 +4626,98 @@ mod tests {
         assert_eq!(
             guard_settings[1].get("actionTaken").and_then(Value::as_str),
             Some("return_guard_error_no_circuit")
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_reasoning_guard_default_non_stream_continuation_strategy_returns_unsupported() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 1;
+        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
+        app_settings.codex_reasoning_guard_exhausted_action =
+            settings::CodexReasoningGuardExhaustedAction::ReturnError;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-guard-default-unsupported.sqlite"))
+            .expect("init test db");
+        let guard_body = r#"{"id":"resp-guard","object":"response","usage":{"output_tokens_details":{"reasoning_tokens":516}},"output":[]}"#;
+        let (upstream_base_url, hit_count, upstream_task) =
+            spawn_repeating_json_upstream(guard_body, 2).await;
+        let provider_id = insert_codex_provider_with_priority(
+            &db,
+            "Guard Default Unsupported Stub",
+            upstream_base_url,
+            0,
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/codex/_aio/provider/{provider_id}/v1/responses"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-guard-default","input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(hit_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("codex_reasoning_guard_exhausted")
+        );
+
+        let special_settings: Value = serde_json::from_str(
+            log.special_settings_json
+                .as_deref()
+                .expect("special settings json"),
+        )
+        .expect("special settings json parses");
+        let guard_setting = special_settings
+            .as_array()
+            .expect("special settings array")
+            .iter()
+            .find(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
+            })
+            .expect("guard setting");
+        assert_eq!(
+            guard_setting
+                .get("guardPostMatchStrategy")
+                .and_then(Value::as_str),
+            Some("continuation_repair")
+        );
+        assert_eq!(
+            guard_setting
+                .get("guardStrategyOutcome")
+                .and_then(Value::as_str),
+            Some("unsupported")
+        );
+        assert_eq!(
+            guard_setting
+                .get("continuationSentRounds")
+                .and_then(Value::as_u64),
+            Some(0)
         );
 
         upstream_task.abort();
@@ -4840,6 +4934,7 @@ mod tests {
                         id: "gpt-55-token-516".to_string(),
                         name: "gpt-5.5 reasoning_tokens == 516".to_string(),
                         reasoning_tokens: Some(516),
+                        reasoning_tokens_formula: None,
                         action: settings::CodexReasoningGuardTemplateRuleAction::Intercept,
                         logic: settings::CodexReasoningGuardTemplateRuleLogic::And,
                         filters: vec![settings::CodexReasoningGuardTemplateFilter {
@@ -4856,6 +4951,7 @@ mod tests {
                         id: "gpt-54-token-999".to_string(),
                         name: "gpt-5.4 reasoning_tokens == 999".to_string(),
                         reasoning_tokens: Some(999),
+                        reasoning_tokens_formula: None,
                         action: settings::CodexReasoningGuardTemplateRuleAction::Intercept,
                         logic: settings::CodexReasoningGuardTemplateRuleLogic::And,
                         filters: vec![settings::CodexReasoningGuardTemplateFilter {
@@ -6106,6 +6202,7 @@ mod tests {
                     id: "allow-all".to_string(),
                     name: "Allow all".to_string(),
                     reasoning_tokens: None,
+                    reasoning_tokens_formula: None,
                     action: settings::CodexReasoningGuardTemplateRuleAction::NoIntercept,
                     logic: settings::CodexReasoningGuardTemplateRuleLogic::And,
                     filters: Vec::new(),

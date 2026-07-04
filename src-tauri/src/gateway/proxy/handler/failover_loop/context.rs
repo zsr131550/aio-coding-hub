@@ -46,6 +46,8 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_active_template_id: &'a str,
     pub(super) codex_reasoning_guard_custom_templates:
         &'a [crate::settings::CodexReasoningGuardRuleTemplate],
+    pub(super) codex_reasoning_guard_post_match_strategy:
+        crate::settings::CodexReasoningGuardPostMatchStrategy,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -96,6 +98,8 @@ pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_active_template_id: &'a str,
     pub(super) codex_reasoning_guard_custom_templates:
         &'a [crate::settings::CodexReasoningGuardRuleTemplate],
+    pub(super) codex_reasoning_guard_post_match_strategy:
+        crate::settings::CodexReasoningGuardPostMatchStrategy,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -154,6 +158,8 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
             codex_reasoning_guard_model_rules: args.codex_reasoning_guard_model_rules,
             codex_reasoning_guard_active_template_id: args.codex_reasoning_guard_active_template_id,
             codex_reasoning_guard_custom_templates: args.codex_reasoning_guard_custom_templates,
+            codex_reasoning_guard_post_match_strategy: args
+                .codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget: args
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: args
@@ -213,6 +219,8 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_active_template_id: String,
     pub(super) codex_reasoning_guard_custom_templates:
         Vec<crate::settings::CodexReasoningGuardRuleTemplate>,
+    pub(super) codex_reasoning_guard_post_match_strategy:
+        crate::settings::CodexReasoningGuardPostMatchStrategy,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -223,7 +231,9 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
+    #[allow(dead_code)]
     pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
+    #[allow(dead_code)]
     pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
     pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_response_fixer: bool,
@@ -263,6 +273,8 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
             codex_reasoning_guard_custom_templates: ctx
                 .codex_reasoning_guard_custom_templates
                 .to_vec(),
+            codex_reasoning_guard_post_match_strategy: ctx
+                .codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget: ctx
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: ctx

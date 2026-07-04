@@ -21,6 +21,7 @@ import type {
   AppSettings,
   CodexHomeMode,
   CodexReasoningGuardExhaustedAction,
+  CodexReasoningGuardPostMatchStrategy,
   CodexReasoningGuardRetryPolicy,
   CodexReasoningGuardTemplateFilter,
   CodexReasoningGuardTemplateFilterField,
@@ -32,16 +33,16 @@ import type {
 import {
   CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID,
   CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
+  CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID,
   DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
   DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX,
   DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
   DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS,
-  DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
-  DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED,
   DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
   DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
   DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION,
   DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
+  DEFAULT_CODEX_REASONING_GUARD_POST_MATCH_STRATEGY,
   DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS,
   DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY,
   DEFAULT_CODEX_REASONING_GUARD_RULE_MODE,
@@ -53,7 +54,6 @@ import {
   MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX,
   MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
   MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS,
-  MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
   MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
   MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
   MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
@@ -119,17 +119,31 @@ type CodexReasoningGuardStatsDateRange = {
   startDate: string;
   endDate: string;
 };
-type CodexReasoningGuardStatsRangePopoverScope =
-  | "overview"
-  | "details"
-  | "continuationOverview"
-  | "continuationDetails";
+type CodexReasoningGuardStatsRangePopoverScope = "overview" | "details";
 type CodexReasoningGuardTemplateOption = CodexReasoningGuardRuleTemplate & {
   source: "builtin" | "custom";
   readOnly: boolean;
 };
 
 const CODEX_REASONING_GUARD_BUILTIN_TEMPLATES: CodexReasoningGuardTemplateOption[] = [
+  {
+    id: CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID,
+    name: "Reasoning tokens 518*N-2",
+    description: "拦截 reasoning_tokens 满足 518*N-2 的 Codex 截断续写特征。",
+    source: "builtin",
+    readOnly: true,
+    rules: [
+      {
+        id: "builtin-518n-minus-2",
+        name: "reasoning_tokens == 518*N-2",
+        reasoning_tokens: null,
+        reasoning_tokens_formula: "reasoning_tokens_518n_minus_2",
+        action: "intercept",
+        logic: "and",
+        filters: [],
+      },
+    ],
+  },
   {
     id: CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
     name: "Legacy reasoning tokens",
@@ -140,6 +154,7 @@ const CODEX_REASONING_GUARD_BUILTIN_TEMPLATES: CodexReasoningGuardTemplateOption
       id: `builtin-token-${value}`,
       name: `reasoning_tokens == ${value}`,
       reasoning_tokens: value,
+      reasoning_tokens_formula: null,
       action: "intercept",
       logic: "and",
       filters: [],
@@ -157,6 +172,7 @@ const CODEX_REASONING_GUARD_BUILTIN_TEMPLATES: CodexReasoningGuardTemplateOption
         id: "builtin-reasoning-zero-allow",
         name: "reasoning_tokens == 0 allow",
         reasoning_tokens: 0,
+        reasoning_tokens_formula: null,
         action: "no_intercept",
         logic: "and",
         filters: [],
@@ -165,6 +181,7 @@ const CODEX_REASONING_GUARD_BUILTIN_TEMPLATES: CodexReasoningGuardTemplateOption
         id: "builtin-final-answer-only-high-xhigh",
         name: "final answer only high/xhigh",
         reasoning_tokens: null,
+        reasoning_tokens_formula: null,
         action: "intercept",
         logic: "and",
         filters: [
@@ -239,6 +256,7 @@ function formatCodexReasoningGuardDecimal(value: number | null | undefined) {
 
 function formatCodexReasoningContinuationStatusLabel(status: string | null | undefined) {
   switch ((status ?? "").trim()) {
+    case "continuation_repaired":
     case "repaired":
       return "已修复";
     case "missing_encrypted":
@@ -246,9 +264,13 @@ function formatCodexReasoningContinuationStatusLabel(status: string | null | und
     case "capped_max_output_tokens":
       return "达到 output 上限";
     case "still_matched":
-      return "达到续写轮数";
+      return "仍命中";
     case "failed":
       return "补救失败";
+    case "unsupported":
+      return "不支持";
+    case "unavailable":
+      return "不可用";
     case "unknown":
       return "未知状态";
     default:
@@ -280,6 +302,12 @@ function formatCodexReasoningGuardExhaustedActionLabel(action: CodexReasoningGua
 
 function formatCodexReasoningGuardRetryPolicyLabel(policy: CodexReasoningGuardRetryPolicy) {
   return policy === "concurrent" ? "并发重试" : "单路重试";
+}
+
+function formatCodexReasoningGuardPostMatchStrategyLabel(
+  strategy: CodexReasoningGuardPostMatchStrategy
+) {
+  return strategy === "continuation_repair" ? "思考续写" : "自动重试";
 }
 
 function formatCodexReasoningGuardModelFallbacks(models: string[] | null | undefined) {
@@ -382,6 +410,7 @@ function buildCodexReasoningGuardRule(id: string): CodexReasoningGuardTemplateRu
     id,
     name: "New rule",
     reasoning_tokens: null,
+    reasoning_tokens_formula: null,
     action: "intercept",
     logic: "and",
     filters: [buildCodexReasoningGuardFilter(`${id}-filter-1`)],
@@ -433,6 +462,7 @@ function buildNewCodexReasoningGuardTemplate(
         id: "token-516",
         name: "reasoning_tokens == 516",
         reasoning_tokens: 516,
+        reasoning_tokens_formula: null,
         action: "intercept",
         logic: "and",
         filters: [],
@@ -650,6 +680,7 @@ export type CliManagerCodexTabProps = {
         | "codex_reasoning_guard_model_rules"
         | "codex_reasoning_guard_active_template_id"
         | "codex_reasoning_guard_custom_templates"
+        | "codex_reasoning_guard_post_match_strategy"
         | "codex_reasoning_guard_immediate_retry_budget"
         | "codex_reasoning_guard_delayed_retry_budget"
         | "codex_reasoning_guard_delayed_retry_ms"
@@ -887,6 +918,10 @@ export function CliManagerCodexTab({
   );
   const [codexReasoningGuardExhaustedAction, setCodexReasoningGuardExhaustedAction] =
     useState<CodexReasoningGuardExhaustedAction>(DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION);
+  const [codexReasoningGuardPostMatchStrategy, setCodexReasoningGuardPostMatchStrategy] =
+    useState<CodexReasoningGuardPostMatchStrategy>(
+      DEFAULT_CODEX_REASONING_GUARD_POST_MATCH_STRATEGY
+    );
   const [codexReasoningGuardRetryPolicy, setCodexReasoningGuardRetryPolicy] =
     useState<CodexReasoningGuardRetryPolicy>(DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY);
   const [codexReasoningGuardConcurrentMaxText, setCodexReasoningGuardConcurrentMaxText] = useState(
@@ -903,14 +938,6 @@ export function CliManagerCodexTab({
   const [codexReasoningGuardModelFallbacksText, setCodexReasoningGuardModelFallbacksText] =
     useState("");
   const [
-    codexReasoningGuardContinuationRepairEnabled,
-    setCodexReasoningGuardContinuationRepairEnabled,
-  ] = useState(DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED);
-  const [
-    codexReasoningGuardContinuationMaxRoundsText,
-    setCodexReasoningGuardContinuationMaxRoundsText,
-  ] = useState(String(DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS));
-  const [
     codexReasoningGuardContinuationMaxOutputTokensText,
     setCodexReasoningGuardContinuationMaxOutputTokensText,
   ] = useState(String(DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS));
@@ -923,8 +950,6 @@ export function CliManagerCodexTab({
   const [codexReasoningGuardModelFallbacksError, setCodexReasoningGuardModelFallbacksError] =
     useState<string | null>(null);
   const [codexReasoningGuardDetailsOpen, setCodexReasoningGuardDetailsOpen] = useState(false);
-  const [codexReasoningContinuationDetailsOpen, setCodexReasoningContinuationDetailsOpen] =
-    useState(false);
   const [codexReasoningGuardDetailsTab, setCodexReasoningGuardDetailsTab] =
     useState<CodexReasoningGuardDetailsTab>("rules");
   const [codexReasoningGuardStartDate, setCodexReasoningGuardStartDate] = useState(todayDate);
@@ -934,26 +959,13 @@ export function CliManagerCodexTab({
       startDate: todayDate,
       endDate: todayDate,
     });
-  const [codexReasoningContinuationStartDate, setCodexReasoningContinuationStartDate] =
-    useState(todayDate);
-  const [codexReasoningContinuationEndDate, setCodexReasoningContinuationEndDate] =
-    useState(todayDate);
-  const [
-    codexReasoningContinuationAppliedDateRange,
-    setCodexReasoningContinuationAppliedDateRange,
-  ] = useState<CodexReasoningGuardStatsDateRange>({
-    startDate: todayDate,
-    endDate: todayDate,
-  });
   const [codexReasoningGuardStatsRangeError, setCodexReasoningGuardStatsRangeError] = useState<
     string | null
   >(null);
-  const [codexReasoningContinuationStatsRangeError, setCodexReasoningContinuationStatsRangeError] =
-    useState<string | null>(null);
   const [codexReasoningGuardStatsRangePopoverScope, setCodexReasoningGuardStatsRangePopoverScope] =
     useState<CodexReasoningGuardStatsRangePopoverScope | null>(null);
   const [codexReasoningGuardActiveTemplateId, setCodexReasoningGuardActiveTemplateId] = useState(
-    CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID
+    CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
   );
   const [codexReasoningGuardCustomTemplates, setCodexReasoningGuardCustomTemplates] = useState<
     CodexReasoningGuardRuleTemplate[]
@@ -1031,10 +1043,9 @@ export function CliManagerCodexTab({
   const syncCodexReasoningGuardDrafts = useCallback(
     (
       source: AppSettings | null | undefined = appSettings,
-      options: { includeGuard?: boolean; includeContinuation?: boolean } = {}
+      options: { includeGuard?: boolean } = {}
     ) => {
       const includeGuard = options.includeGuard ?? true;
-      const includeContinuation = options.includeContinuation ?? true;
 
       if (includeGuard) {
         setCodexReasoningGuardHitLabelText(
@@ -1065,6 +1076,10 @@ export function CliManagerCodexTab({
           source?.codex_reasoning_guard_exhausted_action ??
             DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION
         );
+        setCodexReasoningGuardPostMatchStrategy(
+          source?.codex_reasoning_guard_post_match_strategy ??
+            DEFAULT_CODEX_REASONING_GUARD_POST_MATCH_STRATEGY
+        );
         setCodexReasoningGuardRetryPolicy(
           source?.codex_reasoning_guard_retry_policy ?? DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY
         );
@@ -1089,38 +1104,25 @@ export function CliManagerCodexTab({
         setCodexReasoningGuardModelFallbacksText(
           formatCodexReasoningGuardModelFallbacks(source?.codex_reasoning_guard_model_fallbacks)
         );
-        setCodexReasoningGuardBudgetError(null);
-        setCodexReasoningGuardModelFallbacksError(null);
-        const customTemplates = source?.codex_reasoning_guard_custom_templates ?? [];
-        const savedTemplateId =
-          source?.codex_reasoning_guard_active_template_id?.trim() ||
-          CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID;
-        const activeTemplateId =
-          resolveCodexReasoningGuardTemplateOption(savedTemplateId, customTemplates)?.id ??
-          CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID;
-        setCodexReasoningGuardCustomTemplates(customTemplates);
-        setCodexReasoningGuardActiveTemplateId(activeTemplateId);
-        setCodexReasoningGuardTemplateError(null);
-      }
-
-      if (includeContinuation) {
-        setCodexReasoningGuardContinuationRepairEnabled(
-          source?.codex_reasoning_guard_continuation_repair_enabled ??
-            DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED
-        );
-        setCodexReasoningGuardContinuationMaxRoundsText(
-          String(
-            source?.codex_reasoning_guard_continuation_max_rounds ??
-              DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS
-          )
-        );
         setCodexReasoningGuardContinuationMaxOutputTokensText(
           String(
             source?.codex_reasoning_guard_continuation_max_output_tokens ??
               DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
           )
         );
+        setCodexReasoningGuardBudgetError(null);
         setCodexReasoningGuardContinuationError(null);
+        setCodexReasoningGuardModelFallbacksError(null);
+        const customTemplates = source?.codex_reasoning_guard_custom_templates ?? [];
+        const savedTemplateId =
+          source?.codex_reasoning_guard_active_template_id?.trim() ||
+          CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID;
+        const activeTemplateId =
+          resolveCodexReasoningGuardTemplateOption(savedTemplateId, customTemplates)?.id ??
+          CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID;
+        setCodexReasoningGuardCustomTemplates(customTemplates);
+        setCodexReasoningGuardActiveTemplateId(activeTemplateId);
+        setCodexReasoningGuardTemplateError(null);
       }
     },
     [appSettings]
@@ -1128,13 +1130,8 @@ export function CliManagerCodexTab({
 
   useEffect(() => {
     if (codexReasoningGuardDetailsOpen) return;
-    syncCodexReasoningGuardDrafts(appSettings, { includeContinuation: false });
+    syncCodexReasoningGuardDrafts(appSettings);
   }, [codexReasoningGuardDetailsOpen, appSettings, syncCodexReasoningGuardDrafts]);
-
-  useEffect(() => {
-    if (codexReasoningContinuationDetailsOpen) return;
-    syncCodexReasoningGuardDrafts(appSettings, { includeGuard: false });
-  }, [codexReasoningContinuationDetailsOpen, appSettings, syncCodexReasoningGuardDrafts]);
 
   function readSavedConfigLocationState() {
     const savedOverride = appSettings?.codex_home_override?.trim() ?? "";
@@ -1191,45 +1188,21 @@ export function CliManagerCodexTab({
       ),
     [codexReasoningGuardAppliedDateRange]
   );
-  const codexReasoningContinuationStatsRange = useMemo(
-    () =>
-      buildCodexReasoningGuardStatsRange(
-        codexReasoningContinuationAppliedDateRange.startDate,
-        codexReasoningContinuationAppliedDateRange.endDate
-      ),
-    [codexReasoningContinuationAppliedDateRange]
-  );
   const codexReasoningGuardStatsQuery = useCliManagerCodexReasoningGuardStatsQuery(
     codexReasoningGuardStatsRange,
     {
       enabled: codexReasoningGuardStatsRange != null,
     }
   );
-  const codexReasoningContinuationStatsQuery = useCliManagerCodexReasoningGuardStatsQuery(
-    codexReasoningContinuationStatsRange,
-    {
-      enabled: codexReasoningContinuationStatsRange != null,
-    }
-  );
   const codexReasoningGuardStatsRangeLabel = formatCodexReasoningGuardStatsDateRangeLabel(
     codexReasoningGuardAppliedDateRange
-  );
-  const codexReasoningContinuationStatsRangeLabel = formatCodexReasoningGuardStatsDateRangeLabel(
-    codexReasoningContinuationAppliedDateRange
   );
   const codexReasoningGuardStatsRangeDescription =
     codexReasoningGuardAppliedDateRange.startDate === codexReasoningGuardAppliedDateRange.endDate
       ? "只统计当天产生的 Codex 请求，方便快速判断今日的降智拦截情况。"
       : "按自然日统计所选日期范围内的 Codex 请求，包含结束日期当天。";
-  const codexReasoningContinuationStatsRangeDescription =
-    codexReasoningContinuationAppliedDateRange.startDate ===
-    codexReasoningContinuationAppliedDateRange.endDate
-      ? "只统计当天产生的 Codex 请求，方便快速判断今日的继续思考补救情况。"
-      : "按自然日统计所选日期范围内的 Codex 请求，包含结束日期当天。";
   const codexReasoningGuardStats = codexReasoningGuardStatsQuery.data ?? null;
   const codexReasoningGuardStatsLoading = codexReasoningGuardStatsQuery.isFetching;
-  const codexReasoningContinuationStats = codexReasoningContinuationStatsQuery.data ?? null;
-  const codexReasoningContinuationStatsLoading = codexReasoningContinuationStatsQuery.isFetching;
 
   async function refreshCodexStatus() {
     try {
@@ -1709,7 +1682,10 @@ export function CliManagerCodexTab({
   function updateSelectedCodexReasoningGuardTemplateRuleToken(ruleIndex: number, value: string) {
     const raw = value.trim();
     if (raw === "") {
-      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, { reasoning_tokens: null });
+      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+        reasoning_tokens: null,
+        reasoning_tokens_formula: null,
+      });
       return;
     }
     const parsed = Number(raw);
@@ -1723,7 +1699,10 @@ export function CliManagerCodexTab({
       );
       return;
     }
-    updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, { reasoning_tokens: parsed });
+    updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+      reasoning_tokens: parsed,
+      reasoning_tokens_formula: null,
+    });
   }
 
   function addCodexReasoningGuardTemplateRule() {
@@ -1845,46 +1824,6 @@ export function CliManagerCodexTab({
     }
   }
 
-  function applyCodexReasoningContinuationStatsDateRange() {
-    const nextRange = buildCodexReasoningGuardStatsRange(
-      codexReasoningContinuationStartDate,
-      codexReasoningContinuationEndDate
-    );
-    if (!nextRange) {
-      setCodexReasoningContinuationStatsRangeError("日期范围无效：结束日期必须不早于开始日期");
-      return;
-    }
-    setCodexReasoningContinuationStatsRangeError(null);
-    setCodexReasoningContinuationAppliedDateRange({
-      startDate: codexReasoningContinuationStartDate,
-      endDate: codexReasoningContinuationEndDate,
-    });
-    setCodexReasoningGuardStatsRangePopoverScope(null);
-  }
-
-  function applyCodexReasoningContinuationStatsPreset(preset: CodexReasoningGuardStatsPreset) {
-    const nextRange = buildCodexReasoningGuardStatsPresetRange(preset);
-    setCodexReasoningContinuationStartDate(nextRange.startDate);
-    setCodexReasoningContinuationEndDate(nextRange.endDate);
-    setCodexReasoningContinuationAppliedDateRange(nextRange);
-    setCodexReasoningContinuationStatsRangeError(null);
-    setCodexReasoningGuardStatsRangePopoverScope(null);
-  }
-
-  function updateCodexReasoningContinuationStatsStartDate(value: string) {
-    setCodexReasoningContinuationStartDate(value);
-    if (codexReasoningContinuationStatsRangeError) {
-      setCodexReasoningContinuationStatsRangeError(null);
-    }
-  }
-
-  function updateCodexReasoningContinuationStatsEndDate(value: string) {
-    setCodexReasoningContinuationEndDate(value);
-    if (codexReasoningContinuationStatsRangeError) {
-      setCodexReasoningContinuationStatsRangeError(null);
-    }
-  }
-
   function renderCodexReasoningGuardStatsRangeControls(
     label = "时间范围:",
     options?: {
@@ -1921,42 +1860,6 @@ export function CliManagerCodexTab({
     );
   }
 
-  function renderCodexReasoningContinuationStatsRangeControls(
-    label = "时间范围:",
-    options?: {
-      ariaLabel?: string;
-      dateInputLabelPrefix?: string;
-      popoverPortalled?: boolean;
-      scope?: CodexReasoningGuardStatsRangePopoverScope;
-    }
-  ) {
-    const scope = options?.scope ?? "continuationOverview";
-    return (
-      <CodexReasoningGuardStatsRangeControls
-        ariaLabel={options?.ariaLabel ?? "继续思考补救统计时间范围"}
-        dateInputLabelPrefix={options?.dateInputLabelPrefix ?? "继续思考补救统计"}
-        label={label}
-        startDate={codexReasoningContinuationStartDate}
-        endDate={codexReasoningContinuationEndDate}
-        appliedLabel={codexReasoningContinuationStatsRangeLabel}
-        error={codexReasoningContinuationStatsRangeError}
-        popoverOpen={codexReasoningGuardStatsRangePopoverScope === scope}
-        fetching={codexReasoningContinuationStatsQuery.isFetching}
-        onPopoverOpenChange={(open) =>
-          setCodexReasoningGuardStatsRangePopoverScope((current) =>
-            open ? scope : current === scope ? null : current
-          )
-        }
-        onStartDateChange={updateCodexReasoningContinuationStatsStartDate}
-        onEndDateChange={updateCodexReasoningContinuationStatsEndDate}
-        onPreset={applyCodexReasoningContinuationStatsPreset}
-        onApply={applyCodexReasoningContinuationStatsDateRange}
-        onRefresh={() => void codexReasoningContinuationStatsQuery.refetch()}
-        popoverPortalled={options?.popoverPortalled}
-      />
-    );
-  }
-
   async function saveCodexReasoningGuardRules() {
     if (!appSettings || !persistCodexReasoningGuardSettings) return;
     if (codexReasoningGuardTemplateError) return;
@@ -1964,7 +1867,9 @@ export function CliManagerCodexTab({
 
     const parsedImmediateBudget = parseCodexReasoningGuardInteger(
       codexReasoningGuardImmediateBudgetText,
-      "立即重试预算",
+      codexReasoningGuardPostMatchStrategy === "continuation_repair"
+        ? "思考续写次数"
+        : "立即重试预算",
       MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
     );
     if (!parsedImmediateBudget.ok) {
@@ -2031,14 +1936,26 @@ export function CliManagerCodexTab({
       return;
     }
 
+    const parsedContinuationMaxOutputTokens = parseCodexReasoningGuardInteger(
+      codexReasoningGuardContinuationMaxOutputTokensText,
+      "继续思考最大 output tokens",
+      MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+    );
+    if (!parsedContinuationMaxOutputTokens.ok) {
+      setCodexReasoningGuardContinuationError(parsedContinuationMaxOutputTokens.message);
+      return;
+    }
+
     const nextActiveTemplateId =
       resolveCodexReasoningGuardTemplateOption(
         codexReasoningGuardActiveTemplateId,
         codexReasoningGuardCustomTemplates
-      )?.id ?? CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID;
+      )?.id ?? CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID;
     const validationMessage = validateSettingsSetInput({
       codexReasoningGuardActiveTemplateId: nextActiveTemplateId,
       codexReasoningGuardCustomTemplates: codexReasoningGuardCustomTemplates,
+      codexReasoningGuardPostMatchStrategy: codexReasoningGuardPostMatchStrategy,
+      codexReasoningGuardContinuationMaxOutputTokens: parsedContinuationMaxOutputTokens.value,
     });
     if (validationMessage) {
       setCodexReasoningGuardTemplateError(validationMessage);
@@ -2052,6 +1969,7 @@ export function CliManagerCodexTab({
     }
 
     setCodexReasoningGuardBudgetError(null);
+    setCodexReasoningGuardContinuationError(null);
     setCodexReasoningGuardModelFallbacksError(null);
     setCodexReasoningGuardTemplateError(null);
     setCodexReasoningGuardHitLabelText(normalizedHitLabel);
@@ -2064,6 +1982,9 @@ export function CliManagerCodexTab({
     setCodexReasoningGuardModelFallbacksText(
       formatCodexReasoningGuardModelFallbacks(parsedFallbackModels.models)
     );
+    setCodexReasoningGuardContinuationMaxOutputTokensText(
+      String(parsedContinuationMaxOutputTokens.value)
+    );
     setCodexReasoningGuardActiveTemplateId(nextActiveTemplateId);
     setCodexReasoningGuardRuleMode(nextRuleMode);
 
@@ -2072,6 +1993,7 @@ export function CliManagerCodexTab({
       codex_reasoning_guard_rule_mode: nextRuleMode,
       codex_reasoning_guard_active_template_id: nextActiveTemplateId,
       codex_reasoning_guard_custom_templates: codexReasoningGuardCustomTemplates,
+      codex_reasoning_guard_post_match_strategy: codexReasoningGuardPostMatchStrategy,
       codex_reasoning_guard_immediate_retry_budget: parsedImmediateBudget.value,
       codex_reasoning_guard_delayed_retry_budget: parsedDelayedBudget.value,
       codex_reasoning_guard_delayed_retry_ms: parsedDelayedMs.value,
@@ -2081,75 +2003,12 @@ export function CliManagerCodexTab({
       codex_reasoning_guard_concurrent_interval_ms: parsedConcurrentIntervalMs.value,
       codex_reasoning_guard_concurrent_max_attempts: parsedConcurrentMaxAttempts.value,
       codex_reasoning_guard_model_fallbacks: parsedFallbackModels.models,
-    });
-    if (!saved) {
-      syncCodexReasoningGuardDrafts(appSettings, { includeContinuation: false });
-    }
-  }
-
-  async function saveCodexReasoningGuardContinuationEnabled(nextEnabled: boolean) {
-    if (!appSettings || !persistCodexReasoningGuardSettings) return;
-    setCodexReasoningGuardContinuationRepairEnabled(nextEnabled);
-    setCodexReasoningGuardContinuationError(null);
-    const saved = await persistCodexReasoningGuardSettings({
-      codex_reasoning_guard_continuation_repair_enabled: nextEnabled,
-    });
-    if (!saved) {
-      setCodexReasoningGuardContinuationRepairEnabled(
-        appSettings.codex_reasoning_guard_continuation_repair_enabled ??
-          DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED
-      );
-    }
-  }
-
-  async function saveCodexReasoningGuardContinuationSettings() {
-    if (!appSettings || !persistCodexReasoningGuardSettings) return;
-
-    const parsedContinuationMaxRounds = parseCodexReasoningGuardInteger(
-      codexReasoningGuardContinuationMaxRoundsText,
-      "继续思考最大轮数",
-      MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
-      1
-    );
-    if (!parsedContinuationMaxRounds.ok) {
-      setCodexReasoningGuardContinuationError(parsedContinuationMaxRounds.message);
-      return;
-    }
-
-    const parsedContinuationMaxOutputTokens = parseCodexReasoningGuardInteger(
-      codexReasoningGuardContinuationMaxOutputTokensText,
-      "继续思考最大 output tokens",
-      MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
-    );
-    if (!parsedContinuationMaxOutputTokens.ok) {
-      setCodexReasoningGuardContinuationError(parsedContinuationMaxOutputTokens.message);
-      return;
-    }
-
-    const validationMessage = validateSettingsSetInput({
-      codexReasoningGuardContinuationRepairEnabled: codexReasoningGuardContinuationRepairEnabled,
-      codexReasoningGuardContinuationMaxRounds: parsedContinuationMaxRounds.value,
-      codexReasoningGuardContinuationMaxOutputTokens: parsedContinuationMaxOutputTokens.value,
-    });
-    if (validationMessage) {
-      setCodexReasoningGuardContinuationError(validationMessage);
-      return;
-    }
-
-    setCodexReasoningGuardContinuationError(null);
-    setCodexReasoningGuardContinuationMaxRoundsText(String(parsedContinuationMaxRounds.value));
-    setCodexReasoningGuardContinuationMaxOutputTokensText(
-      String(parsedContinuationMaxOutputTokens.value)
-    );
-
-    const saved = await persistCodexReasoningGuardSettings({
       codex_reasoning_guard_continuation_repair_enabled:
-        codexReasoningGuardContinuationRepairEnabled,
-      codex_reasoning_guard_continuation_max_rounds: parsedContinuationMaxRounds.value,
+        codexReasoningGuardPostMatchStrategy === "continuation_repair",
       codex_reasoning_guard_continuation_max_output_tokens: parsedContinuationMaxOutputTokens.value,
     });
     if (!saved) {
-      syncCodexReasoningGuardDrafts(appSettings, { includeGuard: false });
+      syncCodexReasoningGuardDrafts(appSettings);
     }
   }
 
@@ -2186,21 +2045,16 @@ export function CliManagerCodexTab({
   }, [codexReasoningGuardModelStats]);
 
   const codexReasoningContinuationStatusStats = useMemo(() => {
-    return [...(codexReasoningContinuationStats?.continuation_by_status ?? [])].sort(
-      (left, right) => {
-        if (left.attempt_count !== right.attempt_count) {
-          return right.attempt_count - left.attempt_count;
-        }
-        if (left.request_count !== right.request_count) {
-          return right.request_count - left.request_count;
-        }
-        return left.status.localeCompare(right.status);
+    return [...(codexReasoningGuardStats?.continuation_by_status ?? [])].sort((left, right) => {
+      if (left.attempt_count !== right.attempt_count) {
+        return right.attempt_count - left.attempt_count;
       }
-    );
-  }, [codexReasoningContinuationStats?.continuation_by_status]);
-
-  const codexReasoningContinuationTopStatus =
-    codexReasoningContinuationStatusStats.find((row) => row.attempt_count > 0) ?? null;
+      if (left.request_count !== right.request_count) {
+        return right.request_count - left.request_count;
+      }
+      return left.status.localeCompare(right.status);
+    });
+  }, [codexReasoningGuardStats?.continuation_by_status]);
 
   return (
     <div className="space-y-6">
@@ -2569,7 +2423,7 @@ export function CliManagerCodexTab({
                       <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
                         支持按 <span className="font-mono">reasoning_tokens</span> 或{" "}
                         <span className="font-mono">final-answer-only high/xhigh</span>{" "}
-                        特征拦截；命中后在当前 provider 上继续重试，并且不计入熔断。
+                        特征拦截；命中后按策略执行思考续写或自动重试，并且不计入熔断。
                       </div>
                       <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
                         当前统计：{codexReasoningGuardStatsRangeLabel}，
@@ -2603,7 +2457,17 @@ export function CliManagerCodexTab({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        总请求数
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-foreground">
+                        {codexReasoningGuardStatsLoading
+                          ? "..."
+                          : String(codexReasoningGuardStats?.total_request_count ?? 0)}
+                      </div>
+                    </div>
                     <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
                       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                         命中请求数
@@ -2636,6 +2500,22 @@ export function CliManagerCodexTab({
                       <div className="mt-1 text-[11px] text-muted-foreground">
                         降智 {codexReasoningGuardStats?.hit_request_count ?? 0} / 正常{" "}
                         {codexReasoningGuardStats?.normal_request_count ?? 0}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        续写成功率
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-foreground">
+                        {codexReasoningGuardStatsLoading
+                          ? "..."
+                          : formatCodexReasoningGuardHitRate(
+                              codexReasoningGuardStats?.continuation_repair_rate
+                            )}
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">
+                        续写 {codexReasoningGuardStats?.continuation_repaired_request_count ?? 0} /{" "}
+                        {codexReasoningGuardStats?.continuation_triggered_request_count ?? 0}
                       </div>
                     </div>
                   </div>
@@ -2671,14 +2551,25 @@ export function CliManagerCodexTab({
                     <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
                       <span>Guard 策略</span>
                       <span className="font-mono text-secondary-foreground">
-                        {`${formatCodexReasoningGuardRetryPolicyLabel(
-                          appSettings.codex_reasoning_guard_retry_policy
-                        )} / ${appSettings.codex_reasoning_guard_immediate_retry_budget}+${appSettings.codex_reasoning_guard_delayed_retry_budget} / ${appSettings.codex_reasoning_guard_delayed_retry_ms}ms / ${formatCodexReasoningGuardExhaustedActionLabel(
-                          appSettings.codex_reasoning_guard_exhausted_action
-                        )}`}
+                        {appSettings.codex_reasoning_guard_post_match_strategy ===
+                        "continuation_repair"
+                          ? `${formatCodexReasoningGuardPostMatchStrategyLabel(
+                              appSettings.codex_reasoning_guard_post_match_strategy
+                            )} / ${appSettings.codex_reasoning_guard_immediate_retry_budget} / ${formatCodexReasoningGuardExhaustedActionLabel(
+                              appSettings.codex_reasoning_guard_exhausted_action
+                            )}`
+                          : `${formatCodexReasoningGuardPostMatchStrategyLabel(
+                              appSettings.codex_reasoning_guard_post_match_strategy
+                            )} / ${formatCodexReasoningGuardRetryPolicyLabel(
+                              appSettings.codex_reasoning_guard_retry_policy
+                            )} / ${appSettings.codex_reasoning_guard_immediate_retry_budget}+${appSettings.codex_reasoning_guard_delayed_retry_budget} / ${appSettings.codex_reasoning_guard_delayed_retry_ms}ms / ${formatCodexReasoningGuardExhaustedActionLabel(
+                              appSettings.codex_reasoning_guard_exhausted_action
+                            )}`}
                       </span>
                     </div>
-                    {appSettings.codex_reasoning_guard_retry_policy === "concurrent" ? (
+                    {appSettings.codex_reasoning_guard_post_match_strategy ===
+                      "retry_same_provider" &&
+                    appSettings.codex_reasoning_guard_retry_policy === "concurrent" ? (
                       <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
                         <span>并发重试</span>
                         <span className="font-mono text-secondary-foreground">
@@ -2700,230 +2591,6 @@ export function CliManagerCodexTab({
                 </div>
               </div>
             ) : null}
-            {appSettings ? (
-              <div className="rounded-xl border border-border/80 bg-white/80 p-4 dark:border-border dark:bg-card/20">
-                <div className="flex flex-col gap-4">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-foreground">继续思考补救</div>
-                      <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        独立于降智拦截开关生效；用于 Codex Responses 流式响应的{" "}
-                        <span className="font-mono">reasoning.encrypted_content</span> 续写补救。
-                      </div>
-                      <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-                        优先级：续写补救会先尝试修复疑似截断的成功响应；修复成功后不再触发普通降智拦截。修复失败或不适用时，再按降智拦截规则处理。
-                      </div>
-                      <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-                        当前统计：{codexReasoningContinuationStatsRangeLabel}，
-                        {codexReasoningContinuationStatsRangeDescription}
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 self-start">
-                      {renderCodexReasoningContinuationStatsRangeControls("", {
-                        ariaLabel: "继续思考补救统计时间范围",
-                        dateInputLabelPrefix: "继续思考补救统计",
-                        scope: "continuationOverview",
-                      })}
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        className="gap-2"
-                        aria-label="查看继续思考补救详情"
-                        onClick={() => {
-                          setCodexReasoningContinuationDetailsOpen(true);
-                        }}
-                      >
-                        <BarChart3 className="h-3.5 w-3.5" />
-                        详情
-                      </Button>
-                      <Switch
-                        aria-label="切换 Codex 继续思考补救"
-                        checked={codexReasoningGuardContinuationRepairEnabled}
-                        onCheckedChange={(checked) =>
-                          void saveCodexReasoningGuardContinuationEnabled(checked)
-                        }
-                        disabled={reasoningGuardControlsDisabled}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                        触发请求
-                      </div>
-                      <div className="mt-1 text-2xl font-semibold text-foreground">
-                        {codexReasoningContinuationStatsLoading
-                          ? "..."
-                          : String(
-                              codexReasoningContinuationStats?.continuation_triggered_request_count ??
-                                0
-                            )}
-                      </div>
-                    </div>
-                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                        补救触发数
-                      </div>
-                      <div className="mt-1 text-2xl font-semibold text-foreground">
-                        {codexReasoningContinuationStatsLoading
-                          ? "..."
-                          : String(
-                              codexReasoningContinuationStats?.continuation_triggered_attempt_count ??
-                                0
-                            )}
-                      </div>
-                    </div>
-                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                        修复成功
-                      </div>
-                      <div className="mt-1 text-2xl font-semibold text-foreground">
-                        {codexReasoningContinuationStatsLoading
-                          ? "..."
-                          : String(
-                              codexReasoningContinuationStats?.continuation_repaired_request_count ??
-                                0
-                            )}
-                      </div>
-                    </div>
-                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                        修复率
-                      </div>
-                      <div className="mt-1 text-2xl font-semibold text-foreground">
-                        {codexReasoningContinuationStatsLoading
-                          ? "..."
-                          : formatCodexReasoningGuardHitRate(
-                              codexReasoningContinuationStats?.continuation_repair_rate
-                            )}
-                      </div>
-                      <div className="mt-1 text-[11px] text-muted-foreground">
-                        请求{" "}
-                        {codexReasoningContinuationStats?.continuation_repaired_request_count ?? 0}{" "}
-                        /{" "}
-                        {codexReasoningContinuationStats?.continuation_triggered_request_count ?? 0}
-                      </div>
-                    </div>
-                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                        平均续写轮数
-                      </div>
-                      <div className="mt-1 text-2xl font-semibold text-foreground">
-                        {codexReasoningContinuationStatsLoading
-                          ? "..."
-                          : formatCodexReasoningGuardDecimal(
-                              codexReasoningContinuationStats?.continuation_average_sent_rounds
-                            )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                    <label className="text-xs font-medium text-secondary-foreground">
-                      <span className="block">最大续写轮数</span>
-                      <Input
-                        type="number"
-                        min={1}
-                        max={MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS}
-                        step={1}
-                        value={codexReasoningGuardContinuationMaxRoundsText}
-                        onChange={(e) => {
-                          setCodexReasoningGuardContinuationMaxRoundsText(e.currentTarget.value);
-                          setCodexReasoningGuardContinuationError(null);
-                        }}
-                        placeholder={String(DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS)}
-                        className={cn(
-                          "mt-3 font-mono text-xs",
-                          codexReasoningGuardContinuationError &&
-                            "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
-                        )}
-                        disabled={reasoningGuardControlsDisabled}
-                      />
-                    </label>
-                    <label className="text-xs font-medium text-secondary-foreground">
-                      <span className="block">最大 output tokens</span>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS}
-                        step={1}
-                        value={codexReasoningGuardContinuationMaxOutputTokensText}
-                        onChange={(e) => {
-                          setCodexReasoningGuardContinuationMaxOutputTokensText(
-                            e.currentTarget.value
-                          );
-                          setCodexReasoningGuardContinuationError(null);
-                        }}
-                        placeholder={String(
-                          DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
-                        )}
-                        className={cn(
-                          "mt-3 font-mono text-xs",
-                          codexReasoningGuardContinuationError &&
-                            "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
-                        )}
-                        disabled={reasoningGuardControlsDisabled}
-                      />
-                    </label>
-                    <div className="flex items-end">
-                      <Button
-                        size="sm"
-                        className="gap-2"
-                        onClick={() => void saveCodexReasoningGuardContinuationSettings()}
-                        disabled={reasoningGuardControlsDisabled}
-                      >
-                        <Settings className="h-3.5 w-3.5" />
-                        保存补救
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div
-                    className={cn(
-                      "text-[11px] leading-relaxed",
-                      codexReasoningGuardContinuationError
-                        ? "text-rose-600 dark:text-rose-400"
-                        : "text-muted-foreground"
-                    )}
-                  >
-                    {codexReasoningGuardContinuationError ??
-                      `默认 ${DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS} 轮；output tokens 为 ${DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS} 时不设额外上限。`}
-                  </div>
-
-                  <div className="grid gap-2 rounded-lg border border-border/70 bg-secondary/80 p-3 text-xs text-muted-foreground dark:border-border dark:bg-secondary/80">
-                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-                      <span>独立状态</span>
-                      <span className="font-mono text-secondary-foreground">
-                        {codexReasoningGuardContinuationRepairEnabled ? "on" : "off"}
-                      </span>
-                    </div>
-                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-                      <span>续写上限</span>
-                      <span className="font-mono text-secondary-foreground">
-                        {`rounds=${
-                          appSettings?.codex_reasoning_guard_continuation_max_rounds ??
-                          DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS
-                        } / output=${
-                          appSettings?.codex_reasoning_guard_continuation_max_output_tokens ??
-                          DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
-                        }`}
-                      </span>
-                    </div>
-                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-                      <span>主要状态</span>
-                      <span className="text-secondary-foreground">
-                        {codexReasoningContinuationTopStatus
-                          ? `${formatCodexReasoningContinuationStatusLabel(
-                              codexReasoningContinuationTopStatus.status
-                            )} · ${codexReasoningContinuationTopStatus.attempt_count}`
-                          : "暂无补救记录"}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ) : null}
             <Dialog
               open={codexReasoningGuardDetailsOpen}
               onOpenChange={(next) => {
@@ -2932,7 +2599,7 @@ export function CliManagerCodexTab({
                   setCodexReasoningGuardStatsRangePopoverScope((current) =>
                     current === "details" ? null : current
                   );
-                  syncCodexReasoningGuardDrafts(appSettings, { includeContinuation: false });
+                  syncCodexReasoningGuardDrafts(appSettings);
                 }
               }}
               title="降智拦截详情"
@@ -2940,7 +2607,17 @@ export function CliManagerCodexTab({
               className="max-w-5xl"
             >
               <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      总请求数
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningGuardStatsLoading
+                        ? "..."
+                        : String(codexReasoningGuardStats?.total_request_count ?? 0)}
+                    </div>
+                  </div>
                   <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
                     <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                       命中请求数
@@ -2963,22 +2640,24 @@ export function CliManagerCodexTab({
                   </div>
                   <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
                     <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                      正常请求数
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-foreground">
-                      {codexReasoningGuardStatsLoading
-                        ? "..."
-                        : String(codexReasoningGuardStats?.normal_request_count ?? 0)}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                       降智命中率
                     </div>
                     <div className="mt-1 text-2xl font-semibold text-foreground">
                       {codexReasoningGuardStatsLoading
                         ? "..."
                         : formatCodexReasoningGuardHitRate(codexReasoningGuardStats?.hit_rate)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      续写成功率
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningGuardStatsLoading
+                        ? "..."
+                        : formatCodexReasoningGuardHitRate(
+                            codexReasoningGuardStats?.continuation_repair_rate
+                          )}
                     </div>
                   </div>
                 </div>
@@ -3281,9 +2960,12 @@ export function CliManagerCodexTab({
                                   <span className="block">token 匹配</span>
                                   <Input
                                     value={
-                                      rule.reasoning_tokens == null
-                                        ? ""
-                                        : String(rule.reasoning_tokens)
+                                      rule.reasoning_tokens_formula ===
+                                      "reasoning_tokens_518n_minus_2"
+                                        ? "518*N-2"
+                                        : rule.reasoning_tokens == null
+                                          ? ""
+                                          : String(rule.reasoning_tokens)
                                     }
                                     onChange={(e) => {
                                       updateSelectedCodexReasoningGuardTemplateRuleToken(
@@ -3295,7 +2977,8 @@ export function CliManagerCodexTab({
                                     className="mt-3 font-mono text-xs"
                                     disabled={
                                       reasoningGuardControlsDisabled ||
-                                      codexReasoningGuardSelectedTemplate.readOnly
+                                      codexReasoningGuardSelectedTemplate.readOnly ||
+                                      rule.reasoning_tokens_formula != null
                                     }
                                   />
                                 </label>
@@ -3564,35 +3247,63 @@ export function CliManagerCodexTab({
                     <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
                       <div className="text-sm font-semibold text-foreground">重试策略与预算</div>
                       <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        每个 provider 独立计算预算。默认单路重试保持旧行为；并发重试会在连续命中后按
-                        1、2、3... 动态扩到最大并发数。
+                        命中模板后先执行命中后策略；策略失败或预算耗尽后执行失败策略。
                       </div>
                       <div className="mt-4 grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
                         <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">重试策略</span>
+                          <span className="block">命中后策略</span>
                           <Select
-                            value={codexReasoningGuardRetryPolicy}
+                            value={codexReasoningGuardPostMatchStrategy}
                             onChange={(e) =>
-                              setCodexReasoningGuardRetryPolicy(
-                                e.currentTarget.value as CodexReasoningGuardRetryPolicy
+                              setCodexReasoningGuardPostMatchStrategy(
+                                e.currentTarget.value as CodexReasoningGuardPostMatchStrategy
                               )
                             }
                             disabled={reasoningGuardControlsDisabled}
                             className="mt-3 font-mono text-xs"
                           >
-                            <option value="single">单路重试</option>
-                            <option value="concurrent">并发重试</option>
+                            <option value="continuation_repair">思考续写</option>
+                            <option value="retry_same_provider">自动重试</option>
                           </Select>
                         </label>
                         <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-[11px] leading-relaxed text-muted-foreground">
-                          {codexReasoningGuardRetryPolicy === "concurrent"
-                            ? `遇到降智命中后先走 1 路；如果仍然命中，下一轮升到 2 路，直到最大 ${MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX} 路。任一路拿到非降智响应后继续，其他路会被丢弃。`
-                            : "完全沿用现有行为：每次只发起一路重试，按立即预算和等待预算顺序执行。"}
+                          {codexReasoningGuardPostMatchStrategy === "continuation_repair"
+                            ? "命中后使用当前次数预算发送 continuation；不使用等待重试和并发重试。"
+                            : "命中后按立即预算、等待预算和并发设置重试同一 provider。"}
                         </div>
                       </div>
+                      {codexReasoningGuardPostMatchStrategy === "retry_same_provider" ? (
+                        <div className="mt-4 grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
+                          <label className="text-xs font-medium text-secondary-foreground">
+                            <span className="block">重试策略</span>
+                            <Select
+                              value={codexReasoningGuardRetryPolicy}
+                              onChange={(e) =>
+                                setCodexReasoningGuardRetryPolicy(
+                                  e.currentTarget.value as CodexReasoningGuardRetryPolicy
+                                )
+                              }
+                              disabled={reasoningGuardControlsDisabled}
+                              className="mt-3 font-mono text-xs"
+                            >
+                              <option value="single">单路重试</option>
+                              <option value="concurrent">并发重试</option>
+                            </Select>
+                          </label>
+                          <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-[11px] leading-relaxed text-muted-foreground">
+                            {codexReasoningGuardRetryPolicy === "concurrent"
+                              ? `遇到降智命中后先走 1 路；如果仍然命中，下一轮升到 2 路，直到最大 ${MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX} 路。任一路拿到非降智响应后继续，其他路会被丢弃。`
+                              : "完全沿用现有行为：每次只发起一路重试，按立即预算和等待预算顺序执行。"}
+                          </div>
+                        </div>
+                      ) : null}
                       <div className="mt-4 grid gap-3 lg:grid-cols-4">
                         <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">立即重试次数</span>
+                          <span className="block">
+                            {codexReasoningGuardPostMatchStrategy === "continuation_repair"
+                              ? "思考续写次数"
+                              : "立即重试次数"}
+                          </span>
                           <Input
                             type="number"
                             min={0}
@@ -3614,48 +3325,81 @@ export function CliManagerCodexTab({
                             disabled={reasoningGuardControlsDisabled}
                           />
                         </label>
-                        <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">等待重试次数</span>
-                          <Input
-                            type="number"
-                            min={0}
-                            max={MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET}
-                            step={1}
-                            value={codexReasoningGuardDelayedBudgetText}
-                            onChange={(e) => {
-                              setCodexReasoningGuardDelayedBudgetText(e.currentTarget.value);
-                              setCodexReasoningGuardBudgetError(null);
-                            }}
-                            placeholder={String(DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET)}
-                            className={cn(
-                              "mt-3 font-mono text-xs",
-                              codexReasoningGuardBudgetError &&
-                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
-                            )}
-                            disabled={reasoningGuardControlsDisabled}
-                          />
-                        </label>
-                        <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">等待毫秒数</span>
-                          <Input
-                            type="number"
-                            min={0}
-                            max={MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}
-                            step={100}
-                            value={codexReasoningGuardDelayedMsText}
-                            onChange={(e) => {
-                              setCodexReasoningGuardDelayedMsText(e.currentTarget.value);
-                              setCodexReasoningGuardBudgetError(null);
-                            }}
-                            placeholder={String(DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS)}
-                            className={cn(
-                              "mt-3 font-mono text-xs",
-                              codexReasoningGuardBudgetError &&
-                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
-                            )}
-                            disabled={reasoningGuardControlsDisabled}
-                          />
-                        </label>
+                        {codexReasoningGuardPostMatchStrategy === "continuation_repair" ? (
+                          <label className="text-xs font-medium text-secondary-foreground">
+                            <span className="block">最大 output tokens</span>
+                            <Input
+                              type="number"
+                              min={0}
+                              max={MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS}
+                              step={1}
+                              value={codexReasoningGuardContinuationMaxOutputTokensText}
+                              onChange={(e) => {
+                                setCodexReasoningGuardContinuationMaxOutputTokensText(
+                                  e.currentTarget.value
+                                );
+                                setCodexReasoningGuardContinuationError(null);
+                              }}
+                              placeholder={String(
+                                DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+                              )}
+                              className={cn(
+                                "mt-3 font-mono text-xs",
+                                codexReasoningGuardContinuationError &&
+                                  "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                              )}
+                              disabled={reasoningGuardControlsDisabled}
+                            />
+                          </label>
+                        ) : null}
+                        {codexReasoningGuardPostMatchStrategy === "retry_same_provider" ? (
+                          <>
+                            <label className="text-xs font-medium text-secondary-foreground">
+                              <span className="block">等待重试次数</span>
+                              <Input
+                                type="number"
+                                min={0}
+                                max={MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET}
+                                step={1}
+                                value={codexReasoningGuardDelayedBudgetText}
+                                onChange={(e) => {
+                                  setCodexReasoningGuardDelayedBudgetText(e.currentTarget.value);
+                                  setCodexReasoningGuardBudgetError(null);
+                                }}
+                                placeholder={String(
+                                  DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET
+                                )}
+                                className={cn(
+                                  "mt-3 font-mono text-xs",
+                                  codexReasoningGuardBudgetError &&
+                                    "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                                )}
+                                disabled={reasoningGuardControlsDisabled}
+                              />
+                            </label>
+                            <label className="text-xs font-medium text-secondary-foreground">
+                              <span className="block">等待毫秒数</span>
+                              <Input
+                                type="number"
+                                min={0}
+                                max={MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}
+                                step={100}
+                                value={codexReasoningGuardDelayedMsText}
+                                onChange={(e) => {
+                                  setCodexReasoningGuardDelayedMsText(e.currentTarget.value);
+                                  setCodexReasoningGuardBudgetError(null);
+                                }}
+                                placeholder={String(DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS)}
+                                className={cn(
+                                  "mt-3 font-mono text-xs",
+                                  codexReasoningGuardBudgetError &&
+                                    "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                                )}
+                                disabled={reasoningGuardControlsDisabled}
+                              />
+                            </label>
+                          </>
+                        ) : null}
                         <label className="text-xs font-medium text-secondary-foreground">
                           <span className="block">预算耗尽后</span>
                           <Select
@@ -3674,7 +3418,8 @@ export function CliManagerCodexTab({
                           </Select>
                         </label>
                       </div>
-                      {codexReasoningGuardRetryPolicy === "concurrent" ? (
+                      {codexReasoningGuardPostMatchStrategy === "retry_same_provider" &&
+                      codexReasoningGuardRetryPolicy === "concurrent" ? (
                         <div className="mt-4 grid gap-3 rounded-lg border border-border/70 bg-background/60 p-3 lg:grid-cols-3">
                           <label className="text-xs font-medium text-secondary-foreground">
                             <span className="block">最大并发数</span>
@@ -3783,13 +3528,16 @@ export function CliManagerCodexTab({
                       <div
                         className={cn(
                           "mt-2 text-[11px] leading-relaxed",
-                          codexReasoningGuardBudgetError
+                          codexReasoningGuardBudgetError || codexReasoningGuardContinuationError
                             ? "text-rose-600 dark:text-rose-400"
                             : "text-muted-foreground"
                         )}
                       >
                         {codexReasoningGuardBudgetError ??
-                          `默认 ${DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET} 次立即重试 + ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET} 次等待 ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}ms，耗尽后返回 GW_CODEX_REASONING_GUARD。`}
+                          codexReasoningGuardContinuationError ??
+                          (codexReasoningGuardPostMatchStrategy === "continuation_repair"
+                            ? `默认 ${DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET} 次思考续写；output tokens 为 ${DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS} 时不设额外上限。`
+                            : `默认 ${DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET} 次立即重试 + ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET} 次等待 ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}ms，耗尽后返回 GW_CODEX_REASONING_GUARD。`)}
                       </div>
                       <div className="mt-4 flex justify-end">
                         <Button
@@ -3878,150 +3626,51 @@ export function CliManagerCodexTab({
                             </tbody>
                           </table>
                         </div>
+
+                        <div className="overflow-x-auto rounded-lg border border-border/70">
+                          <table className="min-w-full divide-y divide-border text-sm">
+                            <thead className="bg-secondary/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                              <tr>
+                                <th className="px-3 py-2 font-medium">续写状态</th>
+                                <th className="px-3 py-2 font-medium">触发请求</th>
+                                <th className="px-3 py-2 font-medium">触发次数</th>
+                                <th className="px-3 py-2 font-medium">平均续写轮数</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border bg-background/80">
+                              {codexReasoningContinuationStatusStats.length === 0 ? (
+                                <tr>
+                                  <td
+                                    className="px-3 py-4 text-center text-xs text-muted-foreground"
+                                    colSpan={4}
+                                  >
+                                    还没有可展示的思考续写记录。
+                                  </td>
+                                </tr>
+                              ) : (
+                                codexReasoningContinuationStatusStats.map((row) => (
+                                  <tr key={row.status}>
+                                    <td className="px-3 py-2">
+                                      <div className="font-medium text-secondary-foreground">
+                                        {formatCodexReasoningContinuationStatusLabel(row.status)}
+                                      </div>
+                                      <div className="font-mono text-[11px] text-muted-foreground">
+                                        {row.status}
+                                      </div>
+                                    </td>
+                                    <td className="px-3 py-2">{row.request_count}</td>
+                                    <td className="px-3 py-2">{row.attempt_count}</td>
+                                    <td className="px-3 py-2">
+                                      {formatCodexReasoningGuardDecimal(row.average_sent_rounds)}
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
                     )}
-                  </div>
-                )}
-              </div>
-            </Dialog>
-            <Dialog
-              open={codexReasoningContinuationDetailsOpen}
-              onOpenChange={(next) => {
-                setCodexReasoningContinuationDetailsOpen(next);
-                if (!next) {
-                  setCodexReasoningGuardStatsRangePopoverScope((current) =>
-                    current === "continuationDetails" ? null : current
-                  );
-                  syncCodexReasoningGuardDrafts(appSettings, { includeGuard: false });
-                }
-              }}
-              title="继续思考补救详情"
-              description="独立统计续写补救触发、修复成功率和状态分布；不受降智拦截开关控制。"
-              className="max-w-5xl"
-            >
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                      触发请求
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-foreground">
-                      {codexReasoningContinuationStatsLoading
-                        ? "..."
-                        : String(
-                            codexReasoningContinuationStats?.continuation_triggered_request_count ??
-                              0
-                          )}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                      补救触发数
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-foreground">
-                      {codexReasoningContinuationStatsLoading
-                        ? "..."
-                        : String(
-                            codexReasoningContinuationStats?.continuation_triggered_attempt_count ??
-                              0
-                          )}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                      修复成功
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-foreground">
-                      {codexReasoningContinuationStatsLoading
-                        ? "..."
-                        : String(
-                            codexReasoningContinuationStats?.continuation_repaired_request_count ??
-                              0
-                          )}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                      修复率
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-foreground">
-                      {codexReasoningContinuationStatsLoading
-                        ? "..."
-                        : formatCodexReasoningGuardHitRate(
-                            codexReasoningContinuationStats?.continuation_repair_rate
-                          )}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                      平均续写轮数
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-foreground">
-                      {codexReasoningContinuationStatsLoading
-                        ? "..."
-                        : formatCodexReasoningGuardDecimal(
-                            codexReasoningContinuationStats?.continuation_average_sent_rounds
-                          )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-secondary/60 p-3 text-xs text-muted-foreground md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <span className="font-medium text-secondary-foreground">
-                      {codexReasoningContinuationStatsRangeLabel}
-                    </span>
-                    <span className="ml-2">{codexReasoningContinuationStatsRangeDescription}</span>
-                  </div>
-                  <div className="shrink-0">
-                    {renderCodexReasoningContinuationStatsRangeControls("", {
-                      ariaLabel: "继续思考补救统计时间范围",
-                      dateInputLabelPrefix: "继续思考补救统计",
-                      popoverPortalled: false,
-                      scope: "continuationDetails",
-                    })}
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-border/70 bg-secondary/60 p-4 text-xs leading-relaxed text-muted-foreground">
-                  优先级：续写补救先于普通降智拦截。状态为“已修复”的响应会直接返回修复后的流；其他状态才进入后续降智预算或规则处理。
-                </div>
-
-                {codexReasoningContinuationStatusStats.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-border/70 bg-background/60 px-4 py-5 text-center text-xs text-muted-foreground">
-                    还没有可展示的继续思考补救记录。
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto rounded-lg border border-border/70">
-                    <table className="min-w-full divide-y divide-border text-sm">
-                      <thead className="bg-secondary/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
-                        <tr>
-                          <th className="px-3 py-2 font-medium">状态</th>
-                          <th className="px-3 py-2 font-medium">触发请求</th>
-                          <th className="px-3 py-2 font-medium">触发次数</th>
-                          <th className="px-3 py-2 font-medium">平均续写轮数</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border bg-background/80">
-                        {codexReasoningContinuationStatusStats.map((row) => (
-                          <tr key={row.status}>
-                            <td className="px-3 py-2">
-                              <div className="font-medium text-secondary-foreground">
-                                {formatCodexReasoningContinuationStatusLabel(row.status)}
-                              </div>
-                              <div className="font-mono text-[11px] text-muted-foreground">
-                                {row.status}
-                              </div>
-                            </td>
-                            <td className="px-3 py-2">{row.request_count}</td>
-                            <td className="px-3 py-2">{row.attempt_count}</td>
-                            <td className="px-3 py-2">
-                              {formatCodexReasoningGuardDecimal(row.average_sent_rounds)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
                   </div>
                 )}
               </div>
