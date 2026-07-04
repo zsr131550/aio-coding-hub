@@ -1240,6 +1240,58 @@ WHERE p.id = 2
 }
 
 #[test]
+fn ensure_patch_backfills_request_log_activity_columns_for_existing_request_logs_table() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("request-log-activity-drift.db");
+
+    {
+        let mut conn = Connection::open(&db_path).expect("open sqlite file");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign_keys");
+
+        apply_migrations(&mut conn).expect("create current schema");
+        conn.execute_batch(
+            r#"
+ALTER TABLE request_logs DROP COLUMN last_activity_ms;
+ALTER TABLE request_logs DROP COLUMN activity_details_json;
+"#,
+        )
+        .expect("remove request log activity columns");
+
+        assert!(!test_has_column(&conn, "request_logs", "last_activity_ms"));
+        assert!(!test_has_column(
+            &conn,
+            "request_logs",
+            "activity_details_json"
+        ));
+    }
+
+    let db = crate::db::init_for_tests(&db_path).expect("repair drifted db");
+
+    {
+        let conn = db.open_connection().expect("open repaired db");
+        assert!(test_has_column(&conn, "request_logs", "last_activity_ms"));
+        assert!(test_has_column(
+            &conn,
+            "request_logs",
+            "activity_details_json"
+        ));
+
+        conn.prepare("SELECT last_activity_ms, activity_details_json FROM request_logs LIMIT 1")
+            .expect("prepare request log activity column select");
+    }
+
+    let summaries =
+        crate::request_logs::list_recent_all(&db, 10).expect("list recent all after repair");
+    assert!(summaries.is_empty());
+
+    {
+        let mut conn = db.open_connection().expect("open repaired db twice");
+        apply_migrations(&mut conn).expect("apply migrations twice");
+    }
+}
+
+#[test]
 fn baseline_v25_creates_complete_schema_for_fresh_install() {
     let mut conn = Connection::open_in_memory().expect("open in-memory sqlite");
     conn.execute_batch("PRAGMA foreign_keys = ON;")
@@ -1312,6 +1364,12 @@ fn baseline_v25_creates_complete_schema_for_fresh_install() {
         "idx_request_logs_visible_created_at_ms_id"
     ));
     assert!(test_has_index(&conn, "idx_request_logs_cli_id"));
+    assert!(test_has_column(&conn, "request_logs", "last_activity_ms"));
+    assert!(test_has_column(
+        &conn,
+        "request_logs",
+        "activity_details_json"
+    ));
 
     // Verify prompts was migrated to workspace_id
     assert!(test_has_column(&conn, "prompts", "workspace_id"));

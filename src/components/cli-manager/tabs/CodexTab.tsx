@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import {
   cliManagerCodexConfigTomlValidate,
   type CodexConfigPatch,
@@ -1453,6 +1454,20 @@ export function CliManagerCodexTab({
 
     setTomlEditEnabled(false);
     setTomlDirty(false);
+  }
+
+  async function saveSandboxMode(next: string) {
+    if (next === "danger-full-access") {
+      const ok = await confirmDialog(
+        "你选择了 danger-full-access（危险：完全访问）。确认要继续吗？"
+      );
+      if (!ok) {
+        setSandboxModeText(codexConfig?.sandbox_mode ?? "");
+        return;
+      }
+    }
+    setSandboxModeText(next);
+    void persistCodexConfig({ sandbox_mode: next });
   }
 
   async function persistConfigLocation(
@@ -4143,20 +4158,7 @@ export function CliManagerCodexTab({
                 >
                   <Select
                     value={sandboxModeText}
-                    onChange={(e) => {
-                      const next = e.currentTarget.value;
-                      if (next === "danger-full-access") {
-                        const ok = window.confirm(
-                          "你选择了 danger-full-access（危险：完全访问）。确认要继续吗？"
-                        );
-                        if (!ok) {
-                          setSandboxModeText(codexConfig.sandbox_mode ?? "");
-                          return;
-                        }
-                      }
-                      setSandboxModeText(next);
-                      void persistCodexConfig({ sandbox_mode: next });
-                    }}
+                    onChange={(e) => void saveSandboxMode(e.currentTarget.value)}
                     disabled={saving}
                     className="w-[220px] max-w-full font-mono"
                   >

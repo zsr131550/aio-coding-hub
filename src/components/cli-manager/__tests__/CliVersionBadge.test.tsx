@@ -1,8 +1,13 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { CliVersionBadge } from "../CliVersionBadge";
 import { cliCheckLatestVersion, cliUpdateCli } from "../../../services/cli/cliUpdate";
 import { toast } from "sonner";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  confirm: vi.fn(),
+}));
 
 vi.mock("../../../services/cli/cliUpdate", () => ({
   cliCheckLatestVersion: vi.fn(),
@@ -16,6 +21,7 @@ vi.mock("sonner", () => ({
 describe("components/cli-manager/CliVersionBadge", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(confirm).mockReset();
   });
 
   it("shows up-to-date state", async () => {
@@ -59,8 +65,7 @@ describe("components/cli-manager/CliVersionBadge", () => {
       output: "updated",
       error: null,
     });
-
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(confirm).mockResolvedValue(true);
 
     render(<CliVersionBadge cliKey="codex" installedVersion="1.0.0" />);
 
@@ -74,7 +79,31 @@ describe("components/cli-manager/CliVersionBadge", () => {
       expect(cliUpdateCli).toHaveBeenCalledWith("codex");
     });
     expect(toast.success).toHaveBeenCalled();
-    confirmSpy.mockRestore();
+  });
+
+  it("does not run update when confirmation is cancelled", async () => {
+    vi.mocked(cliCheckLatestVersion).mockResolvedValue({
+      cliKey: "codex",
+      npmPackage: "@openai/codex",
+      installedVersion: "1.0.0",
+      latestVersion: "1.1.0",
+      updateAvailable: true,
+      error: null,
+    });
+    vi.mocked(confirm).mockResolvedValue(false);
+
+    render(<CliVersionBadge cliKey="codex" installedVersion="1.0.0" />);
+
+    await waitFor(() => {
+      expect(screen.getByText("最新: v1.1.0")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "更新" }));
+
+    await waitFor(() => {
+      expect(confirm).toHaveBeenCalled();
+    });
+    expect(cliUpdateCli).not.toHaveBeenCalled();
   });
 
   it("reruns latest-version check when refresh token changes", async () => {

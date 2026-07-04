@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../../ui/Button";
@@ -83,7 +84,7 @@ export function CliVersionBadge({
 
   async function handleUpdate() {
     if (!result) return;
-    const ok = window.confirm(
+    const ok = await confirmDialog(
       `确认更新 ${cliKey} CLI 到最新版本 ${result.latestVersion ? `v${result.latestVersion}` : ""} 吗？`
     );
     if (!ok) return;

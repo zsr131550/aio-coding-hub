@@ -1,9 +1,14 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { cliManagerCodexConfigTomlValidate } from "../../../../services/cli/cliManager";
 import { useCliManagerCodexReasoningGuardStatsQuery } from "../../../../query/cliManager";
 import { CliManagerCodexTab } from "../CodexTab";
 import { createTestAppSettings } from "../../../../test/fixtures/settings";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  confirm: vi.fn(),
+}));
 
 vi.mock("../../../../utils/platform", () => ({
   isWindowsRuntime: () => true,
@@ -180,6 +185,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
   let reasoningGuardStatsRefetch: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    vi.mocked(confirm).mockReset();
     reasoningGuardStatsRefetch = vi.fn();
     mockReasoningGuardStatsQuery.mockReturnValue({
       data: createReasoningGuardStats(),
@@ -188,15 +194,12 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     } as any);
   });
 
-  it("handles sandbox confirm flow and toggles", () => {
+  it("handles sandbox confirm flow and toggles", async () => {
     const persistCodexConfig = vi.fn();
     const refreshCodex = vi.fn();
     const openCodexConfigDir = vi.fn();
 
-    const confirmSpy = vi
-      .spyOn(window, "confirm")
-      .mockReturnValueOnce(false)
-      .mockReturnValueOnce(true);
+    vi.mocked(confirm).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 
     render(
       <CliManagerCodexTab
@@ -228,14 +231,20 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(sandboxItem).toBeTruthy();
     const sandboxSelect = within(sandboxItem as HTMLElement).getByRole("combobox");
     fireEvent.change(sandboxSelect, { target: { value: "danger-full-access" } });
-    expect(confirmSpy).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect((sandboxSelect as HTMLSelectElement).value).toBe("workspace-write");
+    });
     expect(persistCodexConfig).not.toHaveBeenCalledWith(
       expect.objectContaining({ sandbox_mode: "danger-full-access" })
     );
 
     // Confirm selection.
     fireEvent.change(sandboxSelect, { target: { value: "danger-full-access" } });
-    expect(persistCodexConfig).toHaveBeenCalledWith({ sandbox_mode: "danger-full-access" });
+    await waitFor(() => {
+      expect(confirm).toHaveBeenCalledTimes(2);
+      expect(persistCodexConfig).toHaveBeenCalledWith({ sandbox_mode: "danger-full-access" });
+    });
 
     // Toggle the linked fast mode switch.
     const fastModeItem = screen.getByText("fast_mode").parentElement?.parentElement;
@@ -293,8 +302,6 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     // Exercise remaining toggle handlers for function/branch coverage.
     for (const sw of screen.getAllByRole("switch")) fireEvent.click(sw);
-
-    confirmSpy.mockRestore();
   });
 
   it("toggles Codex OAuth compatible proxy mode from app settings", () => {

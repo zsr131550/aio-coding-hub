@@ -1025,7 +1025,8 @@ fn ensure_provider_upstream_retry_policy(conn: &mut Connection) -> Result<(), St
 }
 
 // ---------------------------------------------------------------------------
-// ensure_request_logs_extended_columns (provider_chain_json, error_details_json, visible_ttfb_ms)
+// ensure_request_logs_extended_columns
+// (provider_chain_json, error_details_json, visible_ttfb_ms, last_activity_ms, activity_details_json)
 // ---------------------------------------------------------------------------
 
 fn ensure_request_logs_extended_columns(conn: &mut Connection) -> Result<(), String> {
@@ -1056,6 +1057,16 @@ fn ensure_request_logs_extended_columns(conn: &mut Connection) -> Result<(), Str
     if !column_exists(conn, "request_logs", "visible_ttfb_ms")? {
         conn.execute_batch("ALTER TABLE request_logs ADD COLUMN visible_ttfb_ms INTEGER;")
             .map_err(|e| format!("failed to ensure request_logs.visible_ttfb_ms: {e}"))?;
+    }
+
+    if !column_exists(conn, "request_logs", "last_activity_ms")? {
+        conn.execute_batch("ALTER TABLE request_logs ADD COLUMN last_activity_ms INTEGER;")
+            .map_err(|e| format!("failed to ensure request_logs.last_activity_ms: {e}"))?;
+    }
+
+    if !column_exists(conn, "request_logs", "activity_details_json")? {
+        conn.execute_batch("ALTER TABLE request_logs ADD COLUMN activity_details_json TEXT;")
+            .map_err(|e| format!("failed to ensure request_logs.activity_details_json: {e}"))?;
     }
 
     Ok(())
