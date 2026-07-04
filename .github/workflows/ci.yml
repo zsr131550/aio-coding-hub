@@ -137,9 +137,6 @@ jobs:
         run: pnpm plugin-sdk:typecheck
 
       - name: Plugin TypeScript SDK tests
-        run: pnpm --filter @aio-coding-hub/plugin-sdk test
-
-      - name: Plugin TypeScript SDK tests
         run: pnpm plugin-sdk:test
 
       - name: Plugin scaffolder tests

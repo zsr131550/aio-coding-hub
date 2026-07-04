@@ -199,7 +199,7 @@ const HOMEBREW_CASK = Object.freeze({
   appName: "AIO Coding Hub.app",
   name: "AIO Coding Hub",
   desc: "Local AI CLI unified gateway",
-  homepage: "https://github.com/dyndynjyxa/aio-coding-hub",
+  homepage: "https://github.com/FingerCaster/aio-coding-hub",
   bundleIdentifier: "io.aio.codinghub",
 });
 
@@ -421,7 +421,7 @@ function buildHomebrewCask({ tag, repo, macosArmSha256, macosIntelSha256 }) {
   const intelSha256 = normalizeSha256(macosIntelSha256, "macOS Intel zip");
 
   return [
-    "# This file is generated from dyndynjyxa/aio-coding-hub.",
+    `# This file is generated from ${repo}.`,
     "# Update it by running `node scripts/support-matrix.mjs homebrew-cask` in the source repo.",
     `cask "${HOMEBREW_CASK.token}" do`,
     '  arch arm: "arm", intel: "intel"',
@@ -575,6 +575,12 @@ function checkWorkflowContracts() {
   );
   assertWorkflowContains(ciWorkflow, "run: pnpm audit:deps", "ci fail-close dependency audit");
 
+  assertWorkflowContains(releaseWorkflow, "workflow_dispatch:", "manual release trigger");
+  if (/^  push:/m.test(releaseWorkflow)) {
+    throw new Error(
+      "Workflow contract drifted: release workflow must be workflow_dispatch-only until a local MSI has been tested and publication is explicitly approved."
+    );
+  }
   assertWorkflowContains(
     releaseWorkflow,
     "run: node scripts/support-matrix.mjs check",
@@ -604,6 +610,11 @@ function checkWorkflowContracts() {
     releaseWorkflow,
     "node scripts/support-matrix.mjs homebrew-cask \\",
     "Homebrew Cask generation delegation"
+  );
+  assertWorkflowContains(
+    releaseWorkflow,
+    "HOMEBREW_TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY || 'FingerCaster/homebrew-aio-coding-hub' }}",
+    "fork-owned Homebrew tap default"
   );
   assertWorkflowContains(releaseWorkflow, "HOMEBREW_TAP_TOKEN", "optional Homebrew tap sync token");
 }
