@@ -4296,4 +4296,144 @@ module.exports.activate = function activate(api) {
 
         json_task.abort();
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_runtime_router_claude_compact_request_persists_request_kind_special_setting() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let app_settings = settings::AppSettings::default();
+        settings::write(&app_handle, &app_settings).expect("write settings");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-route-compact-kind-test.sqlite"))
+            .expect("init test db");
+        let (upstream_base_url, upstream_task) = spawn_json_upstream(
+            r#"{"id":"msg_compact","type":"message","role":"assistant","content":[{"type":"text","text":"summary"}],"model":"claude-3-5-sonnet","usage":{"input_tokens":1,"output_tokens":1}}"#,
+        )
+        .await;
+        let provider_id =
+            insert_provider_with_priority(&db, "claude", "Compact Stub", upstream_base_url, 0);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/claude/_aio/provider/{provider_id}/v1/messages"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"claude-3-5-sonnet","max_tokens":512,"system":[{"type":"text","text":"You are a helpful AI assistant tasked with summarizing conversations. Follow the instructions."}],"messages":[{"role":"user","content":"Your task is to create a detailed summary of the conversation so far."}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.cli_key, "claude");
+        assert_eq!(log.path, "/v1/messages");
+        assert_eq!(log.status, Some(200));
+
+        let special_settings: Value = serde_json::from_str(
+            log.special_settings_json
+                .as_deref()
+                .expect("special settings json"),
+        )
+        .expect("special settings json parses");
+        let special_settings = special_settings.as_array().expect("special settings array");
+        assert!(special_settings.iter().any(|entry| {
+            entry.get("type").and_then(Value::as_str) == Some("request_kind")
+                && entry.get("kind").and_then(Value::as_str) == Some("compact")
+        }));
+
+        upstream_task.abort();
+    }
+
+    /// Upstream that delays the first response byte, then sends a full JSON
+    /// response (models a provider re-processing a huge compact prompt).
+    async fn spawn_delayed_json_upstream(
+        body: &'static str,
+        first_byte_delay: Duration,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind delayed json upstream stub");
+        let addr = listener.local_addr().expect("delayed json upstream addr");
+        let task = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                tokio::time::sleep(first_byte_delay).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        (format!("http://{addr}"), task)
+    }
+
+    /// Proves the compact first-byte timeout widening is wired through to the
+    /// actual send path: with a 1s configured first-byte timeout and an
+    /// upstream that stalls 2s before the first byte, a compact request must
+    /// still succeed (widened to 300s). Without the widening this setup times
+    /// out — see `mock_runtime_router_timeout_stub_returns_bad_gateway_and_emits_request_log`,
+    /// which proves the 1s timeout fires on the same send path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_runtime_router_claude_compact_request_survives_first_byte_delay_beyond_configured_timeout(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.upstream_first_byte_timeout_seconds = 1;
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-compact-timeout-test.sqlite"),
+        )
+        .expect("init test db");
+        let (upstream_base_url, upstream_task) = spawn_delayed_json_upstream(
+            r#"{"id":"msg_compact_slow","type":"message","role":"assistant","content":[{"type":"text","text":"summary"}],"model":"claude-3-5-sonnet","usage":{"input_tokens":1,"output_tokens":1}}"#,
+            Duration::from_secs(2),
+        )
+        .await;
+        let provider_id =
+            insert_provider_with_priority(&db, "claude", "Compact Slow Stub", upstream_base_url, 0);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/claude/_aio/provider/{provider_id}/v1/messages"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"claude-3-5-sonnet","max_tokens":512,"system":[{"type":"text","text":"You are a helpful AI assistant tasked with summarizing conversations. Follow the instructions."}],"messages":[{"role":"user","content":"Your task is to create a detailed summary of the conversation so far."}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.error_code, None);
+
+        upstream_task.abort();
+    }
 }
