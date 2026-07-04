@@ -26,7 +26,7 @@ import type { NoticePermissionStatus } from "./useSystemNotification";
 import type { CliKey } from "../../services/providers/providers";
 import { ContributionSlot } from "../../plugins/contributions/ContributionSlot";
 
-type PersistKey = "preferred_port" | "log_retention_days";
+type PersistKey = "preferred_port" | "log_retention_days" | "request_log_retention_days";
 type BooleanPersistKey =
   | "show_home_heatmap"
   | "show_home_usage"
@@ -42,6 +42,7 @@ type SettingsPersistPatch = Partial<{
   start_minimized: boolean;
   tray_enabled: boolean;
   enable_debug_log: boolean;
+  request_log_retention_days: number;
 }>;
 
 const HOME_USAGE_PERIOD_OPTIONS: Array<{ value: HomeUsagePeriod; label: string }> = [
@@ -87,6 +88,8 @@ export type SettingsMainColumnProps = {
   setTrayEnabled: (next: boolean) => void;
   logRetentionDays: number;
   setLogRetentionDays: (next: number) => void;
+  requestLogRetentionDays: number;
+  setRequestLogRetentionDays: (next: number) => void;
   enableDebugLog: boolean;
   setEnableDebugLog: (next: boolean) => void;
   requestPersist: (patch: SettingsPersistPatch) => void;
@@ -275,6 +278,8 @@ function SystemSettingsPanel({
   setEnableDebugLog,
   logRetentionDays,
   setLogRetentionDays,
+  requestLogRetentionDays,
+  setRequestLogRetentionDays,
   settingsInputsDisabled,
   requestPersist,
   commitNumberField,
@@ -290,6 +295,8 @@ function SystemSettingsPanel({
   | "setEnableDebugLog"
   | "logRetentionDays"
   | "setLogRetentionDays"
+  | "requestLogRetentionDays"
+  | "setRequestLogRetentionDays"
   | "requestPersist"
   | "commitNumberField"
 > & {
@@ -356,6 +363,33 @@ function SystemSettingsPanel({
               onKeyDown={blurOnEnter}
               className="h-8 w-16 text-xs"
               min={1}
+              max={3650}
+              disabled={settingsInputsDisabled}
+            />
+            <span className="text-sm text-muted-foreground">天</span>
+          </div>
+        </SettingsRow>
+        <SettingsRow label="请求记录保留">
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              value={requestLogRetentionDays}
+              onChange={(e) => {
+                const next = e.currentTarget.valueAsNumber;
+                if (Number.isFinite(next)) setRequestLogRetentionDays(next);
+              }}
+              onBlur={(e) =>
+                commitNumberField({
+                  key: "request_log_retention_days",
+                  next: e.currentTarget.valueAsNumber,
+                  min: 0,
+                  max: 3650,
+                  invalidMessage: "请求记录保留必须为 0（永久）或 1-3650 天",
+                })
+              }
+              onKeyDown={blurOnEnter}
+              className="h-8 w-16 text-xs"
+              min={0}
               max={3650}
               disabled={settingsInputsDisabled}
             />
@@ -668,6 +702,8 @@ export function SettingsMainColumn({
   setTrayEnabled,
   logRetentionDays,
   setLogRetentionDays,
+  requestLogRetentionDays,
+  setRequestLogRetentionDays,
   enableDebugLog,
   setEnableDebugLog,
   requestPersist,
@@ -729,6 +765,8 @@ export function SettingsMainColumn({
           setEnableDebugLog,
           logRetentionDays,
           setLogRetentionDays,
+          requestLogRetentionDays,
+          setRequestLogRetentionDays,
           settingsInputsDisabled,
           requestPersist,
           commitNumberField,

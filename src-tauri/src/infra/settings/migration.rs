@@ -894,6 +894,14 @@ pub(super) fn sanitize_log_retention_days(settings: &mut AppSettings) -> bool {
     false
 }
 
+pub(super) fn sanitize_request_log_retention_days(settings: &mut AppSettings) -> bool {
+    if settings.request_log_retention_days > MAX_REQUEST_LOG_RETENTION_DAYS {
+        settings.request_log_retention_days = MAX_REQUEST_LOG_RETENTION_DAYS;
+        return true;
+    }
+    false
+}
+
 pub(super) fn sanitize_provider_cooldown_seconds(settings: &mut AppSettings) -> bool {
     if settings.provider_cooldown_seconds > MAX_PROVIDER_COOLDOWN_SECONDS {
         settings.provider_cooldown_seconds = MAX_PROVIDER_COOLDOWN_SECONDS;
@@ -1723,6 +1731,7 @@ pub(super) fn repair_settings(
 ) -> AppResult<bool> {
     let mut repaired = apply_settings_migrations(settings, schema_version_present);
     repaired |= sanitize_log_retention_days(settings);
+    repaired |= sanitize_request_log_retention_days(settings);
     repaired |= sanitize_failover_settings(settings);
     repaired |= sanitize_upstream_retry_policy(&mut settings.upstream_retry_policy);
     repaired |= sanitize_circuit_breaker_settings(settings);

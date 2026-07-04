@@ -183,6 +183,7 @@ mod tests {
             circuit_state_after: None,
             circuit_failure_count: Some(0),
             circuit_failure_threshold: Some(5),
+            provider_bridged: Some(true),
         };
 
         let logged_attempts: Vec<FailoverAttempt> = Some(attempt.clone()).iter().cloned().collect();

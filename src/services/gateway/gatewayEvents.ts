@@ -1,5 +1,5 @@
 import { GatewayErrorCodes } from "../../constants/gatewayErrorCodes";
-import { gatewayEventNames } from "../../constants/gatewayEvents";
+import { GATEWAY_EVENT_TEXT_LIMITS, gatewayEventNames } from "../../constants/gatewayEvents";
 import { computeOutputTokensPerSecond as computeOutputTokensPerSecondRaw } from "../../utils/formatters";
 import { logToConsole, shouldLogToConsole } from "../consoleLog";
 import { subscribeGatewayEvent } from "./gatewayEventBus";
@@ -41,6 +41,8 @@ export type GatewayRequestEvent = {
   cache_creation_input_tokens?: number | null;
   cache_creation_5m_input_tokens?: number | null;
   cache_creation_1h_input_tokens?: number | null;
+  // Backend-computed (single source of truth); never re-derive on the frontend.
+  effective_input_tokens?: number | null;
   claude_model_mapping?: ClaudeModelMapping | null;
 };
 
@@ -175,13 +177,15 @@ function computeOutputTokensPerSecond(payload: GatewayRequestEvent) {
 
 type GatewayEventGuard<TPayload> = (payload: unknown) => payload is TPayload;
 
-const EVENT_ID_MAX_LENGTH = 256;
-const EVENT_METHOD_MAX_LENGTH = 32;
-const EVENT_STATE_MAX_LENGTH = 64;
-const EVENT_SHORT_TEXT_MAX_LENGTH = 512;
-const EVENT_PATH_MAX_LENGTH = 2048;
-const EVENT_QUERY_MAX_LENGTH = 4096;
-const EVENT_URL_MAX_LENGTH = 2048;
+const {
+  ID_MAX_LENGTH: EVENT_ID_MAX_LENGTH,
+  METHOD_MAX_LENGTH: EVENT_METHOD_MAX_LENGTH,
+  STATE_MAX_LENGTH: EVENT_STATE_MAX_LENGTH,
+  SHORT_TEXT_MAX_LENGTH: EVENT_SHORT_TEXT_MAX_LENGTH,
+  PATH_MAX_LENGTH: EVENT_PATH_MAX_LENGTH,
+  QUERY_MAX_LENGTH: EVENT_QUERY_MAX_LENGTH,
+  URL_MAX_LENGTH: EVENT_URL_MAX_LENGTH,
+} = GATEWAY_EVENT_TEXT_LIMITS;
 
 const CIRCUIT_NON_TRANSITION_DEDUP_WINDOW_MS = 3000;
 const CIRCUIT_NON_TRANSITION_DEDUP_MAX_ENTRIES = 500;
@@ -313,7 +317,9 @@ function normalizeGatewayAttempt(payload: unknown): GatewayAttempt | null {
   };
 }
 
-function normalizeGatewayRequestStartEvent(payload: unknown): GatewayRequestStartEvent | null {
+export function normalizeGatewayRequestStartEvent(
+  payload: unknown
+): GatewayRequestStartEvent | null {
   if (!isRecord(payload)) return null;
   if (
     !isStringWithin(payload.trace_id, EVENT_ID_MAX_LENGTH) ||
@@ -378,7 +384,7 @@ export function normalizeGatewayRequestSignalEvent(
   };
 }
 
-function normalizeGatewayAttemptEvent(payload: unknown): GatewayAttemptEvent | null {
+export function normalizeGatewayAttemptEvent(payload: unknown): GatewayAttemptEvent | null {
   if (!isRecord(payload)) return null;
   if (
     !isStringWithin(payload.trace_id, EVENT_ID_MAX_LENGTH) ||
@@ -440,7 +446,7 @@ function normalizeGatewayAttemptEvent(payload: unknown): GatewayAttemptEvent | n
   };
 }
 
-function normalizeGatewayRequestEvent(payload: unknown): GatewayRequestEvent | null {
+export function normalizeGatewayRequestEvent(payload: unknown): GatewayRequestEvent | null {
   if (!isRecord(payload)) return null;
   const attempts = payload.attempts;
   if (!Array.isArray(attempts)) return null;
@@ -474,6 +480,7 @@ function normalizeGatewayRequestEvent(payload: unknown): GatewayRequestEvent | n
     isNullableNumber(payload.cache_creation_input_tokens) &&
     isNullableNumber(payload.cache_creation_5m_input_tokens) &&
     isNullableNumber(payload.cache_creation_1h_input_tokens) &&
+    isNullableNumber(payload.effective_input_tokens) &&
     isNullableClaudeModelMapping(payload.claude_model_mapping)
   ) {
     return {
@@ -501,6 +508,7 @@ function normalizeGatewayRequestEvent(payload: unknown): GatewayRequestEvent | n
       cache_creation_input_tokens: payload.cache_creation_input_tokens,
       cache_creation_5m_input_tokens: payload.cache_creation_5m_input_tokens,
       cache_creation_1h_input_tokens: payload.cache_creation_1h_input_tokens,
+      effective_input_tokens: payload.effective_input_tokens,
       claude_model_mapping: payload.claude_model_mapping,
     };
   }
@@ -508,7 +516,7 @@ function normalizeGatewayRequestEvent(payload: unknown): GatewayRequestEvent | n
   return null;
 }
 
-function isGatewayLogEvent(payload: unknown): payload is GatewayLogEvent {
+export function isGatewayLogEvent(payload: unknown): payload is GatewayLogEvent {
   if (!isRecord(payload)) return false;
   return (
     isStringWithin(payload.level, EVENT_STATE_MAX_LENGTH) &&
@@ -520,7 +528,7 @@ function isGatewayLogEvent(payload: unknown): payload is GatewayLogEvent {
   );
 }
 
-function isGatewayCircuitEvent(payload: unknown): payload is GatewayCircuitEvent {
+export function isGatewayCircuitEvent(payload: unknown): payload is GatewayCircuitEvent {
   if (!isRecord(payload)) return false;
   return (
     isStringWithin(payload.trace_id, EVENT_ID_MAX_LENGTH) &&

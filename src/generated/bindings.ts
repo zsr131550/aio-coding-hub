@@ -3604,6 +3604,7 @@ export type RequestLogDetail = {
   special_settings_json: string | null;
   status: number | null;
   error_code: string | null;
+  is_interrupted: boolean;
   duration_ms: number;
   ttfb_ms: number | null;
   visible_ttfb_ms: number | null;
@@ -3615,6 +3616,7 @@ export type RequestLogDetail = {
   cache_creation_input_tokens: number | null;
   cache_creation_5m_input_tokens: number | null;
   cache_creation_1h_input_tokens: number | null;
+  effective_input_tokens: number | null;
   usage_json: string | null;
   requested_model: string | null;
   final_provider_id: number;
@@ -3656,6 +3658,7 @@ export type RequestLogSummary = {
   requested_model: string | null;
   status: number | null;
   error_code: string | null;
+  is_interrupted: boolean;
   duration_ms: number;
   ttfb_ms: number | null;
   visible_ttfb_ms: number | null;
@@ -3676,6 +3679,7 @@ export type RequestLogSummary = {
   cache_creation_input_tokens: number | null;
   cache_creation_5m_input_tokens: number | null;
   cache_creation_1h_input_tokens: number | null;
+  effective_input_tokens: number | null;
   cost_usd: number | null;
   provider_chain_json: string | null;
   error_details_json: string | null;
@@ -3712,6 +3716,7 @@ export type SettingsUpdate = {
   trayEnabled: boolean | null;
   enableCliProxyStartupRecovery: boolean | null;
   logRetentionDays: number;
+  requestLogRetentionDays: number | null;
   providerCooldownSeconds: number | null;
   providerBaseUrlPingCacheTtlSeconds: number | null;
   upstreamFirstByteTimeoutSeconds: number | null;
@@ -3830,6 +3835,7 @@ export type SettingsView = {
   tray_enabled: boolean;
   enable_cli_proxy_startup_recovery: boolean;
   log_retention_days: number;
+  request_log_retention_days: number;
   provider_cooldown_seconds: number;
   provider_base_url_ping_cache_ttl_seconds: number;
   upstream_first_byte_timeout_seconds: number;

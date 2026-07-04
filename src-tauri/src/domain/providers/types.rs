@@ -55,6 +55,13 @@ pub(crate) fn is_cx2cc_bridge(bridge_type: Option<&str>) -> bool {
     bridge_type == Some(CX2CC_BRIDGE_TYPE)
 }
 
+pub(crate) fn has_bridged_input_semantics(
+    source_provider_id: Option<i64>,
+    bridge_type: Option<&str>,
+) -> bool {
+    source_provider_id.is_some() || is_cx2cc_bridge(bridge_type)
+}
+
 pub(crate) fn is_codex_bridge_type(bridge_type: &str) -> bool {
     matches!(
         bridge_type,

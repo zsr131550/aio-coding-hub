@@ -34,6 +34,7 @@
     "create-aio-plugin:test": "pnpm --filter create-aio-plugin test",
     "test:e2e": "vitest run src/e2e",
     "check:support-matrix": "node scripts/support-matrix.mjs check",
+    "check:homebrew-cask": "node scripts/support-matrix.homebrew-cask.selftest.mjs",
     "check:precommit": "pnpm check:precommit:src && pnpm check:precommit:tauri",
     "check:prepush": "pnpm test:unit:shards && pnpm plugin-sdk:test && pnpm create-aio-plugin:test && pnpm check:generated-bindings && pnpm tauri:test && pnpm tauri:clippy",
     "hooks:install": "node scripts/install-git-hooks.mjs",

@@ -296,6 +296,7 @@ pub(super) struct ProviderCtx<'a> {
     pub(super) active_requested_model: Option<&'a str>,
     pub(super) auth_mode: &'a str,
     pub(super) provider_index: u32,
+    pub(super) provider_bridged: bool,
     pub(super) session_reuse: Option<bool>,
     pub(super) provider_max_attempts: u32,
     pub(super) stream_idle_timeout_seconds: Option<u32>,
@@ -310,6 +311,7 @@ pub(super) struct ProviderCtxOwned {
     pub(super) active_requested_model: Option<String>,
     pub(super) auth_mode: String,
     pub(super) provider_index: u32,
+    pub(super) provider_bridged: bool,
     pub(super) session_reuse: Option<bool>,
     pub(super) provider_max_attempts: u32,
     pub(super) stream_idle_timeout_seconds: Option<u32>,
@@ -325,6 +327,7 @@ impl<'a> From<ProviderCtx<'a>> for ProviderCtxOwned {
             active_requested_model: ctx.active_requested_model.map(str::to_string),
             auth_mode: ctx.auth_mode.to_string(),
             provider_index: ctx.provider_index,
+            provider_bridged: ctx.provider_bridged,
             session_reuse: ctx.session_reuse,
             provider_max_attempts: ctx.provider_max_attempts,
             stream_idle_timeout_seconds: ctx.stream_idle_timeout_seconds,
@@ -397,6 +400,8 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
 pub(super) struct AttemptCtx<'a> {
     pub(super) attempt_index: u32,
     pub(super) retry_index: u32,
+    #[allow(dead_code)]
+    pub(super) provider_max_attempts: u32,
     pub(super) attempt_started_ms: u128,
     pub(super) attempt_started: Instant,
     pub(super) circuit_before: &'a circuit_breaker::CircuitSnapshot,

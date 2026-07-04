@@ -60,6 +60,7 @@ where
     let attempt_ctx = AttemptCtx {
         attempt_index: indices.attempt_index,
         retry_index: indices.retry_index,
+        provider_max_attempts: prepared.provider_max_attempts,
         attempt_started_ms: timing.attempt_started_ms,
         attempt_started: timing.attempt_started,
         circuit_before: &circuit_before,
@@ -77,6 +78,7 @@ where
         active_requested_model: prepared.active_requested_model.as_deref(),
         auth_mode: prepared.auth_mode.as_str(),
         provider_index: prepared.provider_index,
+        provider_bridged: prepared.provider_bridged,
         session_reuse: prepared.session_reuse,
         provider_max_attempts: prepared.provider_max_attempts,
         stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,
@@ -167,6 +169,7 @@ where
     let attempt_ctx = AttemptCtx {
         attempt_index: indices.attempt_index,
         retry_index: indices.retry_index,
+        provider_max_attempts: prepared.provider_max_attempts,
         attempt_started_ms: timing.attempt_started_ms,
         attempt_started: timing.attempt_started,
         circuit_before: &circuit_before,
@@ -184,6 +187,7 @@ where
         active_requested_model: prepared.active_requested_model.as_deref(),
         auth_mode: prepared.auth_mode.as_str(),
         provider_index: prepared.provider_index,
+        provider_bridged: prepared.provider_bridged,
         session_reuse: prepared.session_reuse,
         provider_max_attempts: prepared.provider_max_attempts,
         stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,
@@ -249,6 +253,7 @@ where
     let attempt_ctx = AttemptCtx {
         attempt_index: indices.attempt_index,
         retry_index: indices.retry_index,
+        provider_max_attempts: prepared.provider_max_attempts,
         attempt_started_ms: timing.attempt_started_ms,
         attempt_started: timing.attempt_started,
         circuit_before: &circuit_before,
@@ -266,6 +271,7 @@ where
         active_requested_model: prepared.active_requested_model.as_deref(),
         auth_mode: prepared.auth_mode.as_str(),
         provider_index: prepared.provider_index,
+        provider_bridged: prepared.provider_bridged,
         session_reuse: prepared.session_reuse,
         provider_max_attempts: prepared.provider_max_attempts,
         stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,

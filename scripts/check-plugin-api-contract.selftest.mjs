@@ -283,7 +283,7 @@ function writePassingScaffold(root) {
         "log.redact",
         "network.fetch",
       ].join(" "),
-      'DEFAULT_HOOK_TIMEOUT_MS: u64 = 150',
+      "DEFAULT_HOOK_TIMEOUT_MS: u64 = 150",
       'DEFAULT_FAILURE_POLICY: &str = "fail-open"',
       "timeout_ms: DEFAULT_HOOK_TIMEOUT_MS",
       "default_failure_policy: DEFAULT_FAILURE_POLICY",

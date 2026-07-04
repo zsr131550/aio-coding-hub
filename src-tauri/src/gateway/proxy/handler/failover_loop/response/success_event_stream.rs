@@ -669,6 +669,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         provider_base_url_base,
         auth_mode,
         provider_index,
+        provider_bridged,
         session_reuse,
         ..
     } = provider_ctx;
@@ -765,6 +766,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         provider_index: Some(provider_index),
         retry_index: Some(retry_index),
         session_reuse,
+        provider_bridged: Some(provider_bridged),
         error_category: Some(category.as_str()),
         error_code: Some(error_code),
         decision: Some(decision.as_str()),
@@ -1639,6 +1641,7 @@ where
                             circuit_before.state.as_str(),
                             circuit_before.failure_count,
                             circuit_before.failure_threshold,
+                            provider_ctx_owned.provider_bridged,
                             matched,
                             budget_decision,
                         );
@@ -1851,6 +1854,7 @@ where
                         circuit_before.state.as_str(),
                         circuit_before.failure_count,
                         circuit_before.failure_threshold,
+                        provider_ctx_owned.provider_bridged,
                         matched,
                         budget_decision,
                     );
@@ -2044,6 +2048,7 @@ where
                 provider_index: Some(provider_index),
                 retry_index: Some(retry_index),
                 session_reuse,
+                provider_bridged: Some(provider_ctx_owned.provider_bridged),
                 error_category: None,
                 error_code: None,
                 decision: Some("success"),
@@ -2261,6 +2266,7 @@ where
             circuit_state_after: None,
             circuit_failure_count: Some(circuit_before.failure_count),
             circuit_failure_threshold: Some(circuit_before.failure_threshold),
+            provider_bridged: Some(provider_ctx_owned.provider_bridged),
         });
 
         emit_attempt_event_and_log_with_circuit_before(

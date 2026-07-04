@@ -16,5 +16,5 @@ done < <(git rev-parse --local-env-vars)
 # tests accidentally execute ref names as commands.
 exec </dev/null
 
-echo "[pre-push] Running full pre-push checks (coverage + tauri test + clippy)..."
+echo "[pre-push] Running full pre-push checks (CI mirror: static checks + sharded coverage gate + tauri test + clippy)..."
 pnpm run check:prepush

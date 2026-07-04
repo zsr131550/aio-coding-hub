@@ -100,6 +100,7 @@ fn respond_warmup_intercept<R: tauri::Runtime>(
         circuit_state_after: None,
         circuit_failure_count: None,
         circuit_failure_threshold: None,
+        provider_bridged: None,
     }];
 
     emit_request_event_and_spawn_request_log(

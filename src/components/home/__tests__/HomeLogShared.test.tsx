@@ -6,7 +6,6 @@ import type { TraceSession } from "../../../services/gateway/traceStore";
 import {
   buildRequestLogAuditMeta,
   buildRequestRouteMeta,
-  computeEffectiveInputTokens,
   computeStatusBadge,
   FastModeBadge,
   FolderBadge,
@@ -712,8 +711,5 @@ describe("components/home/HomeLogShared", () => {
     expect(screen.getByText("workspace-alpha")).toBeInTheDocument();
     expect(screen.getByTitle("/tmp/workspace-alpha")).toHaveClass("border-border/45");
     expect(getErrorCodeLabel(GatewayErrorCodes.UPSTREAM_TIMEOUT)).toBe("上游超时");
-    expect(computeEffectiveInputTokens("codex", 100, 30)).toBe(70);
-    expect(computeEffectiveInputTokens("claude", 100, 30)).toBe(100);
-    expect(computeEffectiveInputTokens("claude", null, 30)).toBeNull();
   });
 });

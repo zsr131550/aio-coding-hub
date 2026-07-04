@@ -49,6 +49,8 @@ function makeLog(
     activity_details_json: null,
     created_at: 0,
     ...overrides,
+    is_interrupted: overrides.is_interrupted ?? false,
+    effective_input_tokens: overrides.effective_input_tokens ?? null,
   };
 }
 

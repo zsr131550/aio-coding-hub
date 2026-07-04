@@ -91,6 +91,10 @@ pub(super) struct FailoverAttempt {
     pub(super) circuit_state_after: Option<&'static str>,
     pub(super) circuit_failure_count: Option<u32>,
     pub(super) circuit_failure_threshold: Option<u32>,
+    // Whether the attempted provider has bridged (cx2cc) input semantics; None
+    // for synthetic attempts without a concrete provider. Feeds the request
+    // event's effective_input_tokens.
+    pub(super) provider_bridged: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
@@ -128,6 +132,9 @@ struct GatewayRequestEvent {
     cache_creation_input_tokens: Option<i64>,
     cache_creation_5m_input_tokens: Option<i64>,
     cache_creation_1h_input_tokens: Option<i64>,
+    // Backend-computed via domain::usage_stats::effective_input_tokens so the
+    // frontend never re-derives the formula (single source of truth).
+    effective_input_tokens: Option<i64>,
     claude_model_mapping: Option<ClaudeModelMapping>,
 }
 
@@ -419,6 +426,21 @@ pub(super) fn emit_request_event<R: tauri::Runtime>(
     }
 
     let usage = usage.unwrap_or_default();
+    // The last attempt with a concrete provider decides the input semantics
+    // (skipped/synthetic attempts carry None), matching final-provider
+    // resolution in the persisted log.
+    let final_provider_bridged = attempts
+        .iter()
+        .rev()
+        .find_map(|attempt| attempt.provider_bridged)
+        .unwrap_or(false);
+    // None when usage is unknown (no input_tokens) so the frontend renders "—".
+    let effective_input_tokens = crate::usage_stats::effective_input_tokens_display(
+        &cli_key,
+        final_provider_bridged,
+        usage.input_tokens,
+        usage.cache_read_input_tokens,
+    );
     let payload = GatewayRequestEvent {
         trace_id,
         cli_key,
@@ -442,6 +464,7 @@ pub(super) fn emit_request_event<R: tauri::Runtime>(
         cache_creation_input_tokens: usage.cache_creation_input_tokens,
         cache_creation_5m_input_tokens: usage.cache_creation_5m_input_tokens,
         cache_creation_1h_input_tokens: usage.cache_creation_1h_input_tokens,
+        effective_input_tokens,
         claude_model_mapping,
     };
 
@@ -669,11 +692,213 @@ mod tests {
             circuit_state_after: None,
             circuit_failure_count: None,
             circuit_failure_threshold: None,
+            provider_bridged: Some(false),
         }
     }
 
     fn ascii_len(value: &str) -> usize {
         value.chars().count()
+    }
+
+    // --- Shared payload fixtures ---
+    // These JSON files are the wire contract with the frontend runtime guards
+    // (src/services/gateway/__tests__/gatewayEvents.contract.test.ts validates
+    // the same files). A failing test here means the payload shape changed:
+    // update the fixture AND the frontend types/normalizers together.
+
+    fn fixture_mapping() -> ClaudeModelMapping {
+        ClaudeModelMapping {
+            requested_model: "claude-sonnet-4-5".to_string(),
+            effective_model: "gpt-5.4".to_string(),
+            mapping_kind: "sonnet".to_string(),
+            provider_id: 7,
+            provider_name: "Provider A".to_string(),
+            applied: true,
+        }
+    }
+
+    fn assert_matches_fixture<T: Serialize>(event: &T, fixture: &str) {
+        let expected: serde_json::Value =
+            serde_json::from_str(fixture).expect("parse shared event fixture");
+        let actual = serde_json::to_value(event).expect("serialize event payload");
+        assert_eq!(
+            actual, expected,
+            "event payload no longer matches the shared frontend fixture; \
+             update the fixture and the frontend guards together"
+        );
+    }
+
+    #[test]
+    fn request_event_payload_matches_shared_fixture() {
+        let event = GatewayRequestEvent {
+            trace_id: "trace-fixture-001".to_string(),
+            cli_key: "claude".to_string(),
+            session_id: Some("sess-fixture-001".to_string()),
+            method: "POST".to_string(),
+            path: "/v1/messages".to_string(),
+            query: Some("beta=true".to_string()),
+            requested_model: Some("claude-sonnet-4-5".to_string()),
+            special_settings_json: None,
+            status: Some(200),
+            error_category: None,
+            error_code: None,
+            duration_ms: 2350,
+            ttfb_ms: Some(420),
+            visible_ttfb_ms: Some(420),
+            attempts: vec![FailoverAttempt {
+                provider_id: 7,
+                provider_name: "Provider A".to_string(),
+                base_url: "https://provider-a.example".to_string(),
+                outcome: "success".to_string(),
+                status: Some(200),
+                provider_index: Some(1),
+                retry_index: Some(1),
+                session_reuse: Some(false),
+                provider_bridged: Some(false),
+                error_category: None,
+                error_code: None,
+                decision: None,
+                reason: None,
+                selection_method: Some(decision_chain::SELECTION_METHOD_ORDERED),
+                reason_code: Some(decision_chain::REASON_REQUEST_SUCCESS),
+                attempt_started_ms: Some(1_750_000_000_123),
+                attempt_duration_ms: Some(458),
+                circuit_state_before: Some("CLOSED"),
+                circuit_state_after: Some("CLOSED"),
+                circuit_failure_count: Some(0),
+                circuit_failure_threshold: Some(5),
+            }],
+            input_tokens: Some(1200),
+            output_tokens: Some(350),
+            total_tokens: Some(1550),
+            cache_read_input_tokens: Some(800),
+            cache_creation_input_tokens: Some(100),
+            cache_creation_5m_input_tokens: Some(60),
+            cache_creation_1h_input_tokens: Some(40),
+            // claude + non-bridged provider: effective input == raw input.
+            effective_input_tokens: Some(1200),
+            claude_model_mapping: Some(fixture_mapping()),
+        };
+
+        assert_matches_fixture(
+            &event,
+            include_str!("../../../src/services/gateway/__fixtures__/gatewayEvents/request.json"),
+        );
+    }
+
+    #[test]
+    fn request_start_event_payload_matches_shared_fixture() {
+        let event = GatewayRequestStartEvent {
+            trace_id: "trace-fixture-001".to_string(),
+            cli_key: "claude".to_string(),
+            session_id: Some("sess-fixture-001".to_string()),
+            method: "POST".to_string(),
+            path: "/v1/messages".to_string(),
+            query: Some("beta=true".to_string()),
+            requested_model: Some("claude-sonnet-4-5".to_string()),
+            special_settings_json: None,
+            ts: 1_750_000_000,
+        };
+
+        assert_matches_fixture(
+            &event,
+            include_str!(
+                "../../../src/services/gateway/__fixtures__/gatewayEvents/request_start.json"
+            ),
+        );
+    }
+
+    #[test]
+    fn request_signal_event_payload_matches_shared_fixture() {
+        let event = GatewayRequestSignalEvent {
+            trace_id: "trace-fixture-001".to_string(),
+            cli_key: "claude".to_string(),
+            session_id: Some("sess-fixture-001".to_string()),
+            requested_model: Some("claude-sonnet-4-5".to_string()),
+            phase: "complete",
+            ts: 1_750_000_001,
+        };
+
+        assert_matches_fixture(
+            &event,
+            include_str!(
+                "../../../src/services/gateway/__fixtures__/gatewayEvents/request_signal.json"
+            ),
+        );
+    }
+
+    #[test]
+    fn attempt_event_payload_matches_shared_fixture() {
+        let event = GatewayAttemptEvent {
+            trace_id: "trace-fixture-001".to_string(),
+            cli_key: "claude".to_string(),
+            session_id: Some("sess-fixture-001".to_string()),
+            method: "POST".to_string(),
+            path: "/v1/messages".to_string(),
+            query: Some("beta=true".to_string()),
+            requested_model: Some("claude-sonnet-4-5".to_string()),
+            special_settings_json: None,
+            attempt_index: 1,
+            provider_id: 7,
+            session_reuse: Some(false),
+            provider_name: "Provider A".to_string(),
+            base_url: "https://provider-a.example".to_string(),
+            outcome: "success".to_string(),
+            status: Some(200),
+            attempt_started_ms: 1_750_000_000_123,
+            attempt_duration_ms: 458,
+            circuit_state_before: Some("CLOSED"),
+            circuit_state_after: Some("CLOSED"),
+            circuit_failure_count: Some(0),
+            circuit_failure_threshold: Some(5),
+            claude_model_mapping: Some(fixture_mapping()),
+        };
+
+        assert_matches_fixture(
+            &event,
+            include_str!("../../../src/services/gateway/__fixtures__/gatewayEvents/attempt.json"),
+        );
+    }
+
+    #[test]
+    fn circuit_event_payload_matches_shared_fixture() {
+        let event = GatewayCircuitEvent {
+            trace_id: "trace-fixture-001".to_string(),
+            cli_key: "claude".to_string(),
+            provider_id: 7,
+            provider_name: "Provider A".to_string(),
+            base_url: "https://provider-a.example".to_string(),
+            prev_state: "CLOSED",
+            next_state: "OPEN",
+            failure_count: 5,
+            failure_threshold: 5,
+            open_until: Some(1_750_001_800),
+            cooldown_until: None,
+            reason: "FAILURE_THRESHOLD_REACHED",
+            ts: 1_750_000_000,
+        };
+
+        assert_matches_fixture(
+            &event,
+            include_str!("../../../src/services/gateway/__fixtures__/gatewayEvents/circuit.json"),
+        );
+    }
+
+    #[test]
+    fn log_event_payload_matches_shared_fixture() {
+        let event = GatewayLogEvent {
+            level: "warn",
+            error_code: "GW_PORT_IN_USE",
+            message: "port 37123 already in use".to_string(),
+            requested_port: 37123,
+            bound_port: 37124,
+            base_url: "http://127.0.0.1:37124".to_string(),
+        };
+
+        assert_matches_fixture(
+            &event,
+            include_str!("../../../src/services/gateway/__fixtures__/gatewayEvents/log.json"),
+        );
     }
 
     fn repeated_ascii(count: usize) -> String {
@@ -883,6 +1108,7 @@ mod tests {
             cache_creation_input_tokens: None,
             cache_creation_5m_input_tokens: None,
             cache_creation_1h_input_tokens: None,
+            effective_input_tokens: None,
             claude_model_mapping: None,
         };
 

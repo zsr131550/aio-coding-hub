@@ -22,6 +22,7 @@ use std::time::Instant;
 use tauri::Manager;
 
 static LOG_RETENTION_DAYS_FAIL_OPEN_WARNED: AtomicBool = AtomicBool::new(false);
+static REQUEST_LOG_RETENTION_DAYS_FAIL_OPEN_WARNED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct CachedSettings {
@@ -601,6 +602,24 @@ pub fn log_retention_days_fail_open<R: tauri::Runtime>(app: &tauri::AppHandle<R>
     }
 }
 
+/// Fail-open to 0 (retention disabled): when settings cannot be read we must
+/// never delete request-log history based on a guessed value.
+pub fn request_log_retention_days_fail_open<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> u32 {
+    match read(app) {
+        Ok(cfg) => cfg.request_log_retention_days,
+        Err(err) => {
+            if !REQUEST_LOG_RETENTION_DAYS_FAIL_OPEN_WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    default = DEFAULT_REQUEST_LOG_RETENTION_DAYS,
+                    "settings read failed, disabling request log retention: {}",
+                    err
+                );
+            }
+            DEFAULT_REQUEST_LOG_RETENTION_DAYS
+        }
+    }
+}
+
 pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
     if settings.preferred_port < 1024 {
         return Err("SEC_INVALID_INPUT: preferred_port must be between 1024 and 65535".into());
@@ -837,6 +856,13 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
     if settings.log_retention_days > MAX_LOG_RETENTION_DAYS {
         return Err(format!(
             "SEC_INVALID_INPUT: log_retention_days must be <= {MAX_LOG_RETENTION_DAYS}"
+        )
+        .into());
+    }
+    // 0 is allowed: it disables request-log retention (keep forever).
+    if settings.request_log_retention_days > MAX_REQUEST_LOG_RETENTION_DAYS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: request_log_retention_days must be <= {MAX_REQUEST_LOG_RETENTION_DAYS}"
         )
         .into());
     }

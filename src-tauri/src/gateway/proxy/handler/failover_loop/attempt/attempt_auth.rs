@@ -110,6 +110,7 @@ fn inject_oauth_auth<R: tauri::Runtime>(
                     circuit_state_after: None,
                     circuit_failure_count: Some(error_ctx.circuit_before.failure_count),
                     circuit_failure_threshold: Some(error_ctx.circuit_before.failure_threshold),
+                    provider_bridged: Some(prepared.provider_bridged),
                 }));
             }
             Ok(())
@@ -140,6 +141,7 @@ fn inject_oauth_auth<R: tauri::Runtime>(
                 circuit_state_after: None,
                 circuit_failure_count: Some(error_ctx.circuit_before.failure_count),
                 circuit_failure_threshold: Some(error_ctx.circuit_before.failure_threshold),
+                provider_bridged: Some(prepared.provider_bridged),
             }))
         }
     }

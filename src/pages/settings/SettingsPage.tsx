@@ -47,6 +47,8 @@ export function SettingsPage() {
             setTrayEnabled={persistence.setTrayEnabled}
             logRetentionDays={persistence.logRetentionDays}
             setLogRetentionDays={persistence.setLogRetentionDays}
+            requestLogRetentionDays={persistence.requestLogRetentionDays}
+            setRequestLogRetentionDays={persistence.setRequestLogRetentionDays}
             enableDebugLog={persistence.enableDebugLog}
             setEnableDebugLog={persistence.setEnableDebugLog}
             requestPersist={persistence.requestPersist}

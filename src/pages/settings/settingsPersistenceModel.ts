@@ -22,6 +22,7 @@ export type PersistedSettings = {
   start_minimized: boolean;
   tray_enabled: boolean;
   log_retention_days: number;
+  request_log_retention_days: number;
   provider_cooldown_seconds: number;
   provider_base_url_ping_cache_ttl_seconds: number;
   upstream_first_byte_timeout_seconds: number;
@@ -53,6 +54,7 @@ export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
   start_minimized: false,
   tray_enabled: true,
   log_retention_days: 7,
+  request_log_retention_days: 0,
   provider_cooldown_seconds: 30,
   provider_base_url_ping_cache_ttl_seconds: 60,
   upstream_first_byte_timeout_seconds: 0,
@@ -85,6 +87,7 @@ const PERSISTED_SETTINGS_INPUT_KEYS = [
   "startMinimized",
   "trayEnabled",
   "logRetentionDays",
+  "requestLogRetentionDays",
   "providerCooldownSeconds",
   "providerBaseUrlPingCacheTtlSeconds",
   "upstreamFirstByteTimeoutSeconds",
@@ -165,6 +168,8 @@ export function buildPersistedSettingsSnapshot(
     start_minimized: settingsValue.start_minimized ?? fallback.start_minimized,
     tray_enabled: settingsValue.tray_enabled ?? fallback.tray_enabled,
     log_retention_days: settingsValue.log_retention_days,
+    request_log_retention_days:
+      settingsValue.request_log_retention_days ?? fallback.request_log_retention_days,
     provider_cooldown_seconds:
       settingsValue.provider_cooldown_seconds ?? fallback.provider_cooldown_seconds,
     provider_base_url_ping_cache_ttl_seconds:
@@ -224,6 +229,12 @@ export function validatePersistedSettings(desired: PersistedSettings, keys: Pers
   if (keys.includes("log_retention_days")) {
     if (!isIntegerInRange(desired.log_retention_days, 1, 3650)) {
       return "日志保留必须为 1-3650 天";
+    }
+  }
+
+  if (keys.includes("request_log_retention_days")) {
+    if (!isIntegerInRange(desired.request_log_retention_days, 0, 3650)) {
+      return "请求记录保留必须为 0（永久）或 1-3650 天";
     }
   }
 

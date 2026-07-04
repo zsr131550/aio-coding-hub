@@ -137,6 +137,7 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
         circuit_state_after,
         circuit_failure_count,
         circuit_failure_threshold,
+        provider_bridged: Some(provider_ctx.provider_bridged),
     });
 
     emit_attempt_event_and_log_with_circuit_before(

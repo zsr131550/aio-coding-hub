@@ -34,6 +34,9 @@ const WRITE_THROUGH_MAX_CONCURRENT: usize = 4;
 const INSERT_RETRY_MAX_ATTEMPTS: u32 = 8;
 const INSERT_RETRY_BASE_DELAY_MS: u64 = 20;
 const INSERT_RETRY_MAX_DELAY_MS: u64 = 500;
+const RETENTION_PURGE_BATCH_SIZE: usize = 1000;
+const RETENTION_PURGE_BATCH_PAUSE_MS: u64 = 50;
+const RETENTION_TASK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 const COST_MULTIPLIER_CACHE_MAX_ENTRIES: usize = 256;
 const MODEL_PRICE_CACHE_MAX_ENTRIES: usize = 512;
@@ -390,6 +393,74 @@ pub fn spawn_write_through<R: tauri::Runtime>(
         }
     });
     true
+}
+
+/// Deletes request logs older than `retention_days`, in small batches so the
+/// write lock is never held long. `retention_days == 0` means retention is
+/// disabled and nothing is deleted.
+pub fn purge_expired(db: &db::Db, retention_days: u32, now_unix: i64) -> AppResult<u64> {
+    if retention_days == 0 {
+        return Ok(0);
+    }
+    let cutoff = now_unix.saturating_sub(i64::from(retention_days).saturating_mul(24 * 60 * 60));
+    let mut total: u64 = 0;
+    loop {
+        let conn = db.open_connection()?;
+        let affected = conn
+            .execute(
+                "DELETE FROM request_logs WHERE created_at > 0 AND created_at < ?1 LIMIT ?2",
+                params![cutoff, RETENTION_PURGE_BATCH_SIZE as i64],
+            )
+            .map_err(|e| db_err!("failed to purge expired request_logs: {e}"))?;
+        total = total.saturating_add(affected as u64);
+        if affected < RETENTION_PURGE_BATCH_SIZE {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(RETENTION_PURGE_BATCH_PAUSE_MS));
+    }
+    Ok(total)
+}
+
+/// Spawns the daily request-log retention job (idempotent). The setting is read
+/// fresh on each tick so changes apply without restarting the app.
+pub(crate) fn spawn_retention_task(app: tauri::AppHandle, db: db::Db) {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        run_retention_once(&app, &db).await;
+
+        let mut interval = tokio::time::interval(RETENTION_TASK_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            run_retention_once(&app, &db).await;
+        }
+    });
+}
+
+async fn run_retention_once(app: &tauri::AppHandle, db: &db::Db) {
+    let app = app.clone();
+    let db = db.clone();
+    let result = crate::blocking::run("request_log_retention", move || {
+        let retention_days = crate::settings::request_log_retention_days_fail_open(&app);
+        if retention_days == 0 {
+            return Ok::<u64, crate::shared::error::AppError>(0);
+        }
+        let deleted = purge_expired(&db, retention_days, now_unix_seconds())?;
+        if deleted > 0 {
+            tracing::info!(retention_days, deleted, "purged expired request logs");
+        }
+        Ok(deleted)
+    })
+    .await;
+
+    if let Err(err) = result {
+        tracing::warn!("request-log retention task failed: {}", err);
+    }
 }
 
 pub(crate) fn touch_activity(

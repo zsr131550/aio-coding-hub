@@ -18,6 +18,7 @@ pub(super) struct PreparedProvider {
     pub(super) provider_base_url_display: String,
     pub(super) auth_mode: String,
     pub(super) provider_index: u32,
+    pub(super) provider_bridged: bool,
     pub(super) session_reuse: Option<bool>,
     pub(super) effective_credential: String,
     pub(super) provider_max_attempts: u32,
@@ -120,6 +121,8 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
 
     let bridge_type = provider.bridge_type.as_deref();
     let is_cx2cc_bridge = provider.is_cx2cc_bridge();
+    let provider_bridged =
+        crate::providers::has_bridged_input_semantics(provider.source_provider_id, bridge_type);
     let is_non_cx2cc_bridge = bridge_type.is_some() && !is_cx2cc_bridge;
 
     let mut effective_credential = if is_cx2cc_bridge || is_non_cx2cc_bridge {
@@ -339,6 +342,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         active_requested_model: input.requested_model.as_deref(),
         auth_mode: provider.auth_mode.as_str(),
         provider_index,
+        provider_bridged,
         session_reuse,
         provider_max_attempts,
         stream_idle_timeout_seconds: provider.stream_idle_timeout_seconds,
@@ -415,6 +419,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         provider_base_url_display,
         auth_mode: provider.auth_mode.clone(),
         provider_index,
+        provider_bridged,
         session_reuse,
         effective_credential,
         provider_max_attempts,

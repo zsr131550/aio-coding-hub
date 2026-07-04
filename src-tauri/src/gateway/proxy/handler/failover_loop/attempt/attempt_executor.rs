@@ -491,6 +491,7 @@ fn build_attempt_ctx<'a>(
     AttemptCtx {
         attempt_index,
         retry_index,
+        provider_max_attempts: prepared.provider_max_attempts,
         attempt_started_ms,
         attempt_started: Instant::now(),
         circuit_before,
@@ -511,6 +512,7 @@ fn build_provider_ctx(prepared: &PreparedProvider) -> ProviderCtx<'_> {
         active_requested_model: prepared.active_requested_model.as_deref(),
         auth_mode: prepared.auth_mode.as_str(),
         provider_index: prepared.provider_index,
+        provider_bridged: prepared.provider_bridged,
         session_reuse: prepared.session_reuse,
         provider_max_attempts: prepared.provider_max_attempts,
         stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,
@@ -553,6 +555,7 @@ fn emit_started_event<R: tauri::Runtime>(
         circuit_state_after: None,
         circuit_failure_count: Some(circuit_before.failure_count),
         circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        provider_bridged: Some(prepared.provider_bridged),
     };
     abort_guard.update_requested_model(
         prepared

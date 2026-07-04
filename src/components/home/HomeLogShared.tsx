@@ -19,7 +19,6 @@ import type { CliKey } from "../../services/providers/providers";
 import type { RequestLogRouteHop } from "../../services/gateway/requestLogs";
 import type { TraceSession } from "../../services/gateway/traceStore";
 import { Tooltip } from "../../ui/Tooltip";
-import { computeEffectiveInputTokens as computeSharedEffectiveInputTokens } from "../../utils/cacheRateMetrics";
 import { FolderOpen } from "lucide-react";
 import { RouteTooltipContent } from "./RouteTooltipContent";
 import { getErrorCodeLabel } from "./requestLogErrorLabels";
@@ -554,15 +553,6 @@ export function computeStatusBadge(input: {
     : semanticText;
 
   return { text, semanticText, tone, title, isError, isClientAbort, hasFailover };
-}
-
-export function computeEffectiveInputTokens(
-  cliKey: CliKey | string,
-  inputTokens: number | null,
-  cacheReadInputTokens: number | null
-) {
-  if (inputTokens == null) return null;
-  return computeSharedEffectiveInputTokens(cliKey, inputTokens, cacheReadInputTokens);
 }
 
 export function buildRequestRouteMeta(input: {

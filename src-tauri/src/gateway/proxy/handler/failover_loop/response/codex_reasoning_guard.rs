@@ -1515,6 +1515,7 @@ pub(super) fn record_guard_retry_attempt(
     circuit_state_before: &'static str,
     circuit_failure_count: u32,
     circuit_failure_threshold: u32,
+    provider_bridged: bool,
     matched: &CodexReasoningGuardMatch,
     budget: CodexReasoningGuardBudgetDecision,
 ) {
@@ -1541,6 +1542,7 @@ pub(super) fn record_guard_retry_attempt(
         provider_index: Some(provider_index),
         retry_index: Some(retry_index),
         session_reuse,
+        provider_bridged: Some(provider_bridged),
         error_category: Some(ErrorCategory::SystemError.as_str()),
         error_code: Some(CODEX_REASONING_GUARD_ERROR_CODE),
         decision: Some(decision),

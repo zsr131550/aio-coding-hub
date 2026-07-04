@@ -59,6 +59,10 @@ pub(super) const SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD: u32 = 48;
 
 pub(super) const DEFAULT_LOG_RETENTION_DAYS: u32 = 7;
 pub(super) const MAX_LOG_RETENTION_DAYS: u32 = 3650;
+// Request-log DB retention: 0 = keep forever. Deliberately separate from
+// file-log retention because request logs feed long-horizon usage/cost stats.
+pub(super) const DEFAULT_REQUEST_LOG_RETENTION_DAYS: u32 = 0;
+pub(super) const MAX_REQUEST_LOG_RETENTION_DAYS: u32 = 3650;
 pub(super) const DEFAULT_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER: u32 = 5;
 pub(super) const DEFAULT_FAILOVER_MAX_PROVIDERS_TO_TRY: u32 = 5;
 pub(super) const DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD: u32 = 5;

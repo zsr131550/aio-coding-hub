@@ -67,6 +67,7 @@ pub(super) fn push_skipped_provider_attempt(
         circuit_state_after: None,
         circuit_failure_count: None,
         circuit_failure_threshold: None,
+        provider_bridged: None,
     });
 }
 

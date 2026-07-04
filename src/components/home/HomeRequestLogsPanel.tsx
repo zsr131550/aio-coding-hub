@@ -47,7 +47,6 @@ import {
 import {
   buildRequestLogAuditMeta,
   buildRequestRouteMeta,
-  computeEffectiveInputTokens,
   computeStatusBadge,
   FastModeBadge,
   formatRequestLogModelText,
@@ -242,11 +241,7 @@ const RequestLogCard = memo(function RequestLogCard({
     return { tokens: null as number | null, ttl: null as "5m" | "1h" | null };
   })();
 
-  const effectiveInputTokens = computeEffectiveInputTokens(
-    log.cli_key,
-    log.input_tokens,
-    log.cache_read_input_tokens
-  );
+  const effectiveInputTokens = log.effective_input_tokens ?? null;
 
   return (
     <button
