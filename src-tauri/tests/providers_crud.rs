@@ -30,6 +30,45 @@ fn provider_input(cli_key: &str, name: &str, base_url: &str) -> ProviderUpsertJs
 }
 
 #[test]
+fn claude_model_overrides_reject_over_length_values_on_create_and_update() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+    let too_long_model = "x".repeat(201);
+
+    let mut create_input = provider_input("claude", "Too long create", "https://api.anthropic.com");
+    create_input.claude_models = Some(serde_json::json!({
+        "main_model": too_long_model,
+    }));
+    let err = aio_coding_hub_lib::test_support::provider_upsert_json(&handle, create_input)
+        .expect_err("create should reject over-length Claude model override")
+        .to_string();
+    assert!(
+        err.contains("SEC_INVALID_INPUT") && err.contains("main_model"),
+        "unexpected error: {err}"
+    );
+
+    let provider = aio_coding_hub_lib::test_support::provider_upsert_json(
+        &handle,
+        provider_input("claude", "Valid provider", "https://api.anthropic.com"),
+    )
+    .expect("insert valid provider");
+    let mut update_input = provider_input("claude", "Valid provider", "https://api.anthropic.com");
+    update_input.provider_id = Some(json_i64(&provider, "id"));
+    update_input.api_key = None;
+    update_input.claude_models = Some(serde_json::json!({
+        "reasoning_model": "模".repeat(201),
+    }));
+
+    let err = aio_coding_hub_lib::test_support::provider_upsert_json(&handle, update_input)
+        .expect_err("update should reject over-length Claude model override")
+        .to_string();
+    assert!(
+        err.contains("SEC_INVALID_INPUT") && err.contains("reasoning_model"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn providers_crud_roundtrip() {
     let app = support::TestApp::new();
     let handle = app.handle();

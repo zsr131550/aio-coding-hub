@@ -35,7 +35,6 @@ pub(super) fn normalize_note(value: Option<&str>) -> crate::shared::error::AppRe
 /// Write-path validation: rejects over-length model names, matching the frontend
 /// editor limit. The read path (`normalize_model_slot`) keeps truncating so
 /// legacy/hand-edited rows still load.
-#[allow(dead_code)]
 pub(super) fn validate_claude_models(
     models: &super::types::ClaudeModels,
 ) -> crate::shared::error::AppResult<()> {
