@@ -967,14 +967,14 @@ INSERT INTO request_logs (
 }
 
 #[test]
-fn v2_cache_rate_denominator_does_not_treat_source_provider_id_as_bridge_identity() {
+fn v2_cache_rate_denominator_treats_source_provider_id_as_bridged_input_semantics() {
     let conn = setup_conn();
 
     conn.execute(
         r#"INSERT INTO providers (id, name, source_provider_id, bridge_type) VALUES (?1, ?2, ?3, ?4);"#,
         params![
             901,
-            "Legacy Source Link Without Bridge Type",
+            "Source Link Bridge Semantics",
             42,
             Option::<String>::None
         ],
@@ -1007,7 +1007,7 @@ INSERT INTO request_logs (
         "#,
         params![
             "claude",
-            r#"[{"provider_id":901,"provider_name":"Legacy Source Link Without Bridge Type","outcome":"success"}]"#,
+            r#"[{"provider_id":901,"provider_name":"Source Link Bridge Semantics","outcome":"success"}]"#,
             901,
             "claude-with-source-link",
             200,
@@ -1030,9 +1030,9 @@ INSERT INTO request_logs (
     .expect("insert source-linked request");
 
     let summary = summary_query(&conn, None, None, None, None, false).expect("summary_query");
-    assert_eq!(summary.input_tokens, 100);
+    assert_eq!(summary.input_tokens, 70);
     assert_eq!(summary.cache_read_input_tokens, 30);
-    assert_eq!(summary.total_tokens, 140);
+    assert_eq!(summary.total_tokens, 110);
 
     let rows = leaderboard_v2_with_conn(
         &conn,
@@ -1049,9 +1049,9 @@ INSERT INTO request_logs (
         .iter()
         .find(|row| row.key == "claude:901")
         .expect("source-linked provider row");
-    assert_eq!(row.input_tokens, 100);
+    assert_eq!(row.input_tokens, 70);
     assert_eq!(row.cache_read_input_tokens, 30);
-    assert_eq!(row.total_tokens, 140);
+    assert_eq!(row.total_tokens, 110);
 }
 
 #[test]

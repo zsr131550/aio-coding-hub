@@ -134,7 +134,7 @@ jobs:
         run: pnpm check:generated-bindings
 
       - name: Plugin TypeScript SDK typecheck
-        run: pnpm --filter @aio-coding-hub/plugin-sdk typecheck
+        run: pnpm plugin-sdk:typecheck
 
       - name: Plugin TypeScript SDK tests
         run: pnpm --filter @aio-coding-hub/plugin-sdk test

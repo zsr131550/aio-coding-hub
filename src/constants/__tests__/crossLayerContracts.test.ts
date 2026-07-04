@@ -155,7 +155,7 @@ describe("cross-layer contracts", () => {
     const owners: Record<keyof typeof AppErrorCodes, string[]> = {
       PROMPT_NAME_REQUIRED: [promptsSource],
       PROMPT_NAME_CONFLICT: [promptsSource],
-      SETTINGS_RECOVERY_REQUIRED: [settingsServiceSource, settingsPersistenceSource],
+      SETTINGS_RECOVERY_REQUIRED: [settingsServiceSource],
       DB_CONSTRAINT: [workspacesSource],
       SEC_INVALID_INPUT: [providersValidationSource],
     };
