@@ -29,7 +29,7 @@ jobs:
       release_created: ${{ steps.manual_release.outputs.release_created || steps.release.outputs.release_created }}
       tag_name: ${{ steps.manual_release.outputs.tag_name || steps.release.outputs.tag_name }}
       release_id: ${{ steps.manual_release.outputs.id || steps.release.outputs.id }}
-      checkout_ref: ${{ steps.manual_release.outputs.checkout_ref || steps.release.outputs.tag_name }}
+      checkout_ref: ${{ steps.resolve_release_ref.outputs.checkout_ref }}
       build_matrix: ${{ steps.support_matrix.outputs.build_matrix }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -114,6 +114,89 @@ jobs:
           echo "release_created=true" >> "$GITHUB_OUTPUT"
           echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
           echo "id=$release_id" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
+
+      - id: resolve_release_ref
+        name: Resolve release checkout ref
+        if: ${{ steps.manual_release.outputs.release_created == 'true' || steps.release.outputs.release_created == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          RELEASE_TAG: ${{ steps.manual_release.outputs.tag_name || steps.release.outputs.tag_name }}
+          FALLBACK_REF: ${{ steps.manual_release.outputs.checkout_ref || github.sha }}
+        run: |
+          set -euo pipefail
+
+          tag="$RELEASE_TAG"
+          fallback_ref="$FALLBACK_REF"
+
+          if [[ -z "$tag" ]]; then
+            echo "Cannot resolve release checkout ref without a release tag." >&2
+            exit 1
+          fi
+
+          fetch_release_tag() {
+            for attempt in 1 2 3; do
+              if git fetch --force origin "refs/tags/$tag:refs/tags/$tag" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep "$((attempt * 2))"
+            done
+            return 1
+          }
+
+          resolve_commit_sha() {
+            local ref="$1"
+            if [[ -z "$ref" ]]; then
+              echo "Cannot resolve an empty release target." >&2
+              return 1
+            fi
+
+            if git rev-parse --verify "${ref}^{commit}" >/dev/null 2>&1; then
+              git rev-parse "${ref}^{commit}"
+              return 0
+            fi
+
+            if git fetch --no-tags --depth=1 origin "$ref" >/dev/null 2>&1; then
+              git rev-parse "FETCH_HEAD^{commit}"
+              return 0
+            fi
+
+            gh api "repos/$GITHUB_REPOSITORY/commits/$ref" --jq .sha
+          }
+
+          if fetch_release_tag; then
+            checkout_ref="$(git rev-parse "$tag^{commit}")"
+            echo "Release tag $tag is fetchable at $checkout_ref."
+          else
+            release_target="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq '.targetCommitish // ""' 2>/dev/null || true)"
+            if [[ -z "$release_target" || "$release_target" == "$tag" || ! "$release_target" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+              release_target="$fallback_ref"
+            fi
+
+            target_sha="$(resolve_commit_sha "$release_target")"
+            echo "Release tag $tag is not fetchable; creating lightweight tag at $target_sha."
+
+            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$tag" \
+              -f "sha=$target_sha" >/tmp/create-release-tag.json 2>/tmp/create-release-tag.err; then
+              if ! fetch_release_tag; then
+                cat /tmp/create-release-tag.err >&2
+                exit 1
+              fi
+            else
+              fetch_release_tag
+            fi
+
+            checkout_ref="$(git rev-parse "$tag^{commit}")"
+            if [[ "$checkout_ref" != "$target_sha" ]]; then
+              echo "Release tag $tag resolves to $checkout_ref, expected $target_sha." >&2
+              exit 1
+            fi
+          fi
+
+          # Build jobs must checkout an immutable commit SHA. Draft GitHub Releases
+          # can exist before their Git tag is fetchable, which breaks tag checkout.
           echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
 
       - name: Check release PR changelog range
