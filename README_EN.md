@@ -13,7 +13,13 @@
 
 </div>
 
-> **Credits** — Inspired by [cc-switch](https://github.com/farion1231/cc-switch), [claude-code-hub](https://github.com/ding113/claude-code-hub), and [code-switch-R](https://github.com/Rogers-F/code-switch-R). The Codex reasoning-token guard / retry design references [codex-retry-gateway](https://github.com/nonononull/codex-retry-gateway).
+> **Credits** — Inspired by [cc-switch](https://github.com/farion1231/cc-switch), [claude-code-hub](https://github.com/ding113/claude-code-hub), and [code-switch-R](https://github.com/Rogers-F/code-switch-R).
+
+> **Fork Note** — This repository is a personal fork for `vibe coding`, experiments, and ad-hoc changes. Code may change at any time and **does not guarantee availability, stability, or compatibility**; it is not suitable as a default production dependency. For the original feature set, use the upstream repository as the source of truth.
+>
+> Fork-side references:
+> - Codex reasoning-token guard / retry design: [codex-retry-gateway](https://github.com/nonononull/codex-retry-gateway)
+> - Continuation repair design: [CodexCont](https://github.com/neteroster/CodexCont)
 
 ---
 
