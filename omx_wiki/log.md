@@ -15,3 +15,11 @@
 ## [2026-07-04T10:36:11.000Z] delete
 - **Pages:** obsolete continuation-repair UI bug note and split-UI prototype
 - **Summary:** Removed obsolete split continuation-repair UI bug document and prototype; unified guard spec supersedes them.
+
+## [2026-07-05T05:33:51.842Z] add
+- **Pages:** upstream-main-reconciliation-2026-07-05.md
+- **Summary:** Recorded upstream merge baseline, fork-specific preservation rules, release version rationale, and future sync checklist.
+
+## [2026-07-05T05:35:17.448Z] lint
+- **Pages:** codex-reasoning-guard-retry-count-confusion.md, realtime-trace-card-cli-tab-leak-analysis.md, upstream-main-reconciliation-2026-07-05.md
+- **Summary:** Lint: 3 issues (3 orphan, 0 stale, 0 broken, 0 contradictions)
