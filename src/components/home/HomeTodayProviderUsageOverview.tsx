@@ -16,7 +16,7 @@ import { Card } from "../../ui/Card";
 import { computeCacheHitRate } from "../../utils/cacheRateMetrics";
 import { formatTokensMillions } from "../../utils/chartHelpers";
 import { formatInteger, formatPercent, formatUsdCompact } from "../../utils/formatters";
-import { computeStatusBadge } from "./HomeLogShared";
+import { computeStatusBadge } from "./requestLogPresentation";
 import { QueryErrorCard } from "../shared/QueryErrorCard";
 import {
   useHomeTokenCostDataModel,

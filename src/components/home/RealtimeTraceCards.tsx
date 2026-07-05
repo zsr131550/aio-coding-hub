@@ -22,13 +22,9 @@ import {
   sanitizeTtfbMs,
 } from "../../utils/formatters";
 import { Clock, Server, CheckCircle2, XCircle } from "lucide-react";
-import {
-  computeStatusBadge,
-  FolderBadge,
-  formatClaudeModelMappingText,
-  FreeBadge,
-  SessionReuseBadge,
-} from "./HomeLogShared";
+import { computeStatusBadge } from "./requestLogPresentation";
+import { FolderBadge, FreeBadge, SessionReuseBadge } from "./LogBadges";
+import { formatClaudeModelMappingText } from "./requestLogSpecialSettings";
 import { CliBrandIcon } from "./CliBrandIcon";
 import { getErrorCodeLabel } from "./requestLogErrorLabels";
 

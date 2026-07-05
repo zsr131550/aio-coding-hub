@@ -1,4 +1,3 @@
-import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { GatewayErrorCodes } from "../../../constants/gatewayErrorCodes";
 import { createRequestLogRouteHop } from "../../../services/gateway/requestLogFixtures";
@@ -7,18 +6,10 @@ import {
   buildRequestLogAuditMeta,
   buildRequestRouteMeta,
   computeStatusBadge,
-  FastModeBadge,
-  FolderBadge,
-  formatClaudeModelMappingText,
-  FreeBadge,
-  hasClaudeModelMappingSpecialSetting,
-  hasPriorityServiceTierSpecialSetting,
-  resolveClaudeModelMappingFromSpecialSettings,
   resolveLiveTraceDurationMs,
   resolveLiveTraceProvider,
-  SessionReuseBadge,
-} from "../HomeLogShared";
-import { getErrorCodeLabel } from "../requestLogErrorLabels";
+} from "../requestLogPresentation";
+import { resolveClaudeModelMappingFromSpecialSettings } from "../requestLogSpecialSettings";
 
 function createTrace(overrides: Partial<TraceSession> = {}): TraceSession {
   return {
@@ -36,107 +27,7 @@ function createTrace(overrides: Partial<TraceSession> = {}): TraceSession {
   };
 }
 
-describe("components/home/HomeLogShared", () => {
-  it("resolves Claude model mapping special settings with final provider preference", () => {
-    const settings = JSON.stringify([
-      { type: "noop" },
-      {
-        type: "claude_model_mapping",
-        requestedModel: " claude-sonnet ",
-        effectiveModel: " gpt-5.4 ",
-        mappingKind: " sonnet ",
-        providerId: 1,
-        providerName: " Provider A ",
-        applied: true,
-      },
-      {
-        type: "claude_model_mapping",
-        requestedModel: " claude-opus ",
-        effectiveModel: " gpt-5.5 ",
-        mappingKind: " opus ",
-        providerId: 2,
-        providerName: " Provider B ",
-        applied: true,
-      },
-    ]);
-
-    expect(resolveClaudeModelMappingFromSpecialSettings(settings, 1)).toEqual({
-      requestedModel: "claude-sonnet",
-      effectiveModel: "gpt-5.4",
-      mappingKind: "sonnet",
-      providerId: 1,
-      providerName: "Provider A",
-      applied: true,
-    });
-    expect(resolveClaudeModelMappingFromSpecialSettings(settings, 99)?.providerId).toBe(2);
-    expect(resolveClaudeModelMappingFromSpecialSettings("not-json")).toBeNull();
-    expect(
-      resolveClaudeModelMappingFromSpecialSettings(JSON.stringify({ type: "noop" }))
-    ).toBeNull();
-    expect(
-      resolveClaudeModelMappingFromSpecialSettings(
-        JSON.stringify([
-          {
-            type: "claude_model_mapping",
-            requestedModel: "same",
-            effectiveModel: "same",
-            mappingKind: "sonnet",
-            providerId: 1,
-            providerName: "Provider A",
-            applied: true,
-          },
-        ])
-      )
-    ).toBeNull();
-
-    expect(hasClaudeModelMappingSpecialSetting(settings)).toBe(true);
-    expect(hasClaudeModelMappingSpecialSetting(JSON.stringify([{ type: "noop" }]))).toBe(false);
-    expect(hasClaudeModelMappingSpecialSetting("bad-json")).toBe(false);
-  });
-
-  it("formats model mapping text and priority service tier settings", () => {
-    expect(
-      formatClaudeModelMappingText(" fallback-model ", {
-        requestedModel: " claude-sonnet ",
-        effectiveModel: " gpt-5.4 ",
-        mappingKind: "sonnet",
-        providerId: 1,
-        providerName: "Provider A",
-        applied: true,
-      })
-    ).toBe("claude-sonnet → gpt-5.4");
-    expect(formatClaudeModelMappingText(" fallback-model ", null)).toBe("fallback-model");
-    expect(formatClaudeModelMappingText("   ", null)).toBe("未知");
-
-    expect(hasPriorityServiceTierSpecialSetting(null)).toBe(false);
-    expect(hasPriorityServiceTierSpecialSetting("bad-json")).toBe(false);
-    expect(
-      hasPriorityServiceTierSpecialSetting(JSON.stringify({ type: "codex_service_tier_result" }))
-    ).toBe(false);
-    expect(hasPriorityServiceTierSpecialSetting(JSON.stringify([{ type: "noop" }]))).toBe(false);
-    expect(
-      hasPriorityServiceTierSpecialSetting(
-        JSON.stringify([{ type: "codex_service_tier_result", actualServiceTier: "priority" }])
-      )
-    ).toBe(true);
-    expect(
-      hasPriorityServiceTierSpecialSetting(
-        JSON.stringify([
-          {
-            type: "codex_service_tier_result",
-            billingSourcePreference: "auto",
-            effectivePriority: true,
-          },
-        ])
-      )
-    ).toBe(true);
-    expect(
-      hasPriorityServiceTierSpecialSetting(
-        JSON.stringify([{ type: "codex_service_tier_result", effectivePriority: false }])
-      )
-    ).toBe(false);
-  });
-
+describe("components/home/requestLogPresentation", () => {
   it("builds audit meta for muted request log categories", () => {
     const warmup = buildRequestLogAuditMeta({
       cli_key: "claude",
@@ -421,26 +312,5 @@ describe("components/home/HomeLogShared", () => {
     });
     expect(retryOnly.label).toBe("重试 3 次");
     expect(retryOnly.tooltipText).toBe("Provider A（状态未知，失败，尝试 3 次）");
-  });
-
-  it("renders small badges and computes effective input tokens", () => {
-    render(
-      <div>
-        <SessionReuseBadge showCustomTooltip={false} />
-        <SessionReuseBadge showCustomTooltip />
-        <FastModeBadge showCustomTooltip={false} />
-        <FastModeBadge showCustomTooltip />
-        <FreeBadge />
-        <FolderBadge folderName="workspace-alpha" folderPath="/tmp/workspace-alpha" allowWrap />
-      </div>
-    );
-
-    expect(screen.getAllByText("会话复用")[0]).toHaveAttribute("title");
-    expect(screen.getAllByText("会话复用")[0]).toHaveClass("ring-blue-400/35");
-    expect(screen.getAllByText("fast")[0]).toHaveAttribute("title");
-    expect(screen.getByText("免费")).toBeInTheDocument();
-    expect(screen.getByText("workspace-alpha")).toBeInTheDocument();
-    expect(screen.getByTitle("/tmp/workspace-alpha")).toHaveClass("border-border/45");
-    expect(getErrorCodeLabel(GatewayErrorCodes.UPSTREAM_TIMEOUT)).toBe("上游超时");
   });
 });
