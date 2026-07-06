@@ -1403,7 +1403,10 @@ fn validate_raw_round_for_reconstruction(
     }
 
     let mut cursor = 0usize;
+    let mut created_count = 0usize;
     let mut completed_count = 0usize;
+    let mut created_id: Option<String> = None;
+    let mut completed_id: Option<String> = None;
     let mut raw_visible = FinalRawVisibleStream::default();
     while let Some(relative_end) =
         crate::gateway::proxy::sse::find_sse_event_end(&round.raw_sse[cursor..])
@@ -1435,8 +1438,20 @@ fn validate_raw_round_for_reconstruction(
         ) {
             return Err("terminal_error_event".to_string());
         }
-        if event_name == "response.completed" {
-            completed_count = completed_count.saturating_add(1);
+        match event_name.as_str() {
+            "response.created" => {
+                created_count = created_count.saturating_add(1);
+                let id = lifecycle_response_id(&data)
+                    .ok_or_else(|| "non-final created response missing id".to_string())?;
+                created_id = Some(id.to_string());
+            }
+            "response.completed" => {
+                completed_count = completed_count.saturating_add(1);
+                let id = lifecycle_response_id(&data)
+                    .ok_or_else(|| "non-final completed response missing id".to_string())?;
+                completed_id = Some(id.to_string());
+            }
+            _ => {}
         }
         if event_name.starts_with("response.function_call_arguments.") {
             return Err("function_call_arguments_event".to_string());
@@ -1459,6 +1474,30 @@ fn validate_raw_round_for_reconstruction(
     }
     if !round.raw_sse[cursor..].iter().all(u8::is_ascii_whitespace) {
         return Err("trailing_partial_sse_data".to_string());
+    }
+    if created_count > 1 {
+        return Err(format!(
+            "non-final raw must contain at most one response.created event, found {created_count}"
+        ));
+    }
+    if completed_count != 1 {
+        return Err(format!(
+            "non-final raw must contain exactly one response.completed event, found {completed_count}"
+        ));
+    }
+    if created_id.is_some() && created_id != completed_id {
+        return Err(
+            "non-final response.created id does not match response.completed id".to_string(),
+        );
+    }
+    let aggregated_id = round
+        .aggregated
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "non-final aggregated response missing id".to_string())?;
+    if completed_id.as_deref() != Some(aggregated_id) {
+        return Err("non-final raw response id does not match aggregated response id".to_string());
     }
     raw_visible.validate_against_output(round, visibility, "non-final raw")?;
     Ok(())
@@ -1548,6 +1587,14 @@ fn lifecycle_output_items<'a>(
         .as_array()
         .map(Some)
         .ok_or_else(|| format!("{event_name}_{location}_output_not_array"))
+}
+
+fn lifecycle_response_id(data: &Value) -> Option<&str> {
+    data.get("response")
+        .unwrap_or(data)
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn raw_output_item_added_is_visible_or_unknown(item: &Value) -> bool {
@@ -3161,6 +3208,124 @@ mod tests {
         assert!(err.contains("raw event-stream"));
         assert!(err.contains("response.completed_output_mismatch"));
         assert!(!err.contains("raw-completed-tool-secret-504"));
+    }
+
+    #[test]
+    fn non_final_lifecycle_output_tool_payload_matching_aggregated_still_fails_closed() {
+        let tool_item = json!({
+            "id": "call_hidden",
+            "type": "function_call",
+            "name": "lookup",
+            "call_id": "call_hidden",
+            "arguments": "{\"secret\":\"raw-completed-tool-secret-505\"}",
+        });
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [tool_item.clone()],
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let mut first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        first.aggregated["output"] = json!([tool_item]);
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non-final tool/function call"));
+        assert!(!err.contains("raw-completed-tool-secret-505"));
+    }
+
+    #[test]
+    fn non_final_raw_created_completed_id_mismatch_is_unsafe() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {
+                    "id": "resp_created",
+                    "status": "in_progress",
+                    "model": "gpt-cont",
+                },
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": reasoning("rs_1", "enc_1"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_completed",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non-final response.created id does not match response.completed id"));
+    }
+
+    #[test]
+    fn non_final_raw_response_id_must_match_aggregated_response_id() {
+        let mut first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        first.aggregated["id"] = json!("resp_tampered");
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non-final raw response id does not match aggregated response id"));
     }
 
     #[test]
