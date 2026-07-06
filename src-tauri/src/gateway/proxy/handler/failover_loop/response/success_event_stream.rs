@@ -389,12 +389,21 @@ where
 {
     let mut current = first_aggregated.clone();
     let mut current_token = codex_reasoning_features::extract_reasoning_tokens(&current);
+    let Some(replay_policy) =
+        codex_reasoning_continuation::ContinuationReplayPolicy::from_post_match_strategy(
+            post_match_strategy,
+        )
+    else {
+        return ContinuationRepairOutcome::not_applicable();
+    };
     if !codex_reasoning_continuation::is_truncation_continuation_pattern(
         current_token.map(|value| value.reasoning_tokens),
     ) {
         return ContinuationRepairOutcome::not_applicable();
     }
-    if !codex_reasoning_continuation::latest_reasoning_has_encrypted_content(&current) {
+    if replay_policy.requires_encrypted_reasoning()
+        && !codex_reasoning_continuation::latest_reasoning_has_encrypted_content(&current)
+    {
         return ContinuationRepairOutcome::terminal(
             ContinuationRepairStatus::MissingEncrypted,
             current_token,
@@ -449,7 +458,7 @@ where
         if !codex_reasoning_continuation::is_truncation_continuation_pattern(
             current_token.map(|value| value.reasoning_tokens),
         ) {
-            if post_match_strategy.is_experimental_continuation_repair() {
+            if replay_policy.is_experimental() {
                 return match codex_reasoning_continuation::reconstruct_bplus_client_sse(
                     &rounds,
                     MAX_NON_SSE_BODY_BYTES,
@@ -513,7 +522,9 @@ where
                 Some("continuation still matched after max rounds".to_string()),
             );
         }
-        if !codex_reasoning_continuation::latest_reasoning_has_encrypted_content(&current) {
+        if replay_policy.requires_encrypted_reasoning()
+            && !codex_reasoning_continuation::latest_reasoning_has_encrypted_content(&current)
+        {
             return terminal_with_trace!(
                 ContinuationRepairStatus::MissingEncrypted,
                 current_token,
@@ -522,11 +533,11 @@ where
                 Some("continuation round matched but encrypted reasoning was missing".to_string()),
             );
         }
-        replay_tail.extend(codex_reasoning_continuation::reasoning_items(&current));
-        replay_tail.push(codex_reasoning_continuation::commentary_marker_item());
+        let replay_tail_for_payload = replay_policy.next_replay_tail(&mut replay_tail, &current);
         let payload = match codex_reasoning_continuation::build_continuation_payload(
             prepared.upstream_body_bytes.as_ref(),
-            &replay_tail,
+            &replay_tail_for_payload,
+            replay_policy.payload_mode(),
         ) {
             Ok(payload) => payload,
             Err(err) => {
@@ -1931,7 +1942,7 @@ where
                                     current_token,
                                     0,
                                     Some(
-                                        "continuation repair requires native Codex Responses streaming with encrypted reasoning replay"
+                                        "continuation repair requires native Codex Responses streaming with compatible request reasoning"
                                             .to_string(),
                                     ),
                                 )

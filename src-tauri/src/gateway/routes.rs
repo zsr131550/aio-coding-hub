@@ -6157,7 +6157,7 @@ mod tests {
             .uri("/v1/responses")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                r#"{"model":"gpt-cont-exp","stream":true,"input":"hello"}"#,
+                r#"{"model":"gpt-cont-exp","stream":true,"previous_response_id":"resp_old","include":["foo","reasoning.encrypted_content"],"input":[{"role":"user","content":"hello","encrypted_content":"input_secret"},{"type":"reasoning","encrypted_content":"input_reasoning_secret"},"plain prompt"],"reasoning":{"effort":"high"}}"#,
             ))
             .expect("request");
 
@@ -6177,11 +6177,11 @@ mod tests {
         assert!(body_text.contains("final after experimental continuation"));
         assert!(body_text.contains("resp-cont-exp-2"));
 
-        let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+        let first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
             .await
             .expect("first captured request")
             .expect("first request");
-        let _second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+        let second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
             .await
             .expect("second captured request")
             .expect("second request");
@@ -6190,6 +6190,61 @@ mod tests {
             matches!(no_more, Ok(None) | Err(_)),
             "successful experimental continuation should send exactly one follow-up request"
         );
+        let first_body: Value = serde_json::from_slice(&first.body).expect("first body json");
+        assert_eq!(
+            first_body
+                .get("previous_response_id")
+                .and_then(Value::as_str),
+            Some("resp_old")
+        );
+        assert_eq!(
+            first_body.get("include"),
+            Some(&serde_json::json!(["foo", "reasoning.encrypted_content"]))
+        );
+        let second_body: Value = serde_json::from_slice(&second.body).expect("second body json");
+        assert_eq!(second_body.get("previous_response_id"), None);
+        assert_eq!(
+            second_body.get("include"),
+            Some(&serde_json::json!(["foo"]))
+        );
+        assert_eq!(second_body["stream"], serde_json::json!(true));
+        assert_eq!(
+            second_body.get("reasoning"),
+            Some(&serde_json::json!({"effort": "high"}))
+        );
+        let second_input = second_body
+            .get("input")
+            .and_then(Value::as_array)
+            .expect("continuation input array");
+        assert_eq!(second_input.len(), 3);
+        assert_eq!(
+            second_input[0],
+            serde_json::json!({"role": "user", "content": "hello"})
+        );
+        assert_eq!(
+            second_input[1],
+            serde_json::json!({"type": "message", "role": "user", "content": "plain prompt"})
+        );
+        assert!(second_input.iter().any(|item| {
+            item.get("phase").and_then(Value::as_str) == Some("commentary")
+                && item.pointer("/content/0/text").and_then(Value::as_str)
+                    == Some("Continue thinking...")
+        }));
+        let second_body_text = serde_json::to_string(&second_body).expect("second body text");
+        for forbidden in [
+            "encrypted_content",
+            "input_secret",
+            "input_reasoning_secret",
+            "enc_1",
+        ] {
+            assert!(
+                !second_body_text.contains(forbidden),
+                "experimental continuation follow-up replayed forbidden fragment {forbidden}: {second_body_text}"
+            );
+        }
+        assert!(!second_input
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning")));
 
         let log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(log.status, Some(200));

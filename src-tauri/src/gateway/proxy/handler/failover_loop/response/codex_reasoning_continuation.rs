@@ -12,6 +12,7 @@ pub(super) const BPLUS_CLEAN_APPEND_ENABLED: bool = false;
 
 pub(super) struct IncludeMergeInput<'a> {
     pub(super) repair_enabled: bool,
+    pub(super) auto_add_encrypted_reasoning_include: bool,
     pub(super) cli_key: &'a str,
     pub(super) upstream_forwarded_path: &'a str,
     pub(super) body: &'a [u8],
@@ -62,6 +63,9 @@ pub(super) fn ensure_encrypted_reasoning_include(
     let Some(object) = root.as_object_mut() else {
         return unchanged(input.body, false);
     };
+    if !input.auto_add_encrypted_reasoning_include {
+        return unchanged(input.body, true);
+    }
     match merge_include_value(object.entry("include").or_insert(Value::Array(Vec::new()))) {
         IncludeMergeStatus::AlreadyPresent => return unchanged(input.body, true),
         IncludeMergeStatus::Unsupported => return unchanged(input.body, false),
@@ -83,6 +87,68 @@ pub(super) fn is_truncation_continuation_pattern(tokens: Option<i64>) -> bool {
         return false;
     };
     tokens >= 516 && tokens.checked_add(2).is_some_and(|value| value % 518 == 0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ContinuationReplayPolicy {
+    StableEncryptedReplay,
+    ExperimentalSafeReplay,
+}
+
+impl ContinuationReplayPolicy {
+    pub(super) fn from_post_match_strategy(
+        strategy: crate::settings::CodexReasoningGuardPostMatchStrategy,
+    ) -> Option<Self> {
+        match strategy {
+            crate::settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepair => {
+                Some(Self::StableEncryptedReplay)
+            }
+            crate::settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepairExperimental => {
+                Some(Self::ExperimentalSafeReplay)
+            }
+            crate::settings::CodexReasoningGuardPostMatchStrategy::RetrySameProvider => None,
+        }
+    }
+
+    pub(super) fn auto_add_encrypted_reasoning_include(self) -> bool {
+        matches!(self, Self::StableEncryptedReplay)
+    }
+
+    pub(super) fn requires_encrypted_reasoning(self) -> bool {
+        matches!(self, Self::StableEncryptedReplay)
+    }
+
+    pub(super) fn is_experimental(self) -> bool {
+        matches!(self, Self::ExperimentalSafeReplay)
+    }
+
+    pub(super) fn payload_mode(self) -> ContinuationPayloadMode {
+        match self {
+            Self::StableEncryptedReplay => ContinuationPayloadMode::StableEncryptedReplay,
+            Self::ExperimentalSafeReplay => ContinuationPayloadMode::ExperimentalSafeReplay,
+        }
+    }
+
+    pub(super) fn next_replay_tail(
+        self,
+        stable_tail: &mut Vec<Value>,
+        current: &Value,
+    ) -> Vec<Value> {
+        match self {
+            Self::StableEncryptedReplay => {
+                stable_tail.extend(reasoning_items(current));
+                stable_tail.push(commentary_marker_item());
+                stable_tail.clone()
+            }
+            Self::ExperimentalSafeReplay => vec![commentary_marker_item()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ContinuationPayloadMode {
+    StableEncryptedReplay,
+    ExperimentalSafeReplay,
 }
 
 pub(super) fn request_reasoning_enabled(body: &[u8]) -> bool {
@@ -109,10 +175,18 @@ pub(super) fn continuation_input_items(base_body: &[u8], replay_tail: &[Value]) 
 pub(super) fn build_continuation_payload(
     base_body: &[u8],
     replay_tail: &[Value],
+    mode: ContinuationPayloadMode,
 ) -> Result<Bytes, String> {
     let mut root = serde_json::from_slice::<Value>(base_body)
         .map_err(|err| format!("invalid continuation base request json: {err}"))?;
-    let input_items = continuation_input_items(base_body, replay_tail);
+    let input_items = match mode {
+        ContinuationPayloadMode::StableEncryptedReplay => {
+            continuation_input_items(base_body, replay_tail)
+        }
+        ContinuationPayloadMode::ExperimentalSafeReplay => {
+            experimental_continuation_input_items(base_body, replay_tail)
+        }
+    };
     let object = root
         .as_object_mut()
         .ok_or_else(|| "continuation base request is not a JSON object".to_string())?;
@@ -120,15 +194,99 @@ pub(super) fn build_continuation_payload(
     object.insert("stream".to_string(), Value::Bool(true));
     object.insert("input".to_string(), Value::Array(input_items));
     object.remove("previous_response_id");
-    merge_include_value(
-        object
-            .entry("include".to_string())
-            .or_insert(Value::Array(Vec::new())),
-    );
+    match mode {
+        ContinuationPayloadMode::StableEncryptedReplay => {
+            merge_include_value(
+                object
+                    .entry("include".to_string())
+                    .or_insert(Value::Array(Vec::new())),
+            );
+        }
+        ContinuationPayloadMode::ExperimentalSafeReplay => {
+            remove_continuation_encrypted_include(object);
+        }
+    }
 
     serde_json::to_vec(&root)
         .map(Bytes::from)
         .map_err(|err| format!("failed to encode continuation request json: {err}"))
+}
+
+fn experimental_continuation_input_items(base_body: &[u8], replay_tail: &[Value]) -> Vec<Value> {
+    let mut input_items = serde_json::from_slice::<Value>(base_body)
+        .ok()
+        .and_then(|root| root.get("input").cloned())
+        .map(|input| match input {
+            Value::Array(items) => items,
+            Value::Null => Vec::new(),
+            other => vec![other],
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(sanitize_responses_input_item_for_continuation_replay)
+        .collect::<Vec<_>>();
+    input_items.extend(
+        replay_tail
+            .iter()
+            .cloned()
+            .filter_map(sanitize_responses_input_item_for_continuation_replay),
+    );
+    input_items
+}
+
+fn sanitize_responses_input_item_for_continuation_replay(item: Value) -> Option<Value> {
+    let normalized = normalize_responses_input_item_for_continuation(item)?;
+    if normalized.get("type").and_then(Value::as_str) == Some("reasoning") {
+        return None;
+    }
+    Some(strip_encrypted_content(normalized))
+}
+
+fn normalize_responses_input_item_for_continuation(item: Value) -> Option<Value> {
+    match item {
+        Value::Null => None,
+        Value::String(text) => Some(json!({
+            "type": "message",
+            "role": "user",
+            "content": text,
+        })),
+        other => Some(other),
+    }
+}
+
+fn strip_encrypted_content(value: Value) -> Value {
+    match value {
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(strip_encrypted_content).collect())
+        }
+        Value::Object(object) => Value::Object(
+            object
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    (key != "encrypted_content").then(|| (key, strip_encrypted_content(value)))
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn remove_continuation_encrypted_include(object: &mut Map<String, Value>) {
+    let Some(include) = object.get_mut("include") else {
+        return;
+    };
+    match include {
+        Value::Array(items) => {
+            items.retain(|item| item.as_str() != Some(ENCRYPTED_REASONING_INCLUDE));
+            if items.is_empty() {
+                object.remove("include");
+            }
+        }
+        Value::String(value) if value.trim() == ENCRYPTED_REASONING_INCLUDE => {
+            object.remove("include");
+        }
+        _ => {}
+    }
 }
 
 pub(super) fn reasoning_items(response: &Value) -> Vec<Value> {
@@ -1961,6 +2119,7 @@ mod tests {
         let bytes = serde_json::to_vec(&body).unwrap();
         ensure_encrypted_reasoning_include(IncludeMergeInput {
             repair_enabled,
+            auto_add_encrypted_reasoning_include: true,
             cli_key: "codex",
             upstream_forwarded_path: "/v1/responses",
             body: &bytes,
@@ -2157,6 +2316,7 @@ mod tests {
         let bytes = serde_json::to_vec(&body).unwrap();
         ensure_encrypted_reasoning_include(IncludeMergeInput {
             repair_enabled: true,
+            auto_add_encrypted_reasoning_include: true,
             cli_key: "codex",
             upstream_forwarded_path: path,
             body: &bytes,
@@ -2188,6 +2348,28 @@ mod tests {
             merged_json(&outcome).get("include").unwrap(),
             &json!([ENCRYPTED_REASONING_INCLUDE])
         );
+    }
+
+    #[test]
+    fn include_merge_experimental_mode_is_eligible_without_adding_encrypted_include() {
+        let body = json!({"model": "gpt-5.5", "stream": true, "input": "hello"});
+        let bytes = serde_json::to_vec(&body).unwrap();
+
+        let outcome = ensure_encrypted_reasoning_include(IncludeMergeInput {
+            repair_enabled: true,
+            auto_add_encrypted_reasoning_include: false,
+            cli_key: "codex",
+            upstream_forwarded_path: "/v1/responses",
+            body: &bytes,
+            active_bridge_type: None,
+            oauth_adapter_present: false,
+            gemini_oauth_response_mode_present: false,
+            use_codex_chatgpt_backend: false,
+        });
+
+        assert!(outcome.eligible);
+        assert!(!outcome.changed);
+        assert_eq!(merged_json(&outcome), body);
     }
 
     #[test]
@@ -2270,6 +2452,7 @@ mod tests {
         for input in [
             IncludeMergeInput {
                 repair_enabled: true,
+                auto_add_encrypted_reasoning_include: true,
                 cli_key: "claude",
                 upstream_forwarded_path: "/v1/responses",
                 body: &body,
@@ -2280,6 +2463,7 @@ mod tests {
             },
             IncludeMergeInput {
                 repair_enabled: true,
+                auto_add_encrypted_reasoning_include: true,
                 cli_key: "codex",
                 upstream_forwarded_path: "/v1/chat/completions",
                 body: &body,
@@ -2290,6 +2474,7 @@ mod tests {
             },
             IncludeMergeInput {
                 repair_enabled: true,
+                auto_add_encrypted_reasoning_include: true,
                 cli_key: "codex",
                 upstream_forwarded_path: "/v1/responses",
                 body: &body,
@@ -2300,6 +2485,7 @@ mod tests {
             },
             IncludeMergeInput {
                 repair_enabled: true,
+                auto_add_encrypted_reasoning_include: true,
                 cli_key: "codex",
                 upstream_forwarded_path: "/v1/responses",
                 body: &body,
@@ -2310,6 +2496,7 @@ mod tests {
             },
             IncludeMergeInput {
                 repair_enabled: true,
+                auto_add_encrypted_reasoning_include: true,
                 cli_key: "codex",
                 upstream_forwarded_path: "/v1/responses",
                 body: &body,
@@ -2320,6 +2507,7 @@ mod tests {
             },
             IncludeMergeInput {
                 repair_enabled: true,
+                auto_add_encrypted_reasoning_include: true,
                 cli_key: "codex",
                 upstream_forwarded_path: "/v1/responses",
                 body: &body,
@@ -2364,7 +2552,12 @@ mod tests {
             commentary_marker_item(),
         ];
 
-        let body = build_continuation_payload(&base, &replay_tail).expect("payload");
+        let body = build_continuation_payload(
+            &base,
+            &replay_tail,
+            ContinuationPayloadMode::StableEncryptedReplay,
+        )
+        .expect("payload");
         let value: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(value.get("previous_response_id"), None);
@@ -2378,6 +2571,54 @@ mod tests {
         assert_eq!(input.len(), 3);
         assert_eq!(input[1]["type"], "reasoning");
         assert_eq!(input[2]["phase"], "commentary");
+    }
+
+    #[test]
+    fn experimental_continuation_payload_filters_state_and_encrypted_content() {
+        let base = serde_json::to_vec(&json!({
+            "model": "gpt-5.5",
+            "stream": true,
+            "previous_response_id": "resp_old",
+            "include": ["foo", ENCRYPTED_REASONING_INCLUDE],
+            "input": [
+                {"role": "user", "content": "hello", "encrypted_content": "input_secret"},
+                {"type": "reasoning", "encrypted_content": "input_reasoning_secret"},
+                "plain prompt"
+            ],
+            "reasoning": {"effort": "high"}
+        }))
+        .unwrap();
+        let replay_tail = vec![
+            json!({"id": "rs_hit", "type": "reasoning", "encrypted_content": "hit_secret"}),
+            commentary_marker_item(),
+        ];
+
+        let body = build_continuation_payload(
+            &base,
+            &replay_tail,
+            ContinuationPayloadMode::ExperimentalSafeReplay,
+        )
+        .expect("payload");
+        let value: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(value.get("previous_response_id"), None);
+        assert_eq!(value["stream"], json!(true));
+        assert_eq!(value["reasoning"], json!({"effort": "high"}));
+        assert_eq!(value["include"], json!(["foo"]));
+        let input = value["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3);
+        assert_eq!(input[0], json!({"role": "user", "content": "hello"}));
+        assert_eq!(
+            input[1],
+            json!({"type": "message", "role": "user", "content": "plain prompt"})
+        );
+        assert_eq!(input[2]["phase"], "commentary");
+        let payload_text = serde_json::to_string(&value).unwrap();
+        assert!(!payload_text.contains("encrypted_content"));
+        assert!(!payload_text.contains("hit_secret"));
+        assert!(!input
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning")));
     }
 
     #[test]
