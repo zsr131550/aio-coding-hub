@@ -166,8 +166,104 @@ describe("pages/providers/SortableProviderCard", () => {
 
     await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledWith(9));
     expect(await screen.findByText(/账户: 可用 · Pro · 余额 12.5 USD/)).toBeInTheDocument();
+    expect(screen.getByText("日 1.00/10.0 USD")).toBeInTheDocument();
     expect(gatewayCircuitResetProvider).not.toHaveBeenCalled();
     expect(providerOAuthFetchLimits).not.toHaveBeenCalled();
+  });
+
+  it("renders subscription account usage as a summary with daily weekly and monthly chips", async () => {
+    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce({
+      adapter_kind: "sub2api",
+      status: "available",
+      freshness: "fresh",
+      plan_name: "CodeX Air 订阅",
+      balance: 130,
+      used: null,
+      total: null,
+      unit: "USD",
+      unit_note: null,
+      daily_used: 170,
+      daily_total: 300,
+      weekly_used: 20,
+      weekly_total: 70,
+      monthly_used: 771,
+      monthly_total: 0,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: null,
+    });
+
+    renderCard({
+      id: 10,
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "sub2api" },
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /账户: 未刷新/ }));
+
+    expect(
+      await screen.findByText("账户: 可用 · CodeX Air 订阅 · 余额 130 USD")
+    ).toBeInTheDocument();
+    expect(screen.getByText("日 170/300 USD")).toBeInTheDocument();
+    expect(screen.getByText("周 20.0/70.0 USD")).toBeInTheDocument();
+    expect(screen.getByText("月已用 771 USD")).toBeInTheDocument();
+    expect(screen.queryByText(/月 771 USD\/0/)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /刷新账户用量，账户: 可用 · CodeX Air 订阅 · 余额 130 USD/,
+      })
+    ).toHaveAttribute(
+      "title",
+      "账户: 可用 · CodeX Air 订阅 · 余额 130 USD\n日 170/300 USD\n周 20.0/70.0 USD\n月已用 771 USD"
+    );
+  });
+
+  it("renders balance-only account usage without a subscription label", async () => {
+    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce({
+      adapter_kind: "newapi",
+      status: "available",
+      freshness: "fresh",
+      plan_name: null,
+      balance: 1,
+      used: 2,
+      total: 3,
+      unit: "USD",
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: null,
+    });
+
+    renderCard({
+      id: 11,
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "newapi" },
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /账户: 未刷新/ }));
+
+    expect(await screen.findByText("账户: 可用 · 余额 1.00 USD")).toBeInTheDocument();
+    expect(screen.getByText("已用 2.00/3.00 USD")).toBeInTheDocument();
   });
 
   it("does not render account usage for unsupported provider config", () => {
