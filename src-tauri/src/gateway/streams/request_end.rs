@@ -331,6 +331,7 @@ mod tests {
             created_at_ms: 1_700_000_000_000,
             created_at: 1_700_000_000,
             provider_cooldown_secs: 0,
+            upstream_first_byte_timeout_secs: 300,
             provider_id: 1,
             provider_name: "test-provider".to_string(),
             base_url: "https://upstream.example".to_string(),

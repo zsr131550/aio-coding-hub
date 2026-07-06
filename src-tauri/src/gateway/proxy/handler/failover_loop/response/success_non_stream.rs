@@ -554,6 +554,9 @@ where
                     circuit_state_after: None,
                     circuit_failure_count: Some(circuit_before.failure_count),
                     circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                    circuit_recover_at_unix: None,
+                    circuit_trigger_error_code: None,
+                    timeout_secs: None,
                 });
 
                 emit_attempt_event_and_log_with_circuit_before(
@@ -644,6 +647,9 @@ where
                     circuit_state_after: None,
                     circuit_failure_count: Some(circuit_before.failure_count),
                     circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                    circuit_recover_at_unix: None,
+                    circuit_trigger_error_code: None,
+                    timeout_secs: None,
                 });
 
                 emit_attempt_event_and_log_with_circuit_before(
@@ -783,6 +789,7 @@ where
                     provider_ctx.upstream_retry_policy,
                     configured_retry,
                 ),
+                timeout_secs: None,
             })
             .await;
         }
@@ -833,6 +840,7 @@ where
                     outcome,
                     reason: format!("cx2cc event-stream aggregation failed: {err}"),
                     record_circuit_failure: true,
+                    timeout_secs: None,
                 })
                 .await;
             }
@@ -956,6 +964,9 @@ where
             circuit_state_after: None,
             circuit_failure_count: Some(circuit_before.failure_count),
             circuit_failure_threshold: Some(circuit_before.failure_threshold),
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
+            timeout_secs: None,
         });
 
         emit_attempt_event_and_log_with_circuit_before(
@@ -987,6 +998,10 @@ where
                     provider_ctx_owned.provider_name_base.as_str(),
                     provider_ctx_owned.provider_base_url_base.as_str(),
                     now_unix,
+                )
+                .with_trigger(
+                    Some(error_code),
+                    Some(common.upstream_first_byte_timeout_secs),
                 ),
             );
             if let Some(last) = attempts.last_mut() {
@@ -1147,6 +1162,9 @@ where
                 circuit_state_after: None,
                 circuit_failure_count: Some(circuit_before.failure_count),
                 circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                circuit_recover_at_unix: None,
+                circuit_trigger_error_code: None,
+                timeout_secs: None,
             });
 
             let verbose_provider_error = ctx.verbose_provider_error;
@@ -1677,6 +1695,9 @@ where
         circuit_state_after: None,
         circuit_failure_count: Some(circuit_before.failure_count),
         circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        timeout_secs: None,
     });
 
     emit_attempt_event_and_log_with_circuit_before(
@@ -1935,6 +1956,9 @@ where
         circuit_state_after: None,
         circuit_failure_count: Some(circuit_before.failure_count),
         circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        timeout_secs: None,
     });
 
     emit_attempt_event_and_log_with_circuit_before(

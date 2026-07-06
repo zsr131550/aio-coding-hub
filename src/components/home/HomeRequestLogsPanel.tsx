@@ -48,17 +48,16 @@ import {
   buildRequestLogAuditMeta,
   buildRequestRouteMeta,
   computeStatusBadge,
-  FastModeBadge,
   formatRequestLogModelText,
-  FolderBadge,
-  FreeBadge,
   hasCodexReasoningGuardSpecialSetting,
-  hasPriorityServiceTierSpecialSetting,
-  resolveClaudeModelMappingFromSpecialSettings,
   resolveLiveTraceDurationMs,
   resolveLiveTraceProvider,
-  SessionReuseBadge,
-} from "./HomeLogShared";
+} from "./requestLogPresentation";
+import { FastModeBadge, FolderBadge, FreeBadge, SessionReuseBadge } from "./LogBadges";
+import {
+  hasPriorityServiceTierSpecialSetting,
+  resolveClaudeModelMappingFromSpecialSettings,
+} from "./requestLogSpecialSettings";
 import { getErrorCodeLabel } from "./requestLogErrorLabels";
 import {
   Clock,

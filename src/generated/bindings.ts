@@ -1790,6 +1790,14 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async dbCompact(): Promise<Result<DbCompactResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("db_compact") };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async requestLogsClearAll(): Promise<Result<ClearRequestLogsResult, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("request_logs_clear_all") };
@@ -2277,6 +2285,14 @@ export type ClaudeHookEntry = { hook_type: string; command: string; timeout?: nu
 export type ClaudeHookGroup = { event: string; matcher: string; hooks: ClaudeHookEntry[] };
 export type ClaudeHooksSetInput = { groups: ClaudeHookGroup[] };
 export type ClaudeHooksState = { settings_path: string; groups: ClaudeHookGroup[] };
+export type ClaudeModelMapping = {
+  requestedModel: string;
+  effectiveModel: string;
+  mappingKind: string;
+  providerId: number;
+  providerName: string;
+  applied: boolean;
+};
 export type ClaudeModelValidationResult = {
   ok: boolean;
   provider_id: number;
@@ -2745,6 +2761,7 @@ export type CostTrendRowV1 = {
   cost_covered_success: number;
 };
 export type DailyResetMode = "fixed" | "rolling";
+export type DbCompactResult = { before_bytes: number; after_bytes: number };
 export type DbDiskUsage = {
   db_bytes: number;
   wal_bytes: number;
@@ -2791,6 +2808,32 @@ export type DesktopUpdaterMetadata = {
   body: string | null;
 };
 export type EnvConflict = { var_name: string; source_type: string; source_path: string };
+export type FailoverAttempt = {
+  provider_id: number;
+  provider_name: string;
+  base_url: string;
+  outcome: string;
+  status: number | null;
+  provider_index: number | null;
+  retry_index: number | null;
+  session_reuse: boolean | null;
+  error_category: string | null;
+  error_code: string | null;
+  decision: string | null;
+  reason: string | null;
+  selection_method: string | null;
+  reason_code: string | null;
+  attempt_started_ms: number | null;
+  attempt_duration_ms: number | null;
+  circuit_state_before: string | null;
+  circuit_state_after: string | null;
+  circuit_failure_count: number | null;
+  circuit_failure_threshold: number | null;
+  circuit_recover_at_unix?: number | null;
+  circuit_trigger_error_code?: string | null;
+  provider_bridged: boolean | null;
+  timeout_secs: number | null;
+};
 export type FrontendErrorReportInput = {
   source: string;
   message: string;
@@ -2812,7 +2855,56 @@ export type GatewayActiveSessionSummary = {
   total_cost_usd: number | null;
   total_duration_ms: number | null;
 };
+export type GatewayAttemptEvent = {
+  trace_id: string;
+  cli_key: string;
+  session_id: string | null;
+  method: string;
+  path: string;
+  query: string | null;
+  requested_model: string | null;
+  special_settings_json: string | null;
+  attempt_index: number;
+  provider_id: number;
+  session_reuse: boolean | null;
+  provider_name: string;
+  base_url: string;
+  outcome: string;
+  status: number | null;
+  attempt_started_ms: number;
+  attempt_duration_ms: number;
+  circuit_state_before: string | null;
+  circuit_state_after: string | null;
+  circuit_failure_count: number | null;
+  circuit_failure_threshold: number | null;
+  claude_model_mapping: ClaudeModelMapping | null;
+};
+export type GatewayCircuitEvent = {
+  trace_id: string;
+  cli_key: string;
+  provider_id: number;
+  provider_name: string;
+  base_url: string;
+  prev_state: string;
+  next_state: string;
+  failure_count: number;
+  failure_threshold: number;
+  open_until: number | null;
+  cooldown_until: number | null;
+  reason: string;
+  ts: number;
+  trigger_error_code: string | null;
+  first_byte_timeout_secs: number | null;
+};
 export type GatewayListenMode = "localhost" | "wsl_auto" | "lan" | "custom";
+export type GatewayLogEvent = {
+  level: string;
+  error_code: string;
+  message: string;
+  requested_port: number;
+  bound_port: number;
+  base_url: string;
+};
 export type GatewayProviderCircuitStatus = {
   provider_id: number;
   state: string;
@@ -2834,6 +2926,51 @@ export type GatewayRectifierSettingsUpdate = {
   responseFixerFixTruncatedJson: boolean;
   responseFixerMaxJsonDepth: number;
   responseFixerMaxFixSize: number;
+};
+export type GatewayRequestEvent = {
+  trace_id: string;
+  cli_key: string;
+  session_id: string | null;
+  method: string;
+  path: string;
+  query: string | null;
+  requested_model: string | null;
+  special_settings_json: string | null;
+  status: number | null;
+  error_category: string | null;
+  error_code: string | null;
+  duration_ms: number;
+  ttfb_ms: number | null;
+  visible_ttfb_ms: number | null;
+  attempts: FailoverAttempt[];
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cache_creation_5m_input_tokens: number | null;
+  cache_creation_1h_input_tokens: number | null;
+  effective_input_tokens: number | null;
+  claude_model_mapping: ClaudeModelMapping | null;
+};
+export type GatewayRequestSignalEvent = {
+  trace_id: string;
+  cli_key: string;
+  session_id: string | null;
+  requested_model: string | null;
+  phase: string;
+  ts: number;
+};
+export type GatewayRequestStartEvent = {
+  trace_id: string;
+  cli_key: string;
+  session_id: string | null;
+  method: string;
+  path: string;
+  query: string | null;
+  requested_model: string | null;
+  special_settings_json: string | null;
+  ts: number;
 };
 export type GatewayStatus = {
   running: boolean;

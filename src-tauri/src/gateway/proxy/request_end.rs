@@ -1029,7 +1029,10 @@ mod tests {
             circuit_state_after: None,
             circuit_failure_count: None,
             circuit_failure_threshold: None,
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
             provider_bridged: Some(false),
+            timeout_secs: None,
         }
     }
 
@@ -1059,7 +1062,10 @@ mod tests {
             circuit_state_after: Some("OPEN"),
             circuit_failure_count: Some(5),
             circuit_failure_threshold: Some(5),
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
             provider_bridged: Some(false),
+            timeout_secs: Some(1),
         }
     }
 
@@ -1156,6 +1162,30 @@ mod tests {
         assert_eq!(log_args.attempts_json, expected_attempts_json);
         assert_eq!(cloned_attempts.len(), 1);
         assert_eq!(cloned_attempts[0].provider_id, 7);
+    }
+
+    #[test]
+    fn serialize_attempts_encodes_timeout_secs_only_for_timeout_attempts() {
+        let mut timeout = timeout_attempt(10, 1, Some(true));
+        timeout.timeout_secs = Some(30);
+        let attempts = vec![timeout, sample_attempt()];
+
+        let json = serialize_attempts(&attempts);
+        assert!(json.contains("\"timeout_secs\":30"));
+
+        let encoded: Vec<serde_json::Value> = serde_json::from_str(&json).expect("attempts json");
+        assert_eq!(
+            encoded[0]
+                .get("timeout_secs")
+                .and_then(serde_json::Value::as_u64),
+            Some(30)
+        );
+        // Non-timeout attempts serialize an explicit null (gateway event
+        // payloads must not use skip_serializing_if).
+        assert_eq!(
+            encoded[1].get("timeout_secs"),
+            Some(&serde_json::Value::Null)
+        );
     }
 
     #[test]

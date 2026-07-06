@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { CLIS, cliFromKeyOrDefault, isCliKey } from "../../constants/clis";
+import { SKILLS_ACTIVE_CLI_STORAGE_KEY } from "../../constants/skills";
 import { useSettingsQuery } from "../../query/settings";
 import {
   useSkillInstallToLocalMutation,
@@ -56,7 +57,7 @@ type ExpandedReposState = {
 
 function readCliFromStorage(): CliKey | null {
   try {
-    const raw = localStorage.getItem("skills.activeCli");
+    const raw = localStorage.getItem(SKILLS_ACTIVE_CLI_STORAGE_KEY);
     if (isCliKey(raw)) return raw;
   } catch {}
   return null;
@@ -64,7 +65,7 @@ function readCliFromStorage(): CliKey | null {
 
 function writeCliToStorage(cli: CliKey) {
   try {
-    localStorage.setItem("skills.activeCli", cli);
+    localStorage.setItem(SKILLS_ACTIVE_CLI_STORAGE_KEY, cli);
   } catch {}
 }
 

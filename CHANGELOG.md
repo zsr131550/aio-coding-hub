@@ -8,6 +8,42 @@
 * **codex:** restore continuation repair timeout policy ([4dc3401](https://github.com/FingerCaster/aio-coding-hub/commit/4dc3401d785e8a2887253e98e59c7998d9cb49d5))
 * **providers:** compact account usage display ([bda1fad](https://github.com/FingerCaster/aio-coding-hub/commit/bda1fadb61a7b8af0838f5196776e755ccca1a1f))
 
+## [0.60.8](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.7...aio-coding-hub-v0.60.8) (2026-07-05)
+
+
+### Features
+
+* **gateway:** 熔断跳过归因落库并在日志详情展示原因与冷却时间 ([530e6d3](https://github.com/dyndynjyxa/aio-coding-hub/commit/530e6d3b16815b67bf5fe036fc356cfab267b2c8))
+* **settings:** 请求日志留存策略可见并提供数据库压缩入口 ([c23e4bd](https://github.com/dyndynjyxa/aio-coding-hub/commit/c23e4bd7f19355dba75afa63bec19666ae613c7f))
+
+
+### Bug Fixes
+
+* **gateway:** 流式空闲超时在流式转发路径真正生效 ([6197e81](https://github.com/dyndynjyxa/aio-coding-hub/commit/6197e81046867e229f0e1dfe0a98f1bf311a484a))
+* **ui:** failover 徽章推导与落库语义收敛并清理状态死代码 ([5b5eae8](https://github.com/dyndynjyxa/aio-coding-hub/commit/5b5eae8ee0088b0be407e64acd2a36426768976b))
+
+
+### Code Refactoring
+
+* **gateway:** 熔断通知文案迁移前端渲染并删除后端文本构造 ([5cd4915](https://github.com/dyndynjyxa/aio-coding-hub/commit/5cd49151d1ea93034d0e371a3d68aa09800f10f7))
+* **ui:** 拆分 HomeLogShared 杂物间为三个单一职责模块 ([8590f3f](https://github.com/dyndynjyxa/aio-coding-hub/commit/8590f3f04fdbfc2529d754ac90e93c189af81540))
+* **ui:** 清理 review 发现的 P2 项并移除 traceRoute skipped 死分支 ([ddf131f](https://github.com/dyndynjyxa/aio-coding-hub/commit/ddf131fe735a4459d4ed0e177dd1b4c82063bb93))
+* **ui:** 网关事件 payload 类型改由 Specta 生成派生 ([85b4007](https://github.com/dyndynjyxa/aio-coding-hub/commit/85b40072327181f00e2efe7020353dbcf4fbe9ab))
+
+## [0.60.7](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.6...aio-coding-hub-v0.60.7) (2026-07-05)
+
+
+### Features
+
+* **ui:** 请求日志错误卡片展示失败尝试归因摘要 ([bdca955](https://github.com/dyndynjyxa/aio-coding-hub/commit/bdca955f9ce48c2abfd1a1ae33a29aeace322f2b))
+
+
+### Bug Fixes
+
+* **gateway:** 识别 compact 请求并放宽首字节超时至 300 秒 ([bbbdeaf](https://github.com/dyndynjyxa/aio-coding-hub/commit/bbbdeaf019f93b3069d8a554647c24ef5813fd8c))
+
+## [0.60.6](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.5...aio-coding-hub-v0.60.6) (2026-07-03)
+
 ## [0.60.18](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.17...aio-coding-hub-v0.60.18) (2026-07-05)
 
 

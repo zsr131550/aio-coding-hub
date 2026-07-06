@@ -1,4 +1,4 @@
-use crate::{circuit_breaker, notice, settings, usage};
+use crate::{circuit_breaker, settings, usage};
 use serde::Serialize;
 use tauri::Manager;
 
@@ -69,7 +69,7 @@ pub(in crate::gateway) mod decision_chain {
     }
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub(super) struct FailoverAttempt {
     pub(super) provider_id: i64,
     pub(super) provider_name: String,
@@ -91,13 +91,26 @@ pub(super) struct FailoverAttempt {
     pub(super) circuit_state_after: Option<&'static str>,
     pub(super) circuit_failure_count: Option<u32>,
     pub(super) circuit_failure_threshold: Option<u32>,
+    // Circuit attribution for circuit-gate skip attempts (recovery point and
+    // the error code that triggered the breaker). Serialized only when set so
+    // success attempts and non-circuit paths gain zero bytes in attempts_json.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) circuit_recover_at_unix: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) circuit_trigger_error_code: Option<&'static str>,
     // Whether the attempted provider has bridged (cx2cc) input semantics; None
     // for synthetic attempts without a concrete provider. Feeds the request
     // event's effective_input_tokens.
     pub(super) provider_bridged: Option<bool>,
+    // Effective first-byte timeout (seconds); Some only for failures recorded
+    // under an active first-byte timeout window (GW_UPSTREAM_TIMEOUT plus the
+    // first-chunk stream-error branches). Structured contract for the frontend
+    // (never parsed out of `outcome`); serializes as explicit null per the
+    // gateway event contract.
+    pub(super) timeout_secs: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ClaudeModelMapping {
     pub(super) requested_model: String,
@@ -108,8 +121,8 @@ pub(super) struct ClaudeModelMapping {
     pub(super) applied: bool,
 }
 
-#[derive(Debug, Serialize, Clone)]
-struct GatewayRequestEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayRequestEvent {
     trace_id: String,
     cli_key: String,
     session_id: Option<String>,
@@ -138,8 +151,8 @@ struct GatewayRequestEvent {
     claude_model_mapping: Option<ClaudeModelMapping>,
 }
 
-#[derive(Debug, Serialize, Clone)]
-struct GatewayRequestStartEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayRequestStartEvent {
     trace_id: String,
     cli_key: String,
     session_id: Option<String>,
@@ -151,8 +164,8 @@ struct GatewayRequestStartEvent {
     ts: i64,
 }
 
-#[derive(Debug, Serialize, Clone)]
-struct GatewayRequestSignalEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayRequestSignalEvent {
     trace_id: String,
     cli_key: String,
     session_id: Option<String>,
@@ -161,8 +174,8 @@ struct GatewayRequestSignalEvent {
     ts: i64,
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub(super) struct GatewayAttemptEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayAttemptEvent {
     pub(super) trace_id: String,
     pub(super) cli_key: String,
     pub(super) session_id: Option<String>,
@@ -187,8 +200,8 @@ pub(super) struct GatewayAttemptEvent {
     pub(super) claude_model_mapping: Option<ClaudeModelMapping>,
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub(super) struct GatewayCircuitEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayCircuitEvent {
     pub(super) trace_id: String,
     pub(super) cli_key: String,
     pub(super) provider_id: i64,
@@ -202,10 +215,16 @@ pub(super) struct GatewayCircuitEvent {
     pub(super) cooldown_until: Option<i64>,
     pub(super) reason: &'static str,
     pub(super) ts: i64,
+    // Trigger-failure attribution (error code that tripped the breaker and the
+    // effective first-byte timeout in seconds). The frontend builds the
+    // circuit-breaker notice body from these; None outside failure-recording
+    // transitions. Serialized as explicit null per the gateway event contract.
+    pub(super) trigger_error_code: Option<String>,
+    pub(super) first_byte_timeout_secs: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub(super) struct GatewayLogEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayLogEvent {
     pub(super) level: &'static str,
     pub(super) error_code: &'static str,
     pub(super) message: String,
@@ -381,6 +400,7 @@ fn bound_attempt_event(mut payload: GatewayAttemptEvent) -> GatewayAttemptEvent 
 fn bound_circuit_event(mut payload: GatewayCircuitEvent) -> GatewayCircuitEvent {
     payload.provider_name = truncate_chars(payload.provider_name, EVENT_SHORT_TEXT_MAX_CHARS);
     payload.base_url = truncate_chars(payload.base_url, EVENT_URL_MAX_CHARS);
+    truncate_optional_chars(&mut payload.trigger_error_code, EVENT_SHORT_TEXT_MAX_CHARS);
     payload
 }
 
@@ -555,6 +575,8 @@ pub(super) fn emit_circuit_transition<R: tauri::Runtime>(
     base_url: &str,
     transition: &circuit_breaker::CircuitTransition,
     now_unix: i64,
+    trigger_error_code: Option<&'static str>,
+    first_byte_timeout_secs: Option<u32>,
 ) {
     let payload = GatewayCircuitEvent {
         trace_id: trace_id.to_string(),
@@ -570,88 +592,11 @@ pub(super) fn emit_circuit_transition<R: tauri::Runtime>(
         cooldown_until: transition.snapshot.cooldown_until,
         reason: transition.reason,
         ts: now_unix,
+        trigger_error_code: trigger_error_code.map(str::to_string),
+        first_byte_timeout_secs,
     };
 
     emit_circuit_event(app, payload);
-
-    let enable_notice = match settings::read(app) {
-        Ok(cfg) => cfg.enable_circuit_breaker_notice,
-        Err(err) => {
-            tracing::warn!("skip circuit notice because settings read failed: {err}");
-            return;
-        }
-    };
-    if !enable_notice {
-        return;
-    }
-
-    let prev_state_text = match transition.prev_state {
-        circuit_breaker::CircuitState::Closed => "正常",
-        circuit_breaker::CircuitState::Open => "熔断",
-        circuit_breaker::CircuitState::HalfOpen => "半开",
-    };
-    let next_state_text = match transition.next_state {
-        circuit_breaker::CircuitState::Closed => "正常",
-        circuit_breaker::CircuitState::Open => "熔断",
-        circuit_breaker::CircuitState::HalfOpen => "半开",
-    };
-
-    let (level, title) = match transition.next_state {
-        circuit_breaker::CircuitState::Open => (
-            notice::NoticeLevel::Warning,
-            format!("熔断触发：{provider_name}"),
-        ),
-        circuit_breaker::CircuitState::HalfOpen => (
-            notice::NoticeLevel::Info,
-            format!("熔断试探：{provider_name}"),
-        ),
-        circuit_breaker::CircuitState::Closed => (
-            notice::NoticeLevel::Success,
-            format!("熔断恢复：{provider_name}"),
-        ),
-    };
-
-    let reason_text = match transition.reason {
-        "FAILURE_THRESHOLD_REACHED" => "失败次数达到阈值",
-        "OPEN_EXPIRED" => "熔断到期，进入半开试探",
-        "HALF_OPEN_SUCCESS" => "半开试探成功，恢复正常",
-        "HALF_OPEN_FAILURE" => "半开试探失败，重新熔断",
-        other => other,
-    };
-
-    let mut lines: Vec<String> = Vec::with_capacity(10);
-    lines.push(format!("CLI：{cli_key}"));
-    lines.push(format!("Provider：{provider_name} (id={provider_id})"));
-    lines.push(format!("Base URL：{base_url}"));
-    lines.push(format!("状态：{prev_state_text} → {next_state_text}"));
-    lines.push(format!(
-        "失败：{} / {}",
-        transition.snapshot.failure_count, transition.snapshot.failure_threshold
-    ));
-    lines.push(format!("原因：{reason_text}（{}）", transition.reason));
-
-    match transition.snapshot.open_until {
-        Some(open_until) => {
-            let remaining_secs = open_until.saturating_sub(now_unix);
-            let remaining_minutes = remaining_secs.saturating_add(59) / 60;
-            if remaining_secs > 0 {
-                lines.push(format!(
-                    "熔断至：{open_until}（约 {remaining_minutes} 分钟后）"
-                ));
-            } else {
-                lines.push(format!("熔断至：{open_until}（已到期）"));
-            }
-        }
-        None => lines.push("熔断至：—".to_string()),
-    }
-
-    lines.push(format!("Trace：{trace_id}"));
-
-    if let Err(err) = notice::build(level, Some(title), lines.join("\n"))
-        .and_then(|payload| notice::emit(app, payload))
-    {
-        tracing::warn!("failed to emit circuit breaker notice: {}", err);
-    }
 }
 
 #[cfg(test)]
@@ -692,7 +637,10 @@ mod tests {
             circuit_state_after: None,
             circuit_failure_count: None,
             circuit_failure_threshold: None,
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
             provider_bridged: Some(false),
+            timeout_secs: None,
         }
     }
 
@@ -767,6 +715,9 @@ mod tests {
                 circuit_state_after: Some("CLOSED"),
                 circuit_failure_count: Some(0),
                 circuit_failure_threshold: Some(5),
+                circuit_recover_at_unix: None,
+                circuit_trigger_error_code: None,
+                timeout_secs: None,
             }],
             input_tokens: Some(1200),
             output_tokens: Some(350),
@@ -876,12 +827,39 @@ mod tests {
             cooldown_until: None,
             reason: "FAILURE_THRESHOLD_REACHED",
             ts: 1_750_000_000,
+            trigger_error_code: Some("GW_UPSTREAM_TIMEOUT".to_string()),
+            first_byte_timeout_secs: Some(300),
         };
 
         assert_matches_fixture(
             &event,
             include_str!("../../../src/services/gateway/__fixtures__/gatewayEvents/circuit.json"),
         );
+    }
+
+    #[test]
+    fn circuit_event_serializes_missing_trigger_fields_as_null() {
+        let event = GatewayCircuitEvent {
+            trace_id: "trace-1".to_string(),
+            cli_key: "claude".to_string(),
+            provider_id: 7,
+            provider_name: "Provider A".to_string(),
+            base_url: "https://provider-a.example".to_string(),
+            prev_state: "OPEN",
+            next_state: "HALF_OPEN",
+            failure_count: 5,
+            failure_threshold: 5,
+            open_until: None,
+            cooldown_until: None,
+            reason: "OPEN_EXPIRED",
+            ts: 1_750_000_000,
+            trigger_error_code: None,
+            first_byte_timeout_secs: None,
+        };
+
+        let value = serde_json::to_value(event).expect("serializable circuit event");
+        assert_eq!(value.get("trigger_error_code"), Some(&json!(null)));
+        assert_eq!(value.get("first_byte_timeout_secs"), Some(&json!(null)));
     }
 
     #[test]

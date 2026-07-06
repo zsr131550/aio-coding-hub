@@ -379,6 +379,7 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         created_at_ms: ctx.created_at_ms,
         created_at: ctx.created_at,
         provider_cooldown_secs: ctx.provider_cooldown_secs,
+        upstream_first_byte_timeout_secs: ctx.upstream_first_byte_timeout_secs,
         provider_id: provider_ctx.provider_id,
         provider_name: provider_ctx.provider_name_base.clone(),
         base_url: provider_ctx.provider_base_url_base.clone(),

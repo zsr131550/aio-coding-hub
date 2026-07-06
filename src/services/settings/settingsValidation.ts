@@ -100,6 +100,12 @@ export const MAX_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 50;
 export const MIN_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES = 1;
 export const MAX_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES = 24 * 60;
 
+/**
+ * Frontend copies of the backend validation limits (src-tauri/src/infra/settings/defaults.rs).
+ * Kept in sync by src/constants/__tests__/crossLayerContracts.test.ts — update both sides together.
+ * MIN_* entries without a Rust const mirror hardcoded backend checks in
+ * src-tauri/src/infra/settings/persistence.rs; every limit here is anchored by the contract test.
+ */
 export const SETTINGS_VALIDATION_LIMITS = {
   MAX_UPDATE_RELEASES_URL_LEN,
   MAX_UPSTREAM_PROXY_URL_LEN,

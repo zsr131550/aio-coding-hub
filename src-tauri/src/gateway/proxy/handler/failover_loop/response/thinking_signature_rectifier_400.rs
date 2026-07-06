@@ -53,6 +53,7 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
         requested_model,
         special_settings,
         provider_cooldown_secs,
+        upstream_first_byte_timeout_secs,
         enable_response_fixer,
         response_fixer_non_stream_config,
         ..
@@ -327,7 +328,8 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
                     provider_name_base.as_str(),
                     provider_base_url_base.as_str(),
                     now_unix,
-                ),
+                )
+                .with_trigger(Some(error_code), Some(upstream_first_byte_timeout_secs)),
             );
 
             *circuit_snapshot = change.after.clone();
@@ -404,7 +406,10 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
             circuit_state_after,
             circuit_failure_count,
             circuit_failure_threshold,
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
             provider_bridged: Some(provider_ctx.provider_bridged),
+            timeout_secs: None,
         });
 
         emit_attempt_event_and_log(

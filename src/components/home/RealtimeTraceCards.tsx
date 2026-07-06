@@ -9,6 +9,7 @@ import type { CliSessionsFolderLookupEntry } from "../../services/cli/cliSession
 import type { CliKey } from "../../services/providers/providers";
 import type { ProjectedRealtimeCard } from "../../services/gateway/requestActivityProjection";
 import { REALTIME_TRACE_EXIT_START_MS } from "../../services/gateway/requestActivityProjection";
+import { hasFailoverFromSegments } from "../../services/gateway/traceRoute";
 import { cn } from "../../utils/cn";
 import {
   computeOutputTokensPerSecond,
@@ -22,14 +23,12 @@ import {
 import { Clock, Server, CheckCircle2, XCircle } from "lucide-react";
 import {
   computeStatusBadge,
-  FolderBadge,
   formatRequestLogModelText,
-  FreeBadge,
   hasCodexReasoningGuardRetryAttempt,
-  SessionReuseBadge,
-} from "./HomeLogShared";
-import { getErrorCodeLabel } from "./requestLogErrorLabels";
+} from "./requestLogPresentation";
+import { FolderBadge, FreeBadge, SessionReuseBadge } from "./LogBadges";
 import { CliBrandIcon } from "./CliBrandIcon";
+import { getErrorCodeLabel } from "./requestLogErrorLabels";
 
 export type RealtimeTraceCardsProps = {
   folderLookupBySessionKey: Map<string, CliSessionsFolderLookupEntry>;
@@ -147,9 +146,8 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
           return { providerText, startProvider, endProvider, segments: segs };
         })();
 
-        const hasFailover =
-          attemptRoute.segments.length > 1 ||
-          attemptRoute.segments.some((s) => s.status === "failed");
+        // 与落库后徽章同规则（见 traceRoute.ts，复刻后端 has_failover）。
+        const hasFailover = hasFailoverFromSegments(attemptRoute.segments);
 
         const statusBadge = computeStatusBadge({
           status: summaryStatus,

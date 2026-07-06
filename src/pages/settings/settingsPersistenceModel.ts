@@ -5,6 +5,7 @@ import type {
   SettingsViewBackedInputKey,
 } from "../../services/settings/settings";
 import type { CliKey } from "../../services/providers/providers";
+import { DEFAULT_GATEWAY_PORT } from "../../constants/gateway";
 import {
   DEFAULT_CLI_PRIORITY_ORDER,
   normalizeCliPriorityOrder,
@@ -45,7 +46,7 @@ export type PersistKey = keyof PersistedSettings;
 export type PersistedSettingsPatch = Partial<PersistedSettings>;
 
 export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
-  preferred_port: 37123,
+  preferred_port: DEFAULT_GATEWAY_PORT,
   show_home_heatmap: true,
   show_home_usage: true,
   home_usage_period: DEFAULT_HOME_USAGE_PERIOD,

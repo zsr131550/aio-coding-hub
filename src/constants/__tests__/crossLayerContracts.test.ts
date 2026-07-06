@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { AppErrorCodes } from "../appErrorCodes";
 import { appEventNames } from "../appEvents";
+import { DEFAULT_GATEWAY_PORT } from "../gateway";
 import { GATEWAY_EVENT_TEXT_LIMITS, gatewayEventNames } from "../gatewayEvents";
 import { GatewayErrorCodes } from "../gatewayErrorCodes";
 import { HOME_USAGE_PERIOD_VALUES } from "../homeUsagePeriods";
 import { MAX_MODEL_NAME_LEN } from "../../schemas/providerEditorDialog";
+import { DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE } from "../../services/gateway/circuitNotice";
 import { MAX_ATTEMPTS_PER_TRACE } from "../../services/gateway/traceLimits";
 import { SETTINGS_VALIDATION_LIMITS } from "../../services/settings/settingsValidation";
 import { getSettingsState, resetMswState } from "../../test/msw/state";
@@ -123,11 +125,22 @@ describe("cross-layer contracts", () => {
     );
   });
 
-  it("keeps gateway event payloads free of skip_serializing_if", () => {
+  it("keeps gateway event payloads free of skip_serializing_if outside known exemptions", () => {
     // The shared-fixture contract tests compare serde_json values, so a field
     // skipped when None would silently evade both sides while the frontend
     // normalizers never learn about it. Options must serialize as explicit null.
-    expect(gatewayEventsSource).not.toContain("skip_serializing_if");
+    // Exemptions: circuit attribution fields are omitted when None by explicit
+    // space-constraint design (attempts_json must gain zero bytes on success
+    // paths); both sides pin the omission with dedicated tests (Rust key-set
+    // assertions in failover_loop/tests.rs, absence handling in attemptsJson).
+    const exemptFields = ["circuit_recover_at_unix", "circuit_trigger_error_code"];
+    const skippedFields = Array.from(
+      gatewayEventsSource.matchAll(
+        /#\[serde\(skip_serializing_if[^\]]*\)\]\s*(?:pub(?:\([^)]*\))?\s+)?(\w+):/g
+      ),
+      (match) => match[1]
+    );
+    expect(skippedFields.sort()).toEqual(exemptFields.sort());
   });
 
   it("keeps the MSW settings mock aligned with Rust defaults for drift-prone fields", () => {
@@ -205,11 +218,48 @@ describe("cross-layer contracts", () => {
     expect(limits.MAX_PREFERRED_PORT, "u16::MAX").toBe(65535);
     expect(limits.MIN_LOG_RETENTION_DAYS, "persistence.rs: log_retention_days == 0").toBe(1);
     expect(settingsPersistenceSource).toContain("log_retention_days == 0");
-    expect(limits.MIN_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS).toBe(1);
-    expect(limits.MIN_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER).toBe(1);
-    expect(limits.MIN_FAILOVER_MAX_PROVIDERS_TO_TRY).toBe(1);
-    expect(limits.MIN_CIRCUIT_BREAKER_FAILURE_THRESHOLD).toBe(1);
-    expect(limits.MIN_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES).toBe(1);
+    // MIN_*=1 limits anchor the validate_bounds error message text so that
+    // relaxing/removing the Rust check turns this test red.
+    const minOnePairs = [
+      [
+        limits.MIN_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS,
+        "provider_base_url_ping_cache_ttl_seconds must be >= 1",
+      ],
+      [
+        limits.MIN_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER,
+        "failover_max_attempts_per_provider must be >= 1",
+      ],
+      [limits.MIN_FAILOVER_MAX_PROVIDERS_TO_TRY, "failover_max_providers_to_try must be >= 1"],
+      [
+        limits.MIN_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+        "circuit_breaker_failure_threshold must be >= 1",
+      ],
+      [
+        limits.MIN_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES,
+        "circuit_breaker_open_duration_minutes must be >= 1",
+      ],
+    ] as const;
+    for (const [frontendValue, rustAnchor] of minOnePairs) {
+      expect(frontendValue, `persistence.rs: ${rustAnchor}`).toBe(1);
+      expect(settingsPersistenceSource, rustAnchor).toContain(rustAnchor);
+    }
+  });
+
+  it("keeps the circuit-breaker notice fallback default aligned with Rust", () => {
+    // circuitNotice.ts uses this before the settings snapshot arrives; a Rust
+    // default flip without a frontend update must turn this red.
+    expect(
+      extractRustBoolConst(settingsDefaultsSource, "DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE")
+    ).toBe(DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE);
+  });
+
+  it("keeps the default gateway port aligned with Rust", () => {
+    // Guards all three former hardcode sites: Rust DEFAULT_GATEWAY_PORT plus
+    // the shared frontend const consumed by useGatewayMeta and
+    // settingsPersistenceModel. Editing either side's 37123 turns this red.
+    expect(extractRustNumericConst(settingsDefaultsSource, "DEFAULT_GATEWAY_PORT")).toBe(
+      DEFAULT_GATEWAY_PORT
+    );
   });
 
   it("keeps the provider model-name length limit aligned with Rust", () => {

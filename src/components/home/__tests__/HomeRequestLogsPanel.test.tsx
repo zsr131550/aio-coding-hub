@@ -923,7 +923,9 @@ describe("components/home/HomeRequestLogsPanel", () => {
     );
 
     expect(screen.getByText("进行中")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /gpt-5/ })).toBeInTheDocument();
+    expect(screen.getByText("当前阶段")).toBeInTheDocument();
+    expect(screen.getByText("等待首个尝试")).toBeInTheDocument();
+    expect(screen.getByTitle("Codex / gpt-5-unknown")).toBeInTheDocument();
     expect(screen.queryByText("当前没有最近使用记录")).not.toBeInTheDocument();
   });
 
@@ -1104,20 +1106,16 @@ describe("components/home/HomeRequestLogsPanel", () => {
       </MemoryRouter>
     );
 
-    // Without a live trace the status-null log is NOT promoted to realtime cards.
-    // It stays in the regular list as an in-progress fallback row.
+    // Active registry membership synthesizes a realtime card even when the
+    // trace store has not seen the request yet.
     expect(screen.getByText("pending-model")).toBeInTheDocument();
-    expect(screen.queryByText("当前阶段")).not.toBeInTheDocument();
+    expect(screen.getByText("当前阶段")).toBeInTheDocument();
+    expect(screen.getByText("等待首个尝试")).toBeInTheDocument();
     expect(screen.getByText("进行中")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /pending-model/ })).toBeInTheDocument();
     const completedNewerButton = screen.getByRole("button", { name: /done-newer-model/ });
-    const pendingButton = screen.getByRole("button", { name: /pending-model/ });
     const completedOlderButton = screen.getByRole("button", { name: /done-older-model/ });
 
-    // Pending rows stay above completed rows even when the live trace is missing.
-    expect(pendingButton.compareDocumentPosition(completedNewerButton)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING
-    );
+    // The remaining historical rows preserve time order below realtime cards.
     expect(completedNewerButton.compareDocumentPosition(completedOlderButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
     );
@@ -1169,7 +1167,11 @@ describe("components/home/HomeRequestLogsPanel", () => {
       </MemoryRouter>
     );
 
-    expect(screen.getByText("进行中 · 已静默 12 分钟")).toBeInTheDocument();
+    expect(screen.getByText("进行中")).toBeInTheDocument();
+    expect(screen.getByText("当前阶段")).toBeInTheDocument();
+    expect(screen.getByText("等待首个尝试")).toBeInTheDocument();
+    expect(screen.getByText("20m0.0s")).toBeInTheDocument();
+    expect(screen.queryByText("进行中 · 已静默 12 分钟")).not.toBeInTheDocument();
   });
 
   it("uses live trace data to show current provider and elapsed duration for in-progress logs", () => {
@@ -1190,10 +1192,12 @@ describe("components/home/HomeRequestLogsPanel", () => {
           {
             trace_id: "t-live-provider",
             cli_key: "claude",
+            session_id: null,
             method: "POST",
             path: "/v1/messages",
             query: null,
             requested_model: "claude-3-opus",
+            special_settings_json: null,
             attempt_index: 0,
             provider_id: 42,
             session_reuse: false,
@@ -1203,6 +1207,11 @@ describe("components/home/HomeRequestLogsPanel", () => {
             status: null,
             attempt_started_ms: 0,
             attempt_duration_ms: 0,
+            circuit_state_before: null,
+            circuit_state_after: null,
+            circuit_failure_count: null,
+            circuit_failure_threshold: null,
+            claude_model_mapping: null,
           },
         ],
       },

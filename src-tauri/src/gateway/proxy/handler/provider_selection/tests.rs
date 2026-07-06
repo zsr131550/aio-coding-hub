@@ -92,7 +92,7 @@ fn open_circuit_for_provider(provider_id: i64, now: i64) -> circuit_breaker::Cir
         HashMap::new(),
         None,
     );
-    circuit.record_failure(provider_id, now);
+    circuit.record_failure(provider_id, now, None);
     assert!(!circuit.should_allow(provider_id, now).allow);
     circuit
 }

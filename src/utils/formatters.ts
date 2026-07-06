@@ -256,3 +256,20 @@ export function formatIsoDateTime(value: string | null | undefined) {
     return value;
   }
 }
+
+/**
+ * Circuit-breaker recovery hint: absolute local time plus remaining minutes.
+ * Returns null when the recovery point is unknown (graceful degradation for
+ * logs recorded before attribution existed or lost across backend restart).
+ */
+export function formatCircuitRecovery(
+  recoverAtUnix: number | null | undefined,
+  nowMs: number = Date.now()
+) {
+  if (recoverAtUnix == null || !Number.isFinite(recoverAtUnix)) return null;
+  const at = formatUnixSeconds(recoverAtUnix);
+  const remainingSec = recoverAtUnix - Math.floor(nowMs / 1000);
+  if (remainingSec <= 0) return `已过预计恢复时间（${at}）`;
+  const minutes = Math.max(1, Math.ceil(remainingSec / 60));
+  return `预计 ${at} 恢复（约 ${minutes} 分钟后）`;
+}

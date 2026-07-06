@@ -1558,6 +1558,9 @@ pub(super) fn record_guard_retry_attempt(
         circuit_state_after: Some(circuit_state_before),
         circuit_failure_count: Some(circuit_failure_count),
         circuit_failure_threshold: Some(circuit_failure_threshold),
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        timeout_secs: None,
     });
 }
 

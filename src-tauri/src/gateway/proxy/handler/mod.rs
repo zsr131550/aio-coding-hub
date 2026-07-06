@@ -157,6 +157,7 @@ where
         special_settings: new_special_settings(),
         requested_model: None,
         requested_model_location: None,
+        is_compact_request: false,
         runtime_settings: None,
         session_id: None,
         allow_session_reuse: false,
@@ -262,12 +263,17 @@ where
 
     emit_gateway_debug_log_lazy(&ctx.state.app, || {
         format!(
-            "[REQ] trace_id={} cli_key={} method={} path={} model={}\n  headers={}\n  body({} bytes)={}",
+            "[REQ] trace_id={} cli_key={} method={} path={} model={}{}\n  headers={}\n  body({} bytes)={}",
             ctx.trace_id,
             ctx.cli_key,
             ctx.method_hint,
             ctx.forwarded_path,
             ctx.requested_model.as_deref().unwrap_or("-"),
+            if ctx.is_compact_request {
+                " kind=compact"
+            } else {
+                ""
+            },
             redacted_headers_for_debug(&ctx.headers),
             ctx.body_bytes.len(),
             lossy_utf8_preview(&ctx.body_bytes, MAX_DEBUG_BODY_PREVIEW_BYTES),
@@ -409,6 +415,7 @@ mod tests {
             special_settings: Arc::new(Mutex::new(Vec::new())),
             requested_model: Some("claude-sonnet-4".to_string()),
             requested_model_location: None,
+            is_compact_request: false,
             runtime_settings: None,
             session_id: Some("session-start".to_string()),
             allow_session_reuse: false,
@@ -469,6 +476,7 @@ mod tests {
             special_settings: Arc::new(Mutex::new(Vec::new())),
             requested_model: Some("claude-sonnet-4".to_string()),
             requested_model_location: None,
+            is_compact_request: false,
             runtime_settings: None,
             session_id: None,
             allow_session_reuse: false,

@@ -2,10 +2,91 @@ import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createRequestLogSummary } from "../requestLogFixtures";
 import { resolveCodexReasoningEffort } from "../requestLogSpecialSettings";
+import type {
+  GatewayAttemptEvent,
+  GatewayRequestEvent,
+  GatewayRequestStartEvent,
+} from "../gatewayEvents";
 
 async function importFreshTraceStore() {
   vi.resetModules();
   return await import("../traceStore");
+}
+
+// 事件类型来自生成 bindings（可空字段必填），工厂函数补默认值避免每个用例手写全量字段。
+function makeStartEvent(
+  overrides: Partial<GatewayRequestStartEvent> = {}
+): GatewayRequestStartEvent {
+  return {
+    trace_id: "trace",
+    cli_key: "claude",
+    session_id: null,
+    method: "GET",
+    path: "/",
+    query: null,
+    requested_model: null,
+    special_settings_json: null,
+    ts: 0,
+    ...overrides,
+  };
+}
+
+function makeAttemptEvent(overrides: Partial<GatewayAttemptEvent> = {}): GatewayAttemptEvent {
+  return {
+    trace_id: "trace",
+    cli_key: "claude",
+    session_id: null,
+    method: "GET",
+    path: "/",
+    query: null,
+    requested_model: null,
+    special_settings_json: null,
+    attempt_index: 1,
+    provider_id: 1,
+    session_reuse: null,
+    provider_name: "P",
+    base_url: "https://p",
+    outcome: "started",
+    status: null,
+    attempt_started_ms: 0,
+    attempt_duration_ms: 0,
+    circuit_state_before: null,
+    circuit_state_after: null,
+    circuit_failure_count: null,
+    circuit_failure_threshold: null,
+    claude_model_mapping: null,
+    ...overrides,
+  };
+}
+
+function makeRequestEvent(overrides: Partial<GatewayRequestEvent> = {}): GatewayRequestEvent {
+  return {
+    trace_id: "trace",
+    cli_key: "claude",
+    session_id: null,
+    method: "GET",
+    path: "/",
+    query: null,
+    requested_model: null,
+    special_settings_json: null,
+    status: 200,
+    error_category: null,
+    error_code: null,
+    duration_ms: 0,
+    ttfb_ms: null,
+    visible_ttfb_ms: null,
+    attempts: [],
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    cache_read_input_tokens: null,
+    cache_creation_input_tokens: null,
+    cache_creation_5m_input_tokens: null,
+    cache_creation_1h_input_tokens: null,
+    effective_input_tokens: null,
+    claude_model_mapping: null,
+    ...overrides,
+  };
 }
 
 describe("services/gateway/traceStore", () => {
@@ -19,46 +100,52 @@ describe("services/gateway/traceStore", () => {
     expect(result.current.traces).toEqual([]);
 
     act(() => {
-      ingestTraceStart({
-        trace_id: "t1",
-        cli_key: "claude",
-        method: "GET",
-        path: "/v1/test",
-        query: null,
-        requested_model: "claude-3",
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "t1",
+          cli_key: "claude",
+          method: "GET",
+          path: "/v1/test",
+          query: null,
+          requested_model: "claude-3",
+          ts: 0,
+        })
+      );
     });
     expect(result.current.traces[0]?.trace_id).toBe("t1");
     expect(result.current.traces[0]?.summary).toBeUndefined();
 
     act(() => {
-      ingestTraceRequest({
-        trace_id: "t1",
-        cli_key: "claude",
-        method: "GET",
-        path: "/v1/test",
-        query: null,
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 12,
-        attempts: [],
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "t1",
+          cli_key: "claude",
+          method: "GET",
+          path: "/v1/test",
+          query: null,
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 12,
+          attempts: [],
+        })
+      );
     });
     expect(result.current.traces[0]?.summary?.status).toBe(200);
 
     vi.setSystemTime(1000);
     act(() => {
-      ingestTraceStart({
-        trace_id: "t1",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/again",
-        query: "x=1",
-        requested_model: "claude-3-opus",
-        ts: 1,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "t1",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/again",
+          query: "x=1",
+          requested_model: "claude-3-opus",
+          ts: 1,
+        })
+      );
     });
     expect(result.current.traces[0]?.method).toBe("POST");
     expect(result.current.traces[0]?.path).toBe("/v1/again");
@@ -81,15 +168,17 @@ describe("services/gateway/traceStore", () => {
     const unsubscribeHealthy = subscribeTraceStore(healthyListener);
 
     expect(() => {
-      ingestTraceStart({
-        trace_id: "subscriber-isolation",
-        cli_key: "claude",
-        method: "GET",
-        path: "/v1/test",
-        query: null,
-        requested_model: "claude-3",
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "subscriber-isolation",
+          cli_key: "claude",
+          method: "GET",
+          path: "/v1/test",
+          query: null,
+          requested_model: "claude-3",
+          ts: 0,
+        })
+      );
     }).not.toThrow();
 
     expect(failingListener).toHaveBeenCalledTimes(1);
@@ -109,42 +198,46 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "tA",
-        cli_key: "codex",
-        method: "GET",
-        path: "/x",
-        query: null,
-        attempt_index: 1,
-        provider_id: 1,
-        provider_name: "P1",
-        base_url: "https://p1",
-        outcome: "started",
-        status: null,
-        attempt_started_ms: 0,
-        attempt_duration_ms: 0,
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "tA",
+          cli_key: "codex",
+          method: "GET",
+          path: "/x",
+          query: null,
+          attempt_index: 1,
+          provider_id: 1,
+          provider_name: "P1",
+          base_url: "https://p1",
+          outcome: "started",
+          status: null,
+          attempt_started_ms: 0,
+          attempt_duration_ms: 0,
+        })
+      );
     });
     expect(result.current.traces[0]?.trace_id).toBe("tA");
     expect(result.current.traces[0]?.attempts).toHaveLength(1);
 
     // Upsert same index replaces.
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "tA",
-        cli_key: "codex",
-        method: "GET",
-        path: "/x",
-        query: null,
-        attempt_index: 1,
-        provider_id: 1,
-        provider_name: "P1",
-        base_url: "https://p1",
-        outcome: "failed",
-        status: 500,
-        attempt_started_ms: 0,
-        attempt_duration_ms: 12,
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "tA",
+          cli_key: "codex",
+          method: "GET",
+          path: "/x",
+          query: null,
+          attempt_index: 1,
+          provider_id: 1,
+          provider_name: "P1",
+          base_url: "https://p1",
+          outcome: "failed",
+          status: 500,
+          attempt_started_ms: 0,
+          attempt_duration_ms: 12,
+        })
+      );
     });
     expect(result.current.traces[0]?.attempts).toHaveLength(1);
     expect(result.current.traces[0]?.attempts[0]?.status).toBe(500);
@@ -152,21 +245,23 @@ describe("services/gateway/traceStore", () => {
     // New trace moves to front.
     vi.setSystemTime(1000);
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "tB",
-        cli_key: "claude",
-        method: "POST",
-        path: "/y",
-        query: null,
-        attempt_index: 1,
-        provider_id: 2,
-        provider_name: "P2",
-        base_url: "https://p2",
-        outcome: "started",
-        status: null,
-        attempt_started_ms: 0,
-        attempt_duration_ms: 0,
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "tB",
+          cli_key: "claude",
+          method: "POST",
+          path: "/y",
+          query: null,
+          attempt_index: 1,
+          provider_id: 2,
+          provider_name: "P2",
+          base_url: "https://p2",
+          outcome: "started",
+          status: null,
+          attempt_started_ms: 0,
+          attempt_duration_ms: 0,
+        })
+      );
     });
     expect(result.current.traces[0]?.trace_id).toBe("tB");
     expect(result.current.traces[1]?.trace_id).toBe("tA");
@@ -182,22 +277,24 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "t-model-from-attempt",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        requested_model: "claude-opus-4-6",
-        attempt_index: 1,
-        provider_id: 2,
-        provider_name: "SSAiCode",
-        base_url: "https://provider.example",
-        outcome: "started",
-        status: null,
-        attempt_started_ms: 0,
-        attempt_duration_ms: 0,
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "t-model-from-attempt",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          requested_model: "claude-opus-4-6",
+          attempt_index: 1,
+          provider_id: 2,
+          provider_name: "SSAiCode",
+          base_url: "https://provider.example",
+          outcome: "started",
+          status: null,
+          attempt_started_ms: 0,
+          attempt_duration_ms: 0,
+        })
+      );
     });
 
     expect(result.current.traces[0]?.requested_model).toBe("claude-opus-4-6");
@@ -217,53 +314,59 @@ describe("services/gateway/traceStore", () => {
     ]);
 
     act(() => {
-      ingestTraceStart({
-        trace_id: "t-effort",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        requested_model: "gpt-5.5",
-        special_settings_json: startSettings,
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "t-effort",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          requested_model: "gpt-5.5",
+          special_settings_json: startSettings,
+          ts: 0,
+        })
+      );
     });
     expect(result.current.traces[0]?.special_settings_json).toBe(startSettings);
 
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "t-effort",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        requested_model: "gpt-5.5",
-        attempt_index: 1,
-        provider_id: 1,
-        provider_name: "P1",
-        base_url: "https://p1",
-        outcome: "started",
-        status: null,
-        attempt_started_ms: 0,
-        attempt_duration_ms: 0,
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "t-effort",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          requested_model: "gpt-5.5",
+          attempt_index: 1,
+          provider_id: 1,
+          provider_name: "P1",
+          base_url: "https://p1",
+          outcome: "started",
+          status: null,
+          attempt_started_ms: 0,
+          attempt_duration_ms: 0,
+        })
+      );
     });
     expect(result.current.traces[0]?.special_settings_json).toBe(startSettings);
 
     act(() => {
-      ingestTraceRequest({
-        trace_id: "t-effort",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        requested_model: "gpt-5.5",
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 50,
-        attempts: [],
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "t-effort",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          requested_model: "gpt-5.5",
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 50,
+          attempts: [],
+        })
+      );
     });
     expect(result.current.traces[0]?.special_settings_json).toBe(startSettings);
 
@@ -278,51 +381,55 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "t-mapping",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        requested_model: "claude-sonnet",
-        attempt_index: 1,
-        provider_id: 1,
-        provider_name: "Provider A",
-        base_url: "https://provider-a.example",
-        outcome: "started",
-        status: null,
-        attempt_started_ms: 0,
-        attempt_duration_ms: 0,
-        claude_model_mapping: {
-          requestedModel: " claude-sonnet ",
-          effectiveModel: " gpt-4.1 ",
-          mappingKind: " sonnet ",
-          providerId: 1,
-          providerName: " Provider A ",
-          applied: true,
-        },
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "t-mapping",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          requested_model: "claude-sonnet",
+          attempt_index: 1,
+          provider_id: 1,
+          provider_name: "Provider A",
+          base_url: "https://provider-a.example",
+          outcome: "started",
+          status: null,
+          attempt_started_ms: 0,
+          attempt_duration_ms: 0,
+          claude_model_mapping: {
+            requestedModel: " claude-sonnet ",
+            effectiveModel: " gpt-4.1 ",
+            mappingKind: " sonnet ",
+            providerId: 1,
+            providerName: " Provider A ",
+            applied: true,
+          },
+        })
+      );
     });
 
     expect(result.current.traces[0]?.claude_model_mapping?.effectiveModel).toBe("gpt-4.1");
 
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "t-mapping",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        requested_model: "claude-sonnet",
-        attempt_index: 1,
-        provider_id: 1,
-        provider_name: "Provider A",
-        base_url: "https://provider-a.example",
-        outcome: "success",
-        status: 200,
-        attempt_started_ms: 0,
-        attempt_duration_ms: 42,
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "t-mapping",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          requested_model: "claude-sonnet",
+          attempt_index: 1,
+          provider_id: 1,
+          provider_name: "Provider A",
+          base_url: "https://provider-a.example",
+          outcome: "success",
+          status: 200,
+          attempt_started_ms: 0,
+          attempt_duration_ms: 42,
+        })
+      );
     });
 
     expect(result.current.traces[0]?.claude_model_mapping?.effectiveModel).toBe("gpt-4.1");
@@ -331,27 +438,29 @@ describe("services/gateway/traceStore", () => {
     );
 
     act(() => {
-      ingestTraceRequest({
-        trace_id: "t-mapping",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        requested_model: "claude-sonnet",
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 50,
-        attempts: [],
-        claude_model_mapping: {
-          requestedModel: "claude-sonnet",
-          effectiveModel: "gpt-5.4",
-          mappingKind: "sonnet",
-          providerId: 2,
-          providerName: "Provider B",
-          applied: true,
-        },
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "t-mapping",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          requested_model: "claude-sonnet",
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 50,
+          attempts: [],
+          claude_model_mapping: {
+            requestedModel: "claude-sonnet",
+            effectiveModel: "gpt-5.4",
+            mappingKind: "sonnet",
+            providerId: 2,
+            providerName: "Provider B",
+            applied: true,
+          },
+        })
+      );
     });
 
     expect(result.current.traces[0]?.claude_model_mapping?.providerId).toBe(2);
@@ -368,49 +477,53 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "t-mapping-clear",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        requested_model: "claude-sonnet",
-        attempt_index: 1,
-        provider_id: 1,
-        provider_name: "Provider A",
-        base_url: "https://provider-a.example",
-        outcome: "started",
-        status: null,
-        attempt_started_ms: 0,
-        attempt_duration_ms: 0,
-        claude_model_mapping: {
-          requestedModel: "claude-sonnet",
-          effectiveModel: "gpt-4.1",
-          mappingKind: "sonnet",
-          providerId: 1,
-          providerName: "Provider A",
-          applied: true,
-        },
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "t-mapping-clear",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          requested_model: "claude-sonnet",
+          attempt_index: 1,
+          provider_id: 1,
+          provider_name: "Provider A",
+          base_url: "https://provider-a.example",
+          outcome: "started",
+          status: null,
+          attempt_started_ms: 0,
+          attempt_duration_ms: 0,
+          claude_model_mapping: {
+            requestedModel: "claude-sonnet",
+            effectiveModel: "gpt-4.1",
+            mappingKind: "sonnet",
+            providerId: 1,
+            providerName: "Provider A",
+            applied: true,
+          },
+        })
+      );
     });
 
     expect(result.current.traces[0]?.claude_model_mapping?.effectiveModel).toBe("gpt-4.1");
 
     act(() => {
-      ingestTraceRequest({
-        trace_id: "t-mapping-clear",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        requested_model: "claude-sonnet",
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 50,
-        attempts: [],
-        claude_model_mapping: null,
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "t-mapping-clear",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          requested_model: "claude-sonnet",
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 50,
+          attempts: [],
+          claude_model_mapping: null,
+        })
+      );
     });
 
     expect(result.current.traces[0]?.claude_model_mapping).toBeNull();
@@ -428,18 +541,20 @@ describe("services/gateway/traceStore", () => {
     expect(result.current.traces).toEqual([]);
 
     act(() => {
-      ingestTraceRequest({
-        trace_id: "new-req",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 50,
-        attempts: [],
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "new-req",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 50,
+          attempts: [],
+        })
+      );
     });
 
     expect(result.current.traces).toHaveLength(1);
@@ -468,18 +583,20 @@ describe("services/gateway/traceStore", () => {
     }));
 
     act(() => {
-      ingestTraceRequest({
-        trace_id: "large-summary",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        status: 500,
-        error_category: "upstream",
-        error_code: "GW_UPSTREAM_ERROR",
-        duration_ms: 50,
-        attempts,
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "large-summary",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          status: 500,
+          error_category: "upstream",
+          error_code: "GW_UPSTREAM_ERROR",
+          duration_ms: 50,
+          attempts,
+        })
+      );
     });
 
     const retainedAttempts = result.current.traces[0]?.summary?.attempts ?? [];
@@ -501,15 +618,17 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceStart({
-        trace_id: "existing-req",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        requested_model: "claude-3-opus",
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "existing-req",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          requested_model: "claude-3-opus",
+          ts: 0,
+        })
+      );
     });
 
     expect(result.current.traces).toHaveLength(1);
@@ -517,18 +636,20 @@ describe("services/gateway/traceStore", () => {
 
     vi.setSystemTime(100);
     act(() => {
-      ingestTraceRequest({
-        trace_id: "existing-req",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 100,
-        attempts: [],
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "existing-req",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 100,
+          attempts: [],
+        })
+      );
     });
 
     expect(result.current.traces).toHaveLength(1);
@@ -547,19 +668,21 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceRequest({
-        trace_id: "summary-first",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        requested_model: "claude-opus-4-6",
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 50,
-        attempts: [],
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "summary-first",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          requested_model: "claude-opus-4-6",
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 50,
+          attempts: [],
+        })
+      );
     });
 
     expect(result.current.traces[0]?.requested_model).toBe("claude-opus-4-6");
@@ -576,51 +699,57 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceStart({
-        trace_id: "t-session",
-        cli_key: "codex",
-        session_id: "session-from-start",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "t-session",
+          cli_key: "codex",
+          session_id: "session-from-start",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          ts: 0,
+        })
+      );
     });
     expect(result.current.traces[0]?.session_id).toBe("session-from-start");
 
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "t-session",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        attempt_index: 1,
-        provider_id: 1,
-        provider_name: "P1",
-        base_url: "https://p1",
-        outcome: "started",
-        status: null,
-        attempt_started_ms: 0,
-        attempt_duration_ms: 0,
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "t-session",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          attempt_index: 1,
+          provider_id: 1,
+          provider_name: "P1",
+          base_url: "https://p1",
+          outcome: "started",
+          status: null,
+          attempt_started_ms: 0,
+          attempt_duration_ms: 0,
+        })
+      );
     });
     expect(result.current.traces[0]?.session_id).toBe("session-from-start");
 
     act(() => {
-      ingestTraceRequest({
-        trace_id: "t-session-2",
-        cli_key: "claude",
-        session_id: "session-from-summary",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 50,
-        attempts: [],
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "t-session-2",
+          cli_key: "claude",
+          session_id: "session-from-summary",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 50,
+          attempts: [],
+        })
+      );
     });
     expect(
       result.current.traces.find((trace) => trace.trace_id === "t-session-2")?.session_id
@@ -649,41 +778,47 @@ describe("services/gateway/traceStore", () => {
 
     // payloads with empty trace_id
     act(() => {
-      ingestTraceStart({
-        trace_id: "",
-        cli_key: "claude",
-        method: "GET",
-        path: "/",
-        query: null,
-        ts: 0,
-      });
-      ingestTraceAttempt({
-        trace_id: "",
-        cli_key: "claude",
-        method: "GET",
-        path: "/",
-        query: null,
-        attempt_index: 1,
-        provider_id: 1,
-        provider_name: "P",
-        base_url: "https://p",
-        outcome: "started",
-        status: null,
-        attempt_started_ms: 0,
-        attempt_duration_ms: 0,
-      });
-      ingestTraceRequest({
-        trace_id: "",
-        cli_key: "claude",
-        method: "GET",
-        path: "/",
-        query: null,
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 0,
-        attempts: [],
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "",
+          cli_key: "claude",
+          method: "GET",
+          path: "/",
+          query: null,
+          ts: 0,
+        })
+      );
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "",
+          cli_key: "claude",
+          method: "GET",
+          path: "/",
+          query: null,
+          attempt_index: 1,
+          provider_id: 1,
+          provider_name: "P",
+          base_url: "https://p",
+          outcome: "started",
+          status: null,
+          attempt_started_ms: 0,
+          attempt_duration_ms: 0,
+        })
+      );
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "",
+          cli_key: "claude",
+          method: "GET",
+          path: "/",
+          query: null,
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 0,
+          attempts: [],
+        })
+      );
     });
     expect(result.current.traces).toEqual([]);
 
@@ -699,15 +834,17 @@ describe("services/gateway/traceStore", () => {
 
     // Create a trace at time 0 (no summary = "in progress")
     act(() => {
-      ingestTraceStart({
-        trace_id: "stale-trace",
-        cli_key: "claude",
-        method: "GET",
-        path: "/v1/old",
-        query: null,
-        requested_model: "claude-3",
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "stale-trace",
+          cli_key: "claude",
+          method: "GET",
+          path: "/v1/old",
+          query: null,
+          requested_model: "claude-3",
+          ts: 0,
+        })
+      );
     });
     expect(result.current.traces).toHaveLength(1);
     expect(result.current.traces[0]?.trace_id).toBe("stale-trace");
@@ -717,15 +854,17 @@ describe("services/gateway/traceStore", () => {
 
     // Ingest another trace; the older in-progress trace must remain visible until completion.
     act(() => {
-      ingestTraceStart({
-        trace_id: "fresh-trace",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/new",
-        query: null,
-        requested_model: "claude-3",
-        ts: 300_001,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "fresh-trace",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/new",
+          query: null,
+          requested_model: "claude-3",
+          ts: 300_001,
+        })
+      );
     });
 
     expect(result.current.traces).toHaveLength(2);
@@ -743,15 +882,17 @@ describe("services/gateway/traceStore", () => {
 
     // Create a trace at time 0 (no summary)
     act(() => {
-      ingestTraceStart({
-        trace_id: "long-running-trace",
-        cli_key: "claude",
-        method: "GET",
-        path: "/v1/stale",
-        query: null,
-        requested_model: "claude-3",
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "long-running-trace",
+          cli_key: "claude",
+          method: "GET",
+          path: "/v1/stale",
+          query: null,
+          requested_model: "claude-3",
+          ts: 0,
+        })
+      );
     });
     expect(result.current.traces).toHaveLength(1);
 
@@ -760,18 +901,20 @@ describe("services/gateway/traceStore", () => {
 
     // ingestTraceRequest for the same trace_id should update the existing trace.
     act(() => {
-      ingestTraceRequest({
-        trace_id: "long-running-trace",
-        cli_key: "claude",
-        method: "GET",
-        path: "/v1/stale",
-        query: null,
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 300_001,
-        attempts: [],
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "long-running-trace",
+          cli_key: "claude",
+          method: "GET",
+          path: "/v1/stale",
+          query: null,
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 300_001,
+          attempts: [],
+        })
+      );
     });
 
     // The trace should exist with summary.
@@ -792,15 +935,17 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceStart({
-        trace_id: "reconciled-trace",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        requested_model: "gpt-5.5",
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "reconciled-trace",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          requested_model: "gpt-5.5",
+          ts: 0,
+        })
+      );
     });
 
     vi.setSystemTime(83 * 60 * 1000);
@@ -845,16 +990,18 @@ describe("services/gateway/traceStore", () => {
     ]);
 
     act(() => {
-      ingestTraceStart({
-        trace_id: "codex-effort-terminal",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        requested_model: "gpt-5.5",
-        special_settings_json: guardOnlySettings,
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "codex-effort-terminal",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          requested_model: "gpt-5.5",
+          special_settings_json: guardOnlySettings,
+          ts: 0,
+        })
+      );
     });
 
     act(() => {
@@ -892,15 +1039,17 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceStart({
-        trace_id: "codex-model-terminal",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        requested_model: "gpt-5.5",
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "codex-model-terminal",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          requested_model: "gpt-5.5",
+          ts: 0,
+        })
+      );
     });
 
     act(() => {
@@ -940,35 +1089,39 @@ describe("services/gateway/traceStore", () => {
     ]);
 
     act(() => {
-      ingestTraceStart({
-        trace_id: "codex-live-model-fallback",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        requested_model: "gpt-5.5",
-        special_settings_json: requestEffortSettings,
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "codex-live-model-fallback",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          requested_model: "gpt-5.5",
+          special_settings_json: requestEffortSettings,
+          ts: 0,
+        })
+      );
     });
 
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "codex-live-model-fallback",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        requested_model: "gpt-5.4",
-        attempt_index: 2,
-        provider_id: 1,
-        provider_name: "P1",
-        base_url: "https://p1",
-        outcome: "started",
-        status: null,
-        attempt_started_ms: 1_000,
-        attempt_duration_ms: 0,
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "codex-live-model-fallback",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          requested_model: "gpt-5.4",
+          attempt_index: 2,
+          provider_id: 1,
+          provider_name: "P1",
+          base_url: "https://p1",
+          outcome: "started",
+          status: null,
+          attempt_started_ms: 1_000,
+          attempt_duration_ms: 0,
+        })
+      );
     });
 
     expect(result.current.traces[0]?.requested_model).toBe("gpt-5.4");
@@ -995,16 +1148,18 @@ describe("services/gateway/traceStore", () => {
     ]);
 
     act(() => {
-      ingestTraceStart({
-        trace_id: "codex-live-effort-terminal-missing",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        requested_model: "gpt-5.5",
-        special_settings_json: liveEffortSettings,
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "codex-live-effort-terminal-missing",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          requested_model: "gpt-5.5",
+          special_settings_json: liveEffortSettings,
+          ts: 0,
+        })
+      );
     });
 
     act(() => {
@@ -1043,16 +1198,18 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceStart({
-        trace_id: "still-running",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        requested_model: "claude-live",
-        special_settings_json: "live-settings",
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "still-running",
+          cli_key: "claude",
+          method: "POST",
+          path: "/v1/messages",
+          query: null,
+          requested_model: "claude-live",
+          special_settings_json: "live-settings",
+          ts: 0,
+        })
+      );
     });
 
     act(() => {
@@ -1084,22 +1241,24 @@ describe("services/gateway/traceStore", () => {
     const { result } = renderHook(() => useTraceStore());
 
     act(() => {
-      ingestTraceRequest({
-        trace_id: "corrected-summary",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 10,
-        ttfb_ms: 5,
-        attempts: [],
-        input_tokens: 1,
-        output_tokens: 1,
-        total_tokens: 2,
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "corrected-summary",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 10,
+          ttfb_ms: 5,
+          attempts: [],
+          input_tokens: 1,
+          output_tokens: 1,
+          total_tokens: 2,
+        })
+      );
     });
 
     act(() => {
@@ -1150,20 +1309,22 @@ describe("services/gateway/traceStore", () => {
     ]);
 
     act(() => {
-      ingestTraceRequest({
-        trace_id: "corrected-codex-summary",
-        cli_key: "codex",
-        method: "POST",
-        path: "/v1/responses",
-        query: null,
-        requested_model: "gpt-5.5",
-        special_settings_json: guardOnlySettings,
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 10,
-        attempts: [],
-      });
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "corrected-codex-summary",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          requested_model: "gpt-5.5",
+          special_settings_json: guardOnlySettings,
+          status: 200,
+          error_category: null,
+          error_code: null,
+          duration_ms: 10,
+          attempts: [],
+        })
+      );
     });
 
     act(() => {
@@ -1197,15 +1358,17 @@ describe("services/gateway/traceStore", () => {
 
     // Create a single trace
     act(() => {
-      ingestTraceStart({
-        trace_id: "only-trace",
-        cli_key: "claude",
-        method: "GET",
-        path: "/v1/single",
-        query: null,
-        requested_model: "claude-3",
-        ts: 0,
-      });
+      ingestTraceStart(
+        makeStartEvent({
+          trace_id: "only-trace",
+          cli_key: "claude",
+          method: "GET",
+          path: "/v1/single",
+          query: null,
+          requested_model: "claude-3",
+          ts: 0,
+        })
+      );
     });
     expect(result.current.traces).toHaveLength(1);
     expect(result.current.traces[0]?.trace_id).toBe("only-trace");
@@ -1213,21 +1376,23 @@ describe("services/gateway/traceStore", () => {
     // Update the same trace (already at front, moveTraceToFront index === 0 => returns early)
     vi.setSystemTime(100);
     act(() => {
-      ingestTraceAttempt({
-        trace_id: "only-trace",
-        cli_key: "claude",
-        method: "GET",
-        path: "/v1/single",
-        query: null,
-        attempt_index: 1,
-        provider_id: 1,
-        provider_name: "P1",
-        base_url: "https://p1",
-        outcome: "started",
-        status: null,
-        attempt_started_ms: 100,
-        attempt_duration_ms: 0,
-      });
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "only-trace",
+          cli_key: "claude",
+          method: "GET",
+          path: "/v1/single",
+          query: null,
+          attempt_index: 1,
+          provider_id: 1,
+          provider_name: "P1",
+          base_url: "https://p1",
+          outcome: "started",
+          status: null,
+          attempt_started_ms: 100,
+          attempt_duration_ms: 0,
+        })
+      );
     });
 
     // Trace is still at front, only one trace

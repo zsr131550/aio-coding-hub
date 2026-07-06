@@ -529,7 +529,8 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                 provider_name_base.as_str(),
                 provider_base_url_base.as_str(),
                 now_unix,
-            ),
+            )
+            .with_trigger(Some(error_code), Some(ctx.upstream_first_byte_timeout_secs)),
         );
         *circuit_snapshot = change.after.clone();
         circuit_state_before = Some(change.before.state.as_str());
@@ -603,6 +604,9 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         circuit_state_after,
         circuit_failure_count,
         circuit_failure_threshold,
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        timeout_secs: None,
     });
 
     emit_attempt_event_and_log(
@@ -851,6 +855,7 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
             outcome,
             reason: reason.clone(),
             record_circuit_failure: true,
+            timeout_secs: None,
         })
         .await;
     }
@@ -869,6 +874,7 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
             provider_ctx.upstream_retry_policy,
             configured_retry,
         ),
+        timeout_secs: None,
     })
     .await
 }

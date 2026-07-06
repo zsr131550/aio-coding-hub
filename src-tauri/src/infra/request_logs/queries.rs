@@ -331,7 +331,9 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<RequestLogSummary, rusqlite
     let (start_provider_id, start_provider_name) = start_provider_from_attempts(&attempts);
     let (final_provider_id, final_provider_name) = final_provider_from_attempts(&attempts);
     let route = route_from_attempts(&attempts);
-    // has_failover: 真正切换过 provider（route 中有多个 hop，skipped 已被过滤）
+    // has_failover: 切换过 provider（route 中有多个 hop）。注意 provider_id>0 的
+    // skipped attempt 也计入 hop（见 route_includes_skipped_attempts 测试）；前端
+    // src/services/gateway/traceRoute.ts 复刻此语义，两侧需保持同步。
     let has_failover = route.len() > 1;
     let session_reuse = attempts
         .iter()

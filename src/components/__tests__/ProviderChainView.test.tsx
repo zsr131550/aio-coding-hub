@@ -135,6 +135,68 @@ describe("components/ProviderChainView", () => {
     expect(screen.queryByText("Provider ID:")).not.toBeInTheDocument();
   });
 
+  it("renders reason and circuit attribution for circuit-gate skipped attempts", () => {
+    const farFutureUnix = 4_102_444_800; // 2100-01-01, keeps "约 N 分钟后" stable
+    render(
+      <ProviderChainView
+        attemptLogs={[]}
+        attemptLogsLoading={false}
+        attemptsJson={JSON.stringify([
+          {
+            provider_id: 7,
+            provider_name: "Provider A",
+            base_url: "https://provider-a.example",
+            outcome: "skipped",
+            status: null,
+            error_category: "circuit_breaker",
+            error_code: "GW_PROVIDER_CIRCUIT_OPEN",
+            decision: "skip",
+            reason: "provider skipped by circuit breaker (open)",
+            reason_code: "circuit_open",
+            circuit_state_before: "OPEN",
+            circuit_state_after: "OPEN",
+            circuit_failure_count: 5,
+            circuit_failure_threshold: 5,
+            circuit_recover_at_unix: farFutureUnix,
+            circuit_trigger_error_code: "GW_UPSTREAM_TIMEOUT",
+          },
+        ])}
+      />
+    );
+
+    expect(screen.getByText("跳过")).toBeInTheDocument();
+    expect(screen.getByText("跳过原因")).toBeInTheDocument();
+    expect(screen.getByText("provider skipped by circuit breaker (open)")).toBeInTheDocument();
+    expect(screen.getByText("5/5 次失败")).toBeInTheDocument();
+    expect(screen.getByText("触发：上游超时")).toBeInTheDocument();
+    expect(screen.getByText(/约 \d+ 分钟后/)).toBeInTheDocument();
+  });
+
+  it("degrades gracefully for skipped attempts without circuit attribution", () => {
+    render(
+      <ProviderChainView
+        attemptLogs={[]}
+        attemptLogsLoading={false}
+        attemptsJson={JSON.stringify([
+          {
+            provider_id: 7,
+            provider_name: "Provider A",
+            base_url: "https://provider-a.example",
+            outcome: "skipped",
+            status: null,
+            decision: "skip",
+            reason: "provider skipped by rate limit",
+          },
+        ])}
+      />
+    );
+
+    expect(screen.getByText("跳过原因")).toBeInTheDocument();
+    expect(screen.getByText("provider skipped by rate limit")).toBeInTheDocument();
+    expect(screen.queryByText(/触发：/)).not.toBeInTheDocument();
+    expect(screen.queryByText("熔断器:")).not.toBeInTheDocument();
+  });
+
   it("renders structured failures with circuit transitions and gateway labels", () => {
     render(
       <ProviderChainView

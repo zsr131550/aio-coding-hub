@@ -1057,6 +1057,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         trace_id,
         cli_key,
         provider_cooldown_secs,
+        upstream_first_byte_timeout_secs,
         ..
     } = ctx;
     let ProviderCtx {
@@ -1124,7 +1125,8 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
                 provider_name_base.as_str(),
                 provider_base_url_base.as_str(),
                 now_unix,
-            ),
+            )
+            .with_trigger(Some(error_code), Some(upstream_first_byte_timeout_secs)),
         ))
     };
     if let Some(change) = &change {
@@ -1178,6 +1180,9 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         circuit_state_after,
         circuit_failure_count,
         circuit_failure_threshold,
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        timeout_secs: None,
     });
 
     emit_attempt_event_and_log(
@@ -1391,6 +1396,7 @@ where
                         &provider_ctx_owned.upstream_retry_policy,
                         configured_retry,
                     ),
+                    timeout_secs: Some(upstream_first_byte_timeout_secs),
                 })
                 .await;
             }
@@ -1432,6 +1438,7 @@ where
                         &provider_ctx_owned.upstream_retry_policy,
                         configured_retry,
                     ),
+                    timeout_secs: Some(upstream_first_byte_timeout_secs),
                 })
                 .await;
             }
@@ -1480,6 +1487,7 @@ where
                     &provider_ctx_owned.upstream_retry_policy,
                     configured_retry,
                 ),
+                timeout_secs: Some(upstream_first_byte_timeout_secs),
             })
             .await;
         }
@@ -1521,6 +1529,7 @@ where
                             MAX_NON_SSE_BODY_BYTES
                         ),
                         record_circuit_failure: true,
+                        timeout_secs: None,
                     })
                     .await;
                 }
@@ -1566,6 +1575,7 @@ where
                                     &provider_ctx_owned.upstream_retry_policy,
                                     configured_retry,
                                 ),
+                                timeout_secs: None,
                             })
                             .await;
                         }
@@ -1607,6 +1617,11 @@ where
                                 record_circuit_failure: should_record_circuit_failure(
                                     &provider_ctx_owned.upstream_retry_policy,
                                     configured_retry,
+                                ),
+                                timeout_secs: Some(
+                                    upstream_stream_idle_timeout
+                                        .map(|value| value.as_secs() as u32)
+                                        .unwrap_or_default(),
                                 ),
                             })
                             .await;
@@ -1650,6 +1665,7 @@ where
                                     &provider_ctx_owned.upstream_retry_policy,
                                     configured_retry,
                                 ),
+                                timeout_secs: None,
                             })
                             .await;
                         }
@@ -1695,6 +1711,7 @@ where
                             MAX_NON_SSE_BODY_BYTES
                         ),
                         record_circuit_failure: true,
+                        timeout_secs: None,
                     })
                     .await;
                 }
@@ -1817,6 +1834,7 @@ where
                                     "failed to aggregate Codex responses event-stream: {err}"
                                 ),
                                 record_circuit_failure: true,
+                                timeout_secs: None,
                             },
                         )
                         .await;
@@ -2470,6 +2488,9 @@ where
                 circuit_state_after: None,
                 circuit_failure_count: Some(circuit_before.failure_count),
                 circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                circuit_recover_at_unix: None,
+                circuit_trigger_error_code: None,
+                timeout_secs: None,
             });
 
             emit_attempt_event_and_log_with_circuit_before(
@@ -2521,6 +2542,10 @@ where
                         provider_ctx_owned.provider_name_base.as_str(),
                         provider_ctx_owned.provider_base_url_base.as_str(),
                         now_unix,
+                    )
+                    .with_trigger(
+                        Some(error_code),
+                        Some(common.upstream_first_byte_timeout_secs),
                     ),
                 );
                 *circuit_snapshot = change.after.clone();
@@ -2685,7 +2710,10 @@ where
             circuit_state_after: None,
             circuit_failure_count: Some(circuit_before.failure_count),
             circuit_failure_threshold: Some(circuit_before.failure_threshold),
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
             provider_bridged: Some(provider_ctx_owned.provider_bridged),
+            timeout_secs: None,
         });
 
         emit_attempt_event_and_log_with_circuit_before(

@@ -6363,6 +6363,138 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn mock_runtime_router_claude_compact_request_persists_request_kind_special_setting() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let app_settings = settings::AppSettings::default();
+        settings::write(&app_handle, &app_settings).expect("write settings");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-route-compact-kind-test.sqlite"))
+            .expect("init test db");
+        let (upstream_base_url, upstream_task) = spawn_json_upstream(
+            r#"{"id":"msg_compact","type":"message","role":"assistant","content":[{"type":"text","text":"summary"}],"model":"claude-3-5-sonnet","usage":{"input_tokens":1,"output_tokens":1}}"#,
+        )
+        .await;
+        let provider_id =
+            insert_provider_with_priority(&db, "claude", "Compact Stub", upstream_base_url, 0);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/claude/_aio/provider/{provider_id}/v1/messages"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"claude-3-5-sonnet","max_tokens":512,"system":[{"type":"text","text":"You are a helpful AI assistant tasked with summarizing conversations. Follow the instructions."}],"messages":[{"role":"user","content":"Your task is to create a detailed summary of the conversation so far."}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.cli_key, "claude");
+        assert_eq!(log.path, "/v1/messages");
+        assert_eq!(log.status, Some(200));
+
+        let special_settings: Value = serde_json::from_str(
+            log.special_settings_json
+                .as_deref()
+                .expect("special settings json"),
+        )
+        .expect("special settings json parses");
+        let special_settings = special_settings.as_array().expect("special settings array");
+        assert!(special_settings.iter().any(|entry| {
+            entry.get("type").and_then(Value::as_str) == Some("request_kind")
+                && entry.get("kind").and_then(Value::as_str) == Some("compact")
+        }));
+
+        upstream_task.abort();
+    }
+
+    async fn spawn_delayed_json_upstream(
+        body: &'static str,
+        first_byte_delay: Duration,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind delayed json upstream stub");
+        let addr = listener.local_addr().expect("delayed json upstream addr");
+        let task = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                tokio::time::sleep(first_byte_delay).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        (format!("http://{addr}"), task)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_runtime_router_claude_compact_request_survives_first_byte_delay_beyond_configured_timeout(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.upstream_first_byte_timeout_seconds = 1;
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-compact-timeout-test.sqlite"),
+        )
+        .expect("init test db");
+        let (upstream_base_url, upstream_task) = spawn_delayed_json_upstream(
+            r#"{"id":"msg_compact_slow","type":"message","role":"assistant","content":[{"type":"text","text":"summary"}],"model":"claude-3-5-sonnet","usage":{"input_tokens":1,"output_tokens":1}}"#,
+            Duration::from_secs(2),
+        )
+        .await;
+        let provider_id =
+            insert_provider_with_priority(&db, "claude", "Compact Slow Stub", upstream_base_url, 0);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/claude/_aio/provider/{provider_id}/v1/messages"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"claude-3-5-sonnet","max_tokens":512,"system":[{"type":"text","text":"You are a helpful AI assistant tasked with summarizing conversations. Follow the instructions."}],"messages":[{"role":"user","content":"Your task is to create a detailed summary of the conversation so far."}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.error_code, None);
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn codex_continuation_repair_folded_preserves_distinct_visible_text() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
@@ -8621,6 +8753,98 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn codex_reasoning_guard_stream_switch_provider_all_exhausted_preserves_guard_error() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 0;
+        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
+        app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
+        app_settings.codex_reasoning_guard_exhausted_action =
+            settings::CodexReasoningGuardExhaustedAction::SwitchProvider;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("codex-guard-stream-all-exhausted.sqlite"),
+        )
+        .expect("init test db");
+        let guard_sse_body = concat!(
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-guard-stream-all-exhausted\",\"status\":\"completed\",\"model\":\"gpt-guard-stream-all-exhausted\",\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
+        );
+        let (guard_a_base_url, guard_a_task) = spawn_sse_upstream(guard_sse_body).await;
+        let (guard_b_base_url, guard_b_task) = spawn_sse_upstream(guard_sse_body).await;
+        let provider_a =
+            insert_codex_provider_with_priority(&db, "Guard Stream Exhaust A", guard_a_base_url, 0);
+        let provider_b =
+            insert_codex_provider_with_priority(&db, "Guard Stream Exhaust B", guard_b_base_url, 1);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/codex/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-guard-stream-all-exhausted","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_CODEX_REASONING_GUARD")
+        );
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("Codex reasoning guard retry budget exhausted for all attempted providers")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some("GW_CODEX_REASONING_GUARD"));
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_a)
+        );
+        assert_eq!(
+            attempts[1].get("provider_id").and_then(Value::as_i64),
+            Some(provider_b)
+        );
+        assert!(attempts.iter().all(|attempt| {
+            attempt.get("outcome").and_then(Value::as_str)
+                == Some("codex_reasoning_guard_switch_provider")
+                && attempt.get("decision").and_then(Value::as_str) == Some("switch")
+                && attempt.get("error_code").and_then(Value::as_str)
+                    == Some("GW_CODEX_REASONING_GUARD")
+                && attempt.get("circuit_failure_count").and_then(Value::as_u64) == Some(0)
+        }));
+
+        guard_a_task.abort();
+        guard_b_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn codex_empty_success_stream_returns_bad_gateway_without_session_binding() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
@@ -9207,7 +9431,7 @@ mod tests {
             feature_entry.get("requestKind").and_then(Value::as_str),
             Some("context_compaction")
         );
-        // request-only samples cannot confirm reasoning_tokens == 0, so they are
+        // Request-only samples cannot confirm reasoning_tokens == 0, so they are
         // never marked exempt; only the request kind is recorded.
         assert_eq!(
             feature_entry.get("interceptExemptReason"),
@@ -9216,97 +9440,5 @@ mod tests {
         assert_eq!(feature_entry.get("hasFinalAnswer"), Some(&Value::Null));
 
         sse_task.abort();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn codex_reasoning_guard_stream_switch_provider_all_exhausted_preserves_guard_error() {
-        let _env_lock = crate::test_support::test_env_lock();
-        let home = tempfile::tempdir().expect("home dir");
-        let _env = isolate_app_env(home.path());
-        let app = tauri::test::mock_app();
-        let app_handle = app.handle().clone();
-
-        let mut app_settings = settings::AppSettings::default();
-        app_settings.failover_max_attempts_per_provider = 1;
-        app_settings.failover_max_providers_to_try = 2;
-        app_settings.codex_reasoning_guard_immediate_retry_budget = 0;
-        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
-        app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
-        app_settings.codex_reasoning_guard_exhausted_action =
-            settings::CodexReasoningGuardExhaustedAction::SwitchProvider;
-        disable_upstream_retry_policy(&mut app_settings);
-        settings::write(&app_handle, &app_settings).expect("write settings");
-        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
-            .expect("enable codex cli proxy");
-
-        let db_dir = tempfile::tempdir().expect("db dir");
-        let db = db::init_for_tests(
-            &db_dir
-                .path()
-                .join("codex-guard-stream-all-exhausted.sqlite"),
-        )
-        .expect("init test db");
-        let guard_sse_body = concat!(
-            "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-guard-stream-all-exhausted\",\"status\":\"completed\",\"model\":\"gpt-guard-stream-all-exhausted\",\"usage\":{\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
-        );
-        let (guard_a_base_url, guard_a_task) = spawn_sse_upstream(guard_sse_body).await;
-        let (guard_b_base_url, guard_b_task) = spawn_sse_upstream(guard_sse_body).await;
-        let provider_a =
-            insert_codex_provider_with_priority(&db, "Guard Stream Exhaust A", guard_a_base_url, 0);
-        let provider_b =
-            insert_codex_provider_with_priority(&db, "Guard Stream Exhaust B", guard_b_base_url, 1);
-
-        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
-        let router = build_router(gateway_state(app_handle, db, log_tx));
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri("/codex/v1/responses")
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(
-                r#"{"model":"gpt-guard-stream-all-exhausted","stream":true,"input":"hello"}"#,
-            ))
-            .expect("request");
-
-        let response = router.oneshot(request).await.expect("route response");
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("response body");
-        let payload: Value = serde_json::from_slice(&body).expect("json body");
-        assert_eq!(
-            payload.get("error_code").and_then(Value::as_str),
-            Some("GW_CODEX_REASONING_GUARD")
-        );
-        assert_eq!(
-            payload.get("message").and_then(Value::as_str),
-            Some("Codex reasoning guard retry budget exhausted for all attempted providers")
-        );
-
-        let log = recv_terminal_request_log(&mut log_rx).await;
-        assert_eq!(log.status, Some(502));
-        assert_eq!(log.error_code.as_deref(), Some("GW_CODEX_REASONING_GUARD"));
-        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
-        let attempts = attempts.as_array().expect("attempt array");
-        assert_eq!(attempts.len(), 2);
-        assert_eq!(
-            attempts[0].get("provider_id").and_then(Value::as_i64),
-            Some(provider_a)
-        );
-        assert_eq!(
-            attempts[1].get("provider_id").and_then(Value::as_i64),
-            Some(provider_b)
-        );
-        assert!(attempts.iter().all(|attempt| {
-            attempt.get("outcome").and_then(Value::as_str)
-                == Some("codex_reasoning_guard_switch_provider")
-                && attempt.get("decision").and_then(Value::as_str) == Some("switch")
-                && attempt.get("error_code").and_then(Value::as_str)
-                    == Some("GW_CODEX_REASONING_GUARD")
-                && attempt.get("circuit_failure_count").and_then(Value::as_u64) == Some(0)
-        }));
-
-        guard_a_task.abort();
-        guard_b_task.abort();
     }
 }

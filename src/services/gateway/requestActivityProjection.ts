@@ -1,4 +1,8 @@
+// In-progress state is determined only by activeRequests registry membership.
+// requestLogState classifies persisted terminal states, not active requests.
+
 import {
+  isPersistedRequestLogTerminal,
   isRequestLogActivityInProgress,
   requestLogActiveActivityState,
   requestLogActivityState,
@@ -16,6 +20,7 @@ const REALTIME_TRACE_EXIT_TOTAL_MS =
 
 export type ProjectedRealtimeCard = {
   trace: TraceSession;
+  activeRequest?: ActiveRequestSnapshotItem | null;
 };
 
 export type ProjectedRequestLogRow = {
@@ -64,8 +69,10 @@ function requestLogActivitySortRank(
   activeByTraceId: Map<string, ActiveRequestSnapshotItem>
 ) {
   const traceId = normalizeTraceId(log.trace_id);
-  if (traceId != null && activeByTraceId.has(traceId)) return 0;
-  return requestLogActivityState(log, 0) === "interrupted" ? 2 : 1;
+  if (traceId != null && activeByTraceId.has(traceId) && !isPersistedRequestLogTerminal(log)) {
+    return 0;
+  }
+  return requestLogActivityState(log) === "interrupted" ? 2 : 1;
 }
 
 function sortRequestLogsForActivity(
@@ -94,6 +101,66 @@ function shouldKeepProjectedRealtimeTraceVisible(trace: TraceSession, nowMs: num
   return Math.max(0, nowMs - trace.last_seen_ms) < REALTIME_TRACE_EXIT_TOTAL_MS;
 }
 
+function selectRealtimeCandidates(candidates: TraceSession[], completedLimit: number) {
+  const selected: TraceSession[] = [];
+  let completedCount = 0;
+  for (const trace of candidates) {
+    if (!trace.summary) {
+      selected.push(trace);
+      continue;
+    }
+    if (completedCount >= completedLimit) continue;
+    completedCount += 1;
+    selected.push(trace);
+  }
+  return selected;
+}
+
+// In-progress requests must always render as realtime cards. When the trace
+// store has no live trace (e.g. the request started before this webview
+// loaded), synthesize a minimal TraceSession from the registry entry.
+function traceFromActiveRequest(activeRequest: ActiveRequestSnapshotItem): TraceSession {
+  const createdAtMs = Number.isFinite(activeRequest.created_at_ms)
+    ? Math.max(0, activeRequest.created_at_ms)
+    : 0;
+  return {
+    trace_id: activeRequest.trace_id,
+    cli_key: activeRequest.cli_key,
+    session_id: activeRequest.session_id ?? null,
+    method: activeRequest.method,
+    path: activeRequest.path,
+    query: activeRequest.query ?? null,
+    requested_model: activeRequest.requested_model ?? null,
+    first_seen_ms: createdAtMs,
+    last_seen_ms: Math.max(createdAtMs, activeRequest.last_activity_ms ?? 0),
+    attempts: [],
+  };
+}
+
+// Keep every in-progress candidate as a card so the in-progress style never
+// forks into the log-row layout; completed (exiting) traces fill what remains
+// of the card limit. Candidate order is preserved.
+function selectRealtimeCards(
+  candidates: TraceSession[],
+  limit: number,
+  activeByTraceId: Map<string, ActiveRequestSnapshotItem>
+): ProjectedRealtimeCard[] {
+  const inProgressCount = candidates.reduce((count, t) => count + (t.summary ? 0 : 1), 0);
+  let completedBudget = Math.max(0, limit - inProgressCount);
+  const selected: ProjectedRealtimeCard[] = [];
+  for (const trace of candidates) {
+    if (trace.summary) {
+      if (completedBudget <= 0) continue;
+      completedBudget -= 1;
+    }
+    const traceId = normalizeTraceId(trace.trace_id);
+    selected.push({
+      trace,
+      activeRequest: traceId ? (activeByTraceId.get(traceId) ?? null) : null,
+    });
+  }
+  return selected;
+}
 function requestLogFromActiveRequest(
   activeRequest: ActiveRequestSnapshotItem,
   syntheticIndex: number
@@ -177,20 +244,25 @@ export function buildRequestActivityProjection({
   for (const trace of traces) {
     const traceId = normalizeTraceId(trace.trace_id);
     if (!traceId || mergedTraceMap.has(traceId)) continue;
-    mergedTraceMap.set(
-      traceId,
-      mergeTraceWithRequestLog(trace, logsByTraceId.get(traceId), {
-        inProgress: activeByTraceId.has(traceId),
-      })
-    );
+    const requestLog = logsByTraceId.get(traceId);
+    const inProgress =
+      activeByTraceId.has(traceId) && !(requestLog && isPersistedRequestLogTerminal(requestLog));
+    mergedTraceMap.set(traceId, mergeTraceWithRequestLog(trace, requestLog, { inProgress }));
+  }
+  for (const activeRequest of activeByTraceId.values()) {
+    const traceId = normalizeTraceId(activeRequest.trace_id);
+    if (!traceId || mergedTraceMap.has(traceId)) continue;
+    mergedTraceMap.set(traceId, traceFromActiveRequest(activeRequest));
   }
 
-  const realtimeCandidates = Array.from(mergedTraceMap.values())
-    .filter((trace) => shouldKeepProjectedRealtimeTraceVisible(trace, nowMs))
-    .sort((a, b) => b.first_seen_ms - a.first_seen_ms)
-    .slice(0, realtimeCandidateLimit);
+  const realtimeCandidates = selectRealtimeCandidates(
+    Array.from(mergedTraceMap.values())
+      .filter((trace) => shouldKeepProjectedRealtimeTraceVisible(trace, nowMs))
+      .sort((a, b) => b.first_seen_ms - a.first_seen_ms),
+    realtimeCandidateLimit
+  );
 
-  const realtimeCards = realtimeCandidates.slice(0, realtimeCardLimit).map((trace) => ({ trace }));
+  const realtimeCards = selectRealtimeCards(realtimeCandidates, realtimeCardLimit, activeByTraceId);
   const visibleRealtimeTraceIds = new Set(
     realtimeCards
       .map((card) => normalizeTraceId(card.trace.trace_id))
@@ -202,12 +274,15 @@ export function buildRequestActivityProjection({
     const traceId = normalizeTraceId(log.trace_id);
     if (traceId && visibleRealtimeTraceIds.has(traceId)) continue;
     const activeRequest = traceId ? (activeByTraceId.get(traceId) ?? null) : null;
-    const activityState = activeRequest
-      ? requestLogActiveActivityState(activeRequest.last_activity_ms, nowMs)
-      : requestLogActivityState(log, nowMs);
+    const liveTrace = traceId ? (mergedTraceMap.get(traceId) ?? null) : null;
+    const hasEnded = isPersistedRequestLogTerminal(log) || Boolean(liveTrace?.summary);
+    const activityState =
+      activeRequest && !hasEnded
+        ? requestLogActiveActivityState(activeRequest.last_activity_ms, nowMs)
+        : requestLogActivityState(log);
     requestRows.push({
       log,
-      liveTrace: traceId ? (mergedTraceMap.get(traceId) ?? null) : null,
+      liveTrace,
       activityState,
       activeRequest,
     });
@@ -243,7 +318,9 @@ export function buildRequestActivityProjection({
     realtimeCards,
     requestRows,
     visibleRealtimeTraceIds,
-    hasPending: requestRows.some((row) => isRequestLogActivityInProgress(row.activityState)),
+    hasPending:
+      requestRows.some((row) => isRequestLogActivityInProgress(row.activityState)) ||
+      realtimeCards.some((card) => !card.trace.summary),
     hasLiveRealtimeCards: realtimeCards.length > 0,
     summaryCount: summaryTraceIds.size,
   };

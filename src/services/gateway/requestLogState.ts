@@ -1,3 +1,6 @@
+// 契约：本模块只负责持久化终态的分类（completed / interrupted），不判定"进行中"。
+// "进行中"判定的单一真值来源是 requestActivityProjection（activeRequests 注册表成员身份）。
+
 export type RequestLogProgressInput = {
   status: number | null;
   error_code?: string | null;
@@ -23,10 +26,6 @@ export function requestLogCreatedAtMs(
   const ms = log.created_at_ms ?? 0;
   if (Number.isFinite(ms) && ms > 0) return ms;
   return (log.created_at ?? 0) * 1000;
-}
-
-export function isPersistedRequestLogInProgress(_log: RequestLogProgressInput) {
-  return false;
 }
 
 export function isPersistedRequestLogIncomplete(log: RequestLogProgressInput) {
@@ -59,10 +58,7 @@ export function requestLogActiveActivityState(
   return idleForMs >= PENDING_IDLE_NOTICE_MS ? "in_progress_idle" : "in_progress_active";
 }
 
-export function requestLogActivityState(
-  log: RequestLogProgressInput & { last_activity_ms?: number | null },
-  _nowMs: number
-): RequestLogActivityState {
+export function requestLogActivityState(log: RequestLogProgressInput): RequestLogActivityState {
   return isPersistedRequestLogIncomplete(log) ? "interrupted" : "completed";
 }
 

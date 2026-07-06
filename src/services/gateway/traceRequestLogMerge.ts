@@ -1,4 +1,4 @@
-import { isPersistedRequestLogInProgress, requestLogCreatedAtMs } from "./requestLogState";
+import { requestLogCreatedAtMs } from "./requestLogState";
 import type { RequestLogDetail, RequestLogSummary } from "./requestLogs";
 import {
   hasExplicitCodexReasoningEffortSpecialSetting,
@@ -9,6 +9,7 @@ import type { TraceSession } from "./traceStore";
 export type RequestLogTraceMergeSource = Pick<
   RequestLogSummary | RequestLogDetail,
   | "trace_id"
+  | "cli_key"
   | "session_id"
   | "status"
   | "error_code"
@@ -16,6 +17,7 @@ export type RequestLogTraceMergeSource = Pick<
   | "ttfb_ms"
   | "visible_ttfb_ms"
   | "input_tokens"
+  | "effective_input_tokens"
   | "output_tokens"
   | "total_tokens"
   | "cache_read_input_tokens"
@@ -36,7 +38,10 @@ function selectTerminalRequestedModel(
   requestLog: RequestLogTraceMergeSource,
   summary: TraceSession["summary"] | undefined
 ) {
-  return requestLog.requested_model ?? trace.requested_model ?? summary?.requested_model ?? null;
+  if (trace.cli_key === "codex" || requestLog.cli_key === "codex") {
+    return requestLog.requested_model ?? summary?.requested_model ?? trace.requested_model ?? null;
+  }
+  return summary?.requested_model ?? trace.requested_model ?? requestLog.requested_model ?? null;
 }
 
 function selectTerminalSpecialSettingsJson(
@@ -65,8 +70,7 @@ export function mergeTraceWithRequestLog(
 ): TraceSession {
   if (!requestLog) return trace;
 
-  const requestLogInProgress =
-    options.inProgress === true || isPersistedRequestLogInProgress(requestLog);
+  const requestLogInProgress = options.inProgress === true;
   const requestLogTsMs = requestLogCreatedAtMs(requestLog);
   const claudeModelMapping =
     trace.claude_model_mapping ??
@@ -99,6 +103,7 @@ export function mergeTraceWithRequestLog(
   const mergedSummary: NonNullable<TraceSession["summary"]> = {
     trace_id: trace.trace_id,
     cli_key: trace.cli_key,
+    session_id: trace.session_id ?? summary?.session_id ?? requestLog.session_id ?? null,
     method: trace.method,
     path: trace.path,
     query: trace.query,
@@ -112,6 +117,8 @@ export function mergeTraceWithRequestLog(
     visible_ttfb_ms: requestLog.visible_ttfb_ms ?? summary?.visible_ttfb_ms ?? null,
     attempts: summary?.attempts ?? [],
     input_tokens: requestLog.input_tokens ?? summary?.input_tokens ?? null,
+    effective_input_tokens:
+      requestLog.effective_input_tokens ?? summary?.effective_input_tokens ?? null,
     output_tokens: requestLog.output_tokens ?? summary?.output_tokens ?? null,
     total_tokens: requestLog.total_tokens ?? summary?.total_tokens ?? null,
     cache_read_input_tokens:
@@ -124,11 +131,12 @@ export function mergeTraceWithRequestLog(
       requestLog.cache_creation_1h_input_tokens ?? summary?.cache_creation_1h_input_tokens ?? null,
     cost_usd: requestLog.cost_usd ?? summary?.cost_usd ?? null,
     cost_multiplier: requestLog.cost_multiplier ?? summary?.cost_multiplier ?? null,
+    claude_model_mapping: claudeModelMapping,
   };
 
   return {
     ...trace,
-    session_id: trace.session_id ?? requestLog.session_id ?? null,
+    session_id: trace.session_id ?? summary?.session_id ?? requestLog.session_id ?? null,
     requested_model: mergedRequestedModel,
     special_settings_json: mergedSpecialSettingsJson,
     claude_model_mapping: claudeModelMapping,

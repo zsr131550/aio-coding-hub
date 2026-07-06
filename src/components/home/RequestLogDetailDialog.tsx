@@ -21,7 +21,7 @@ import {
   resolveLiveTraceDurationMs,
   resolveLiveTraceProvider,
   resolveRequestLogUsageReasoningTokens,
-} from "./HomeLogShared";
+} from "./requestLogPresentation";
 import { RequestLogDetailSummaryTab } from "./RequestLogDetailSummaryTab";
 import { RequestLogDetailChainTab } from "./RequestLogDetailChainTab";
 import { RequestLogDetailRawTab } from "./RequestLogDetailRawTab";

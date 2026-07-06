@@ -37,12 +37,13 @@ pub(super) async fn handle_timeout<R: tauri::Runtime>(
         provider_ctx.provider_max_attempts,
     );
 
+    let timeout_secs = ctx.upstream_first_byte_timeout_secs;
     let outcome = format!(
         "request_timeout: category={} code={} decision={} timeout_secs={}",
         ErrorCategory::SystemError.as_str(),
         error_code,
         decision.as_str(),
-        ctx.upstream_first_byte_timeout_secs,
+        timeout_secs,
     );
 
     if is_count_tokens {
@@ -57,6 +58,7 @@ pub(super) async fn handle_timeout<R: tauri::Runtime>(
             outcome,
             reason: "request timeout".to_string(),
             record_circuit_failure: true,
+            timeout_secs: Some(timeout_secs),
         })
         .await;
     }
@@ -75,6 +77,7 @@ pub(super) async fn handle_timeout<R: tauri::Runtime>(
             provider_ctx.upstream_retry_policy,
             configured_retry,
         ),
+        timeout_secs: Some(timeout_secs),
     })
     .await
 }

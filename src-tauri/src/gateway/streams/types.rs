@@ -89,6 +89,7 @@ pub(in crate::gateway) struct StreamFinalizeCtx<R: tauri::Runtime = tauri::Wry> 
     pub(in crate::gateway) created_at_ms: i64,
     pub(in crate::gateway) created_at: i64,
     pub(in crate::gateway) provider_cooldown_secs: i64,
+    pub(in crate::gateway) upstream_first_byte_timeout_secs: u32,
     pub(in crate::gateway) provider_id: i64,
     pub(in crate::gateway) provider_name: String,
     pub(in crate::gateway) base_url: String,

@@ -35,7 +35,8 @@
       "circuit_state_after": "CLOSED",
       "circuit_failure_count": 0,
       "circuit_failure_threshold": 5,
-      "provider_bridged": false
+      "provider_bridged": false,
+      "timeout_secs": null
     }
   ],
   "input_tokens": 1200,

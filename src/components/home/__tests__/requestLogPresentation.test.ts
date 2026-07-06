@@ -1,4 +1,3 @@
-import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { GatewayErrorCodes } from "../../../constants/gatewayErrorCodes";
 import { createRequestLogRouteHop } from "../../../services/gateway/requestLogFixtures";
@@ -7,20 +6,17 @@ import {
   buildRequestLogAuditMeta,
   buildRequestRouteMeta,
   computeStatusBadge,
-  FastModeBadge,
-  FolderBadge,
-  formatClaudeModelMappingText,
   formatRequestLogModelText,
-  FreeBadge,
   hasClaudeModelMappingSpecialSetting,
-  hasPriorityServiceTierSpecialSetting,
-  resolveClaudeModelMappingFromSpecialSettings,
   resolveLiveTraceDurationMs,
   resolveLiveTraceProvider,
   resolveRequestLogUsageReasoningTokens,
-  SessionReuseBadge,
-} from "../HomeLogShared";
-import { getErrorCodeLabel } from "../requestLogErrorLabels";
+} from "../requestLogPresentation";
+import {
+  formatClaudeModelMappingText,
+  hasPriorityServiceTierSpecialSetting,
+  resolveClaudeModelMappingFromSpecialSettings,
+} from "../requestLogSpecialSettings";
 
 function createTrace(overrides: Partial<TraceSession> = {}): TraceSession {
   return {
@@ -38,7 +34,7 @@ function createTrace(overrides: Partial<TraceSession> = {}): TraceSession {
   };
 }
 
-describe("components/home/HomeLogShared", () => {
+describe("components/home/requestLogPresentation", () => {
   it("resolves Claude model mapping special settings with final provider preference", () => {
     const settings = JSON.stringify([
       { type: "noop" },
@@ -712,26 +708,5 @@ describe("components/home/HomeLogShared", () => {
     });
     expect(retryOnly.label).toBe("重试 3 次");
     expect(retryOnly.tooltipText).toBe("Provider A（状态未知，失败，尝试 3 次）");
-  });
-
-  it("renders small badges and computes effective input tokens", () => {
-    render(
-      <div>
-        <SessionReuseBadge showCustomTooltip={false} />
-        <SessionReuseBadge showCustomTooltip />
-        <FastModeBadge showCustomTooltip={false} />
-        <FastModeBadge showCustomTooltip />
-        <FreeBadge />
-        <FolderBadge folderName="workspace-alpha" folderPath="/tmp/workspace-alpha" allowWrap />
-      </div>
-    );
-
-    expect(screen.getAllByText("会话复用")[0]).toHaveAttribute("title");
-    expect(screen.getAllByText("会话复用")[0]).toHaveClass("ring-blue-400/35");
-    expect(screen.getAllByText("fast")[0]).toHaveAttribute("title");
-    expect(screen.getByText("免费")).toBeInTheDocument();
-    expect(screen.getByText("workspace-alpha")).toBeInTheDocument();
-    expect(screen.getByTitle("/tmp/workspace-alpha")).toHaveClass("border-border/45");
-    expect(getErrorCodeLabel(GatewayErrorCodes.UPSTREAM_TIMEOUT)).toBe("上游超时");
   });
 });

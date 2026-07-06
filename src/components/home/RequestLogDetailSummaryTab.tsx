@@ -10,18 +10,20 @@ import {
   resolveTtfbDisplayMetrics,
 } from "../../utils/formatters";
 import { RequestLogErrorObservationCard } from "./RequestLogErrorObservationCard";
-import { resolveCodexReasoningGuardSummary } from "../../services/gateway/requestLogSpecialSettings";
+import {
+  formatCodexReasoningEffortSource,
+  resolveCodexReasoningEffort,
+  resolveCodexReasoningGuardSummary,
+} from "../../services/gateway/requestLogSpecialSettings";
 import {
   buildRequestLogAuditMeta,
   computeStatusBadge,
-  FastModeBadge,
   formatCodexReasoningContinuationStatus,
-  formatCodexReasoningEffortSource,
   hasCodexReasoningGuardSpecialSetting,
-  hasPriorityServiceTierSpecialSetting,
-  resolveCodexReasoningEffort,
   resolveRequestLogUsageReasoningTokens,
-} from "./HomeLogShared";
+} from "./requestLogPresentation";
+import { FastModeBadge } from "./LogBadges";
+import { hasPriorityServiceTierSpecialSetting } from "./requestLogSpecialSettings";
 
 export type RequestLogDetailSummaryTabProps = {
   selectedLog: RequestLogDetail;
