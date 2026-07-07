@@ -6037,7 +6037,7 @@ mod tests {
         assert!(second_input.iter().any(|item| {
             item.get("phase").and_then(Value::as_str) == Some("commentary")
                 && item.pointer("/content/0/text").and_then(Value::as_str)
-                    == Some("Continue thinking...")
+                    == Some("Continue thinking. Preserve any prior assistant-visible answer verbatim as a prefix. If the prior answer is already complete, repeat it exactly; do not rewrite, summarize, or produce an alternative wording.")
         }));
 
         let log = recv_terminal_request_log(&mut log_rx).await;
@@ -6210,7 +6210,7 @@ mod tests {
         assert_eq!(second_body["stream"], serde_json::json!(true));
         assert_eq!(
             second_body.get("reasoning"),
-            Some(&serde_json::json!({"effort": "high"}))
+            Some(&serde_json::json!({"effort": "low"}))
         );
         let second_input = second_body
             .get("input")
@@ -6226,9 +6226,9 @@ mod tests {
             serde_json::json!({"type": "message", "role": "user", "content": "plain prompt"})
         );
         assert!(second_input.iter().any(|item| {
-            item.get("phase").and_then(Value::as_str) == Some("commentary")
-                && item.pointer("/content/0/text").and_then(Value::as_str)
-                    == Some("Continue thinking...")
+            item.get("role").and_then(Value::as_str) == Some("user")
+                && item.get("content").and_then(Value::as_str)
+                    == Some("Continue thinking. Preserve any prior assistant-visible answer verbatim as a prefix. If the prior answer is already complete, repeat it exactly; do not rewrite, summarize, or produce an alternative wording.")
         }));
         let second_body_text = serde_json::to_string(&second_body).expect("second body text");
         for forbidden in [
@@ -6413,6 +6413,187 @@ mod tests {
                     == Some("continuation_repaired")
                 && entry.get("continuationSentRounds").and_then(Value::as_u64) == Some(1)
         }));
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_continuation_repair_experimental_replays_safe_output_between_rounds() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 2;
+        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
+        app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
+        app_settings.codex_reasoning_guard_post_match_strategy =
+            settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepairExperimental;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-cont-exp-replay.sqlite"))
+            .expect("init test db");
+        let first_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_1\"}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"partial \"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cont-exp-replay-1\",\"status\":\"completed\",\"model\":\"gpt-cont-exp-replay\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
+        );
+        let second_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_2\"}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_2\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"partial more \"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cont-exp-replay-2\",\"status\":\"completed\",\"model\":\"gpt-cont-exp-replay\",\"usage\":{\"output_tokens\":12,\"output_tokens_details\":{\"reasoning_tokens\":1034}}}}\n\n"
+        );
+        let third_sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-cont-exp-replay-3\",\"status\":\"in_progress\",\"model\":\"gpt-cont-exp-replay\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"partial more done\"}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_3\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"partial more done\"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cont-exp-replay-3\",\"status\":\"completed\",\"model\":\"gpt-cont-exp-replay\",\"usage\":{\"output_tokens\":4,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n"
+        );
+        let (upstream_base_url, mut captured_rx, upstream_task) =
+            spawn_sequence_capturing_sse_upstream(vec![first_sse, second_sse, third_sse]).await;
+        insert_codex_provider_with_priority(
+            &db,
+            "Continuation Experimental Replay",
+            upstream_base_url,
+            0,
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-cont-exp-replay","stream":true,"previous_response_id":"resp_old","include":["foo","reasoning.encrypted_content"],"input":[{"role":"user","content":"hello"}],"reasoning":{"effort":"high"}}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "response body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let body_text = String::from_utf8_lossy(&body);
+        assert!(body_text.contains("partial more done"));
+        assert!(body_text.contains("resp-cont-exp-replay-3"));
+
+        let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("first captured request")
+            .expect("first request");
+        let second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("second captured request")
+            .expect("second request");
+        let third = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("third captured request")
+            .expect("third request");
+        assert_ne!(
+            second.body, third.body,
+            "experimental continuation follow-up requests must advance with prior output"
+        );
+
+        let second_body: Value = serde_json::from_slice(&second.body).expect("second body json");
+        let third_body: Value = serde_json::from_slice(&third.body).expect("third body json");
+        assert_eq!(second_body.get("previous_response_id"), None);
+        assert_eq!(third_body.get("previous_response_id"), None);
+        assert_eq!(
+            second_body.get("include"),
+            Some(&serde_json::json!(["foo"]))
+        );
+        assert_eq!(third_body.get("include"), Some(&serde_json::json!(["foo"])));
+        assert_eq!(
+            second_body.get("reasoning"),
+            Some(&serde_json::json!({"effort": "low"}))
+        );
+        assert_eq!(
+            third_body.get("reasoning"),
+            Some(&serde_json::json!({"effort": "low"}))
+        );
+        assert_eq!(second_body.get("tools"), None);
+        assert_eq!(third_body.get("tools"), None);
+        let second_input = second_body
+            .get("input")
+            .and_then(Value::as_array)
+            .expect("second input array");
+        let third_input = third_body
+            .get("input")
+            .and_then(Value::as_array)
+            .expect("third input array");
+        assert_eq!(second_input.len(), 3);
+        assert_eq!(third_input.len(), 5);
+        assert!(second_input.iter().any(|item| {
+            item.pointer("/content/0/text").and_then(Value::as_str) == Some("partial ")
+        }));
+        assert!(third_input.iter().any(|item| {
+            item.pointer("/content/0/text").and_then(Value::as_str) == Some("partial ")
+        }));
+        assert!(third_input.iter().any(|item| {
+            item.pointer("/content/0/text").and_then(Value::as_str) == Some("partial more ")
+        }));
+        assert_eq!(
+            third_input
+                .iter()
+                .filter(|item| {
+                    item.get("role").and_then(Value::as_str) == Some("user")
+                        && item.get("content").and_then(Value::as_str)
+                            == Some("Continue thinking. Preserve any prior assistant-visible answer verbatim as a prefix. If the prior answer is already complete, repeat it exactly; do not rewrite, summarize, or produce an alternative wording.")
+                })
+                .count(),
+            2
+        );
+        let third_body_text = serde_json::to_string(&third_body).expect("third body text");
+        assert!(!third_body_text.contains("encrypted_content"));
+        assert!(!third_body_text.contains("enc_1"));
+        assert!(!third_body_text.contains("enc_2"));
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.error_code, None);
+        let special_settings = parse_special_settings(&log);
+        let continuation_entry = special_settings
+            .iter()
+            .find(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
+                    && entry.get("status").and_then(Value::as_str) == Some("repaired")
+            })
+            .expect("continuation setting");
+        assert_eq!(
+            continuation_entry.get("sentRounds").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            continuation_entry
+                .get("visibleAssemblyKind")
+                .and_then(Value::as_str),
+            Some("final_superset")
+        );
 
         upstream_task.abort();
     }

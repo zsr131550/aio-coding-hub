@@ -295,7 +295,7 @@ impl ContinuationRepairOutcome {
     ) -> Self {
         let mut outcome =
             Self::terminal_with_kind(status, token, sent_rounds, failure_kind, reason);
-        outcome.round_trace = codex_reasoning_continuation::sanitized_round_trace(rounds);
+        outcome.round_trace = codex_reasoning_continuation::reconstruction_round_trace(rounds);
         outcome.aggregate_raw_bytes = aggregate_raw_bytes;
         outcome.repair_elapsed_ms = repair_elapsed_ms;
         outcome.cumulative_elapsed_ms = cumulative_elapsed_ms;
@@ -455,18 +455,51 @@ where
 
     loop {
         current_token = codex_reasoning_features::extract_reasoning_tokens(&current);
-        if !codex_reasoning_continuation::is_truncation_continuation_pattern(
-            current_token.map(|value| value.reasoning_tokens),
-        ) {
+        let current_matches_truncation =
+            codex_reasoning_continuation::is_truncation_continuation_pattern(
+                current_token.map(|value| value.reasoning_tokens),
+            );
+        let mut continue_after_bplus_reconstruction_failure = None;
+        if !current_matches_truncation {
             if replay_policy.is_experimental() {
-                return match codex_reasoning_continuation::reconstruct_bplus_client_sse(
+                match codex_reasoning_continuation::reconstruct_bplus_client_sse(
                     &rounds,
                     MAX_NON_SSE_BODY_BYTES,
                 ) {
-                    Ok(reconstruction) => ContinuationRepairOutcome::repaired_bplus(
-                        reconstruction,
+                    Ok(reconstruction) => {
+                        return ContinuationRepairOutcome::repaired_bplus(
+                            reconstruction,
+                            current_token,
+                            sent_rounds,
+                            repair_started.elapsed().as_millis(),
+                            attempt_started.elapsed().as_millis(),
+                            round_durations_ms,
+                        );
+                    }
+                    Err(err) if bplus_reconstruction_error_can_continue(&err) => {
+                        continue_after_bplus_reconstruction_failure = Some(err);
+                    }
+                    Err(err) => {
+                        return terminal_with_trace!(
+                            ContinuationRepairStatus::Failed,
+                            current_token,
+                            sent_rounds,
+                            Some("bplus_reconstruction"),
+                            Some(err),
+                        );
+                    }
+                }
+            } else {
+                let responses = rounds
+                    .iter()
+                    .map(|round| round.aggregated.clone())
+                    .collect::<Vec<_>>();
+                return match codex_reasoning_continuation::fold_responses_to_sse(&responses) {
+                    Ok(raw) => ContinuationRepairOutcome::repaired_folded(
+                        raw,
                         current_token,
                         sent_rounds,
+                        aggregate_raw_bytes,
                         repair_started.elapsed().as_millis(),
                         attempt_started.elapsed().as_millis(),
                         round_durations_ms,
@@ -475,34 +508,11 @@ where
                         ContinuationRepairStatus::Failed,
                         current_token,
                         sent_rounds,
-                        Some("bplus_reconstruction"),
+                        Some("fold"),
                         Some(err),
                     ),
                 };
             }
-
-            let responses = rounds
-                .iter()
-                .map(|round| round.aggregated.clone())
-                .collect::<Vec<_>>();
-            return match codex_reasoning_continuation::fold_responses_to_sse(&responses) {
-                Ok(raw) => ContinuationRepairOutcome::repaired_folded(
-                    raw,
-                    current_token,
-                    sent_rounds,
-                    aggregate_raw_bytes,
-                    repair_started.elapsed().as_millis(),
-                    attempt_started.elapsed().as_millis(),
-                    round_durations_ms,
-                ),
-                Err(err) => terminal_with_trace!(
-                    ContinuationRepairStatus::Failed,
-                    current_token,
-                    sent_rounds,
-                    Some("fold"),
-                    Some(err),
-                ),
-            };
         }
         if max_output_tokens > 0 && cumulative_output_tokens >= max_output_tokens as u64 {
             return terminal_with_trace!(
@@ -514,6 +524,17 @@ where
             );
         }
         if sent_rounds >= max_rounds {
+            if let Some(reason) = continue_after_bplus_reconstruction_failure {
+                return terminal_with_trace!(
+                    ContinuationRepairStatus::Failed,
+                    current_token,
+                    sent_rounds,
+                    Some("bplus_reconstruction"),
+                    Some(format!(
+                        "continuation final output remained unsafe after max rounds: {reason}"
+                    )),
+                );
+            }
             return terminal_with_trace!(
                 ContinuationRepairStatus::StillMatched,
                 current_token,
@@ -522,7 +543,8 @@ where
                 Some("continuation still matched after max rounds".to_string()),
             );
         }
-        if replay_policy.requires_encrypted_reasoning()
+        if current_matches_truncation
+            && replay_policy.requires_encrypted_reasoning()
             && !codex_reasoning_continuation::latest_reasoning_has_encrypted_content(&current)
         {
             return terminal_with_trace!(
@@ -533,7 +555,12 @@ where
                 Some("continuation round matched but encrypted reasoning was missing".to_string()),
             );
         }
-        let replay_tail_for_payload = replay_policy.next_replay_tail(&mut replay_tail, &current);
+        let current_raw_sse = rounds
+            .last()
+            .map(|round| round.raw_sse.as_ref())
+            .unwrap_or_default();
+        let replay_tail_for_payload =
+            replay_policy.next_replay_tail(&mut replay_tail, &current, current_raw_sse);
         let payload = match codex_reasoning_continuation::build_continuation_payload(
             prepared.upstream_body_bytes.as_ref(),
             &replay_tail_for_payload,
@@ -718,6 +745,15 @@ where
             Some(round_duration_ms),
         ));
     }
+}
+
+fn bplus_reconstruction_error_can_continue(reason: &str) -> bool {
+    matches!(
+        reason,
+        "final round has no client-visible output"
+            | "final round unsafe: reasoning_visible_payload"
+            | "final output is unsafe: reasoning_visible_payload"
+    )
 }
 
 async fn read_buffered_event_stream_body(

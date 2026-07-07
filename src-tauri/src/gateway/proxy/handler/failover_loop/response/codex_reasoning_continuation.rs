@@ -5,7 +5,8 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
 pub(super) const ENCRYPTED_REASONING_INCLUDE: &str = "reasoning.encrypted_content";
-pub(super) const CONTINUATION_MARKER_TEXT: &str = "Continue thinking...";
+pub(super) const CONTINUATION_MARKER_TEXT: &str = "Continue thinking. Preserve any prior assistant-visible answer verbatim as a prefix. If the prior answer is already complete, repeat it exactly; do not rewrite, summarize, or produce an alternative wording.";
+const EXPERIMENTAL_CONTINUATION_REASONING_EFFORT: &str = "low";
 pub(super) const BPLUS_CLIENT_CONTRACT_VERSION: &str = "bplus_protocol_reconstruction_v8";
 pub(super) const BPLUS_RESPONSE_ID_CONTINUITY: &str = "final_raw_response_id_validated";
 pub(super) const BPLUS_CLEAN_APPEND_ENABLED: bool = false;
@@ -133,6 +134,7 @@ impl ContinuationReplayPolicy {
         self,
         stable_tail: &mut Vec<Value>,
         current: &Value,
+        raw_sse: &[u8],
     ) -> Vec<Value> {
         match self {
             Self::StableEncryptedReplay => {
@@ -140,7 +142,12 @@ impl ContinuationReplayPolicy {
                 stable_tail.push(commentary_marker_item());
                 stable_tail.clone()
             }
-            Self::ExperimentalSafeReplay => vec![commentary_marker_item()],
+            Self::ExperimentalSafeReplay => {
+                stable_tail.extend(experimental_safe_replay_output_items(current));
+                stable_tail.extend(experimental_safe_replay_raw_lifecycle_output_items(raw_sse));
+                stable_tail.push(experimental_continuation_instruction_item());
+                stable_tail.clone()
+            }
         }
     }
 }
@@ -204,6 +211,7 @@ pub(super) fn build_continuation_payload(
         }
         ContinuationPayloadMode::ExperimentalSafeReplay => {
             remove_continuation_encrypted_include(object);
+            apply_experimental_safe_payload_options(object);
         }
     }
 
@@ -271,6 +279,95 @@ fn strip_encrypted_content(value: Value) -> Value {
     }
 }
 
+fn experimental_safe_replay_output_items(response: &Value) -> Vec<Value> {
+    response
+        .get("output")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .cloned()
+                .filter_map(sanitize_response_output_item_for_experimental_replay)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn experimental_safe_replay_raw_lifecycle_output_items(raw: &[u8]) -> Vec<Value> {
+    let mut cursor = 0usize;
+    let mut items = Vec::new();
+    while let Some(relative_end) = crate::gateway::proxy::sse::find_sse_event_end(&raw[cursor..]) {
+        let event_end = cursor + relative_end;
+        let frame = &raw[cursor..event_end];
+        cursor = event_end;
+        let Ok(frame_text) = std::str::from_utf8(frame) else {
+            continue;
+        };
+        let Some((event_name, data)) = crate::gateway::proxy::sse::parse_sse_frame(frame_text)
+        else {
+            continue;
+        };
+        if !matches!(
+            event_name.as_str(),
+            "response.created" | "response.in_progress" | "response.completed"
+        ) {
+            continue;
+        }
+        let output = data
+            .get("response")
+            .and_then(|response| response.get("output"))
+            .or_else(|| data.get("output"))
+            .and_then(Value::as_array);
+        let Some(output) = output else {
+            continue;
+        };
+        items.extend(
+            output
+                .iter()
+                .cloned()
+                .filter_map(sanitize_response_output_item_for_experimental_replay),
+        );
+    }
+    dedupe_experimental_replay_items(items)
+}
+
+fn dedupe_experimental_replay_items(items: Vec<Value>) -> Vec<Value> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut deduped = Vec::new();
+    for item in items {
+        let key = serde_json::to_string(&item).unwrap_or_default();
+        if seen.insert(key) {
+            deduped.push(item);
+        }
+    }
+    deduped
+}
+
+fn sanitize_response_output_item_for_experimental_replay(item: Value) -> Option<Value> {
+    let normalized = normalize_responses_input_item_for_continuation(item)?;
+    let item_type = normalized.get("type").and_then(Value::as_str);
+    if item_type == Some("reasoning") || is_responses_native_tool_context_item(&normalized) {
+        return None;
+    }
+    if item_type != Some("message") {
+        return None;
+    }
+    if normalized.get("phase").and_then(Value::as_str) == Some("commentary") {
+        return None;
+    }
+    if normalized
+        .get("role")
+        .and_then(Value::as_str)
+        .is_some_and(|role| role != "assistant")
+    {
+        return None;
+    }
+    match visible_message_output_text(&normalized) {
+        Ok(Some(_)) => Some(strip_encrypted_content(normalized)),
+        Ok(None) | Err(_) => None,
+    }
+}
+
 fn remove_continuation_encrypted_include(object: &mut Map<String, Value>) {
     let Some(include) = object.get_mut("include") else {
         return;
@@ -287,6 +384,16 @@ fn remove_continuation_encrypted_include(object: &mut Map<String, Value>) {
         }
         _ => {}
     }
+}
+
+fn apply_experimental_safe_payload_options(object: &mut Map<String, Value>) {
+    object.insert(
+        "reasoning".to_string(),
+        json!({ "effort": EXPERIMENTAL_CONTINUATION_REASONING_EFFORT }),
+    );
+    object.remove("tools");
+    object.remove("tool_choice");
+    object.remove("parallel_tool_calls");
 }
 
 pub(super) fn reasoning_items(response: &Value) -> Vec<Value> {
@@ -317,6 +424,14 @@ pub(super) fn commentary_marker_item() -> Value {
         "role": "assistant",
         "content": [{"type": "output_text", "text": CONTINUATION_MARKER_TEXT}],
         "phase": "commentary",
+    })
+}
+
+fn experimental_continuation_instruction_item() -> Value {
+    serde_json::json!({
+        "type": "message",
+        "role": "user",
+        "content": CONTINUATION_MARKER_TEXT,
     })
 }
 
@@ -384,8 +499,11 @@ pub(super) struct ContinuationReconstruction {
 struct RoundVisibility {
     has_visible_client_output: bool,
     assistant_message_text: Option<String>,
+    assistant_message_source: Option<&'static str>,
     visible_text_len: usize,
     visible_text_hash: Option<String>,
+    normalized_visible_text_len: usize,
+    normalized_visible_text_hash: Option<String>,
     has_tool_call: bool,
     has_reasoning: bool,
     has_commentary_marker: bool,
@@ -425,7 +543,7 @@ pub(super) fn reconstruct_bplus_client_sse(
 
     let visibility = rounds
         .iter()
-        .map(|round| classify_round_visibility(&round.aggregated))
+        .map(classify_round_visibility_for_reconstruction)
         .collect::<Vec<_>>();
     for (index, (round, round_visibility)) in rounds.iter().zip(visibility.iter()).enumerate() {
         if let Err(reason) = validate_raw_round_for_reconstruction(
@@ -456,8 +574,6 @@ pub(super) fn reconstruct_bplus_client_sse(
     {
         return Err("final round has no client-visible output".to_string());
     }
-    validate_final_round_for_passthrough(rounds, &visibility)?;
-
     let provider_repair_usage = provider_usage_from_rounds(rounds)?;
     let final_usage =
         crate::usage::parse_usage_from_json_or_sse_bytes("codex", final_round.raw_sse.as_ref())
@@ -470,11 +586,32 @@ pub(super) fn reconstruct_bplus_client_sse(
     let remaining_reconstructed_bytes = aggregate_cap_bytes
         .checked_sub(aggregate_raw_bytes)
         .ok_or_else(|| "aggregate repair raw bytes exceeded cap".to_string())?;
-    let client_raw = patch_terminal_completed_usage(
-        &final_round.raw_sse,
-        &client_usage,
-        remaining_reconstructed_bytes,
-    )?;
+    let (client_raw, reconstruction_status) =
+        match validate_final_round_for_passthrough(rounds, &visibility) {
+            Ok(()) => (
+                patch_terminal_completed_usage(
+                    &final_round.raw_sse,
+                    &client_usage,
+                    remaining_reconstructed_bytes,
+                )?,
+                "final_full_passthrough",
+            ),
+            Err(reason)
+                if final_visibility_can_use_sanitized_rebuild(final_visibility, &reason) =>
+            {
+                validate_final_raw_for_sanitized_rebuild(final_round, final_visibility)?;
+                (
+                    build_sanitized_final_client_sse(
+                        final_round,
+                        final_visibility,
+                        &client_usage,
+                        remaining_reconstructed_bytes,
+                    )?,
+                    "final_sanitized_rebuild",
+                )
+            }
+            Err(reason) => return Err(reason),
+        };
     let reconstructed_total = aggregate_raw_bytes
         .checked_add(client_raw.len())
         .ok_or_else(|| "aggregate repair reconstructed bytes overflowed".to_string())?;
@@ -495,7 +632,7 @@ pub(super) fn reconstruct_bplus_client_sse(
         client_usage,
         provider_repair_usage,
         round_trace: build_round_trace(rounds, &visibility),
-        reconstruction_status: "final_full_passthrough",
+        reconstruction_status,
         visible_assembly_kind,
         canonical_response_id: final_response_id,
         canonical_response_id_continuity: BPLUS_RESPONSE_ID_CONTINUITY,
@@ -508,7 +645,9 @@ fn select_visible_assembly_kind(visibility: &[RoundVisibility]) -> Result<&'stat
         return Err("missing final visibility".to_string());
     };
     if let Some(reason) = final_visibility.unsafe_reason {
-        return Err(format!("final round unsafe: {reason}"));
+        if !final_unsafe_reason_can_be_sanitized(final_visibility, reason) {
+            return Err(format!("final round unsafe: {reason}"));
+        }
     }
 
     for round in visibility.iter().take(visibility.len().saturating_sub(1)) {
@@ -516,7 +655,9 @@ fn select_visible_assembly_kind(visibility: &[RoundVisibility]) -> Result<&'stat
             return Err("non-final tool/function call is unsafe".to_string());
         }
         if let Some(reason) = round.unsafe_reason {
-            return Err(format!("non-final visible payload is unsafe: {reason}"));
+            if !non_final_unsafe_reason_can_be_suppressed(reason) {
+                return Err(format!("non-final visible payload is unsafe: {reason}"));
+            }
         }
     }
     if final_visibility.has_tool_call {
@@ -528,7 +669,13 @@ fn select_visible_assembly_kind(visibility: &[RoundVisibility]) -> Result<&'stat
     let non_final_visible = visibility
         .iter()
         .take(visibility.len().saturating_sub(1))
-        .filter(|round| round.has_visible_client_output)
+        .filter(|round| {
+            round.has_visible_client_output
+                && (round.assistant_message_text.is_some()
+                    || !round
+                        .unsafe_reason
+                        .is_some_and(non_final_unsafe_reason_can_be_suppressed))
+        })
         .collect::<Vec<_>>();
     if non_final_visible.is_empty() {
         return Ok("empty_prior");
@@ -560,13 +707,205 @@ fn select_visible_assembly_kind(visibility: &[RoundVisibility]) -> Result<&'stat
             saw_strict_prefix = true;
             continue;
         }
-        return Err("visible text chain is distinct or non-prefix".to_string());
+        return Err(visible_text_chain_mismatch_reason(
+            visibility, previous, next,
+        ));
     }
     if saw_strict_prefix {
         Ok("final_superset")
     } else {
         Err("visible text chain did not prove a safe branch".to_string())
     }
+}
+
+fn visible_text_chain_mismatch_reason(
+    visibility: &[RoundVisibility],
+    previous: &str,
+    next: &str,
+) -> String {
+    let previous_normalized = normalize_visible_message_text(previous);
+    let next_normalized = normalize_visible_message_text(next);
+    let common_prefix_chars = previous_normalized
+        .chars()
+        .zip(next_normalized.chars())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let previous_round = visibility
+        .iter()
+        .filter(|round| round.assistant_message_text.is_some())
+        .find(|round| {
+            round
+                .assistant_message_text
+                .as_deref()
+                .map(normalize_visible_message_text)
+                == Some(previous_normalized.clone())
+        });
+    let next_round = visibility
+        .iter()
+        .filter(|round| round.assistant_message_text.is_some())
+        .find(|round| {
+            round
+                .assistant_message_text
+                .as_deref()
+                .map(normalize_visible_message_text)
+                == Some(next_normalized.clone())
+        });
+    format!(
+        concat!(
+            "visible text chain is distinct or non-prefix: ",
+            "previousSource={};previousLen={};previousHash={};previousNormalizedLen={};previousNormalizedHash={};",
+            "nextSource={};nextLen={};nextHash={};nextNormalizedLen={};nextNormalizedHash={};",
+            "commonPrefixChars={}"
+        ),
+        previous_round
+            .and_then(|round| round.assistant_message_source)
+            .unwrap_or("unknown"),
+        previous.chars().count(),
+        stable_visible_text_hash(previous),
+        previous_normalized.chars().count(),
+        stable_visible_text_hash(&previous_normalized),
+        next_round
+            .and_then(|round| round.assistant_message_source)
+            .unwrap_or("unknown"),
+        next.chars().count(),
+        stable_visible_text_hash(next),
+        next_normalized.chars().count(),
+        stable_visible_text_hash(&next_normalized),
+        common_prefix_chars,
+    )
+}
+
+fn non_final_unsafe_reason_can_be_suppressed(reason: &str) -> bool {
+    reason == "reasoning_visible_payload"
+}
+
+fn final_unsafe_reason_can_be_sanitized(visibility: &RoundVisibility, reason: &str) -> bool {
+    reason == "reasoning_visible_payload"
+        && visibility.assistant_message_text.is_some()
+        && !visibility.has_tool_call
+}
+
+fn final_visibility_can_use_sanitized_rebuild(
+    visibility: &RoundVisibility,
+    passthrough_error: &str,
+) -> bool {
+    if visibility.assistant_message_text.is_none() || visibility.has_tool_call {
+        return false;
+    }
+    if let Some(reason) = visibility.unsafe_reason {
+        return final_unsafe_reason_can_be_sanitized(visibility, reason);
+    }
+    final_passthrough_error_can_use_sanitized_rebuild(passthrough_error)
+}
+
+fn final_passthrough_error_can_use_sanitized_rebuild(reason: &str) -> bool {
+    matches!(
+        reason,
+        "final raw has unsafe pre-completed event"
+            | "final raw has unknown pre-completed event"
+            | "final raw output_item.added contains visible or unknown payload"
+    )
+}
+
+fn classify_round_visibility_for_reconstruction(
+    round: &ContinuationRepairRound,
+) -> RoundVisibility {
+    let mut visibility = classify_round_visibility(&round.aggregated);
+    if let Some(text) = raw_lifecycle_assistant_message_text(round.raw_sse.as_ref()) {
+        visibility.has_visible_client_output = true;
+        visibility.visible_text_len = text.chars().count();
+        visibility.visible_text_hash = Some(stable_visible_text_hash(&text));
+        let normalized = normalize_visible_message_text(&text);
+        visibility.normalized_visible_text_len = normalized.chars().count();
+        visibility.normalized_visible_text_hash = Some(stable_visible_text_hash(&normalized));
+        visibility.assistant_message_text = Some(text);
+        visibility.assistant_message_source = Some("raw_lifecycle");
+    }
+    if raw_lifecycle_output_has_tool_call(round.raw_sse.as_ref()) {
+        visibility.has_tool_call = true;
+        visibility
+            .unsafe_reason
+            .get_or_insert("raw_lifecycle_tool_call");
+    }
+    visibility
+}
+
+fn raw_lifecycle_assistant_message_text(raw: &[u8]) -> Option<String> {
+    let mut cursor = 0usize;
+    let mut latest_text = None;
+    while let Some(relative_end) = crate::gateway::proxy::sse::find_sse_event_end(&raw[cursor..]) {
+        let event_end = cursor + relative_end;
+        let frame = &raw[cursor..event_end];
+        cursor = event_end;
+        let frame_text = std::str::from_utf8(frame).ok()?;
+        let Some((event_name, data)) = crate::gateway::proxy::sse::parse_sse_frame(frame_text)
+        else {
+            continue;
+        };
+        if !matches!(
+            event_name.as_str(),
+            "response.created" | "response.in_progress" | "response.completed"
+        ) {
+            continue;
+        }
+        for item in lifecycle_raw_output_items(&data) {
+            if item.get("type").and_then(Value::as_str) != Some("message") {
+                continue;
+            }
+            if item
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|role| role != "assistant")
+            {
+                continue;
+            }
+            if let Ok(Some(text)) = visible_message_output_text(item) {
+                if !text.trim().is_empty() {
+                    latest_text = Some(text);
+                }
+            }
+        }
+    }
+    latest_text
+}
+
+fn raw_lifecycle_output_has_tool_call(raw: &[u8]) -> bool {
+    let mut cursor = 0usize;
+    while let Some(relative_end) = crate::gateway::proxy::sse::find_sse_event_end(&raw[cursor..]) {
+        let event_end = cursor + relative_end;
+        let frame = &raw[cursor..event_end];
+        cursor = event_end;
+        let Ok(frame_text) = std::str::from_utf8(frame) else {
+            continue;
+        };
+        let Some((event_name, data)) = crate::gateway::proxy::sse::parse_sse_frame(frame_text)
+        else {
+            continue;
+        };
+        if !matches!(
+            event_name.as_str(),
+            "response.created" | "response.in_progress" | "response.completed"
+        ) {
+            continue;
+        }
+        if lifecycle_raw_output_items(&data)
+            .into_iter()
+            .any(is_responses_native_tool_context_item)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn lifecycle_raw_output_items(data: &Value) -> Vec<&Value> {
+    data.get("response")
+        .and_then(|response| response.get("output"))
+        .or_else(|| data.get("output"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 fn is_responses_native_tool_call_item(item: &Value) -> bool {
@@ -679,7 +1018,9 @@ fn classify_round_visibility(response: &Value) -> RoundVisibility {
         }
     }
 
-    let assistant_message_text = if unsafe_reason.is_none() && !visible_text_parts.is_empty() {
+    let assistant_message_text = if !visible_text_parts.is_empty()
+        && (unsafe_reason.is_none() || unsafe_reason == Some("reasoning_visible_payload"))
+    {
         Some(visible_text_parts.join(""))
     } else {
         None
@@ -691,12 +1032,22 @@ fn classify_round_visibility(response: &Value) -> RoundVisibility {
     let visible_text_hash = assistant_message_text
         .as_ref()
         .map(|text| stable_visible_text_hash(text));
+    let normalized_visible_text = assistant_message_text
+        .as_deref()
+        .map(normalize_visible_message_text)
+        .unwrap_or_default();
+    let normalized_visible_text_len = normalized_visible_text.chars().count();
+    let normalized_visible_text_hash = (!normalized_visible_text.is_empty())
+        .then(|| stable_visible_text_hash(&normalized_visible_text));
 
     RoundVisibility {
         has_visible_client_output,
         assistant_message_text,
+        assistant_message_source: visible_text_hash.as_ref().map(|_| "aggregated_output"),
         visible_text_len,
         visible_text_hash,
+        normalized_visible_text_len,
+        normalized_visible_text_hash,
         has_tool_call,
         has_reasoning,
         has_commentary_marker,
@@ -728,6 +1079,330 @@ fn validate_final_round_for_passthrough(
     reject_echoed_prior_reasoning(rounds)?;
     validate_final_tool_calls(final_round)?;
     Ok(())
+}
+
+fn build_sanitized_final_client_sse(
+    final_round: &ContinuationRepairRound,
+    final_visibility: &RoundVisibility,
+    client_usage: &crate::usage::UsageExtract,
+    max_output_bytes: usize,
+) -> Result<Bytes, String> {
+    let output_items = sanitized_final_output_items(final_round, final_visibility)?;
+    let usage = serde_json::from_str::<Value>(&client_usage.usage_json)
+        .map_err(|err| format!("client usage json was not parseable: {err}"))?;
+    let output_text = output_items
+        .iter()
+        .filter_map(folded_visible_message_output_text)
+        .collect::<Vec<_>>()
+        .join("");
+
+    let mut sanitized = strip_encrypted_content(final_round.aggregated.clone());
+    let object = sanitized
+        .as_object_mut()
+        .ok_or_else(|| "sanitized final response is not an object".to_string())?;
+    object.insert("output".to_string(), Value::Array(output_items));
+    object.insert("usage".to_string(), usage);
+    object.insert("output_text".to_string(), Value::String(output_text));
+    object.remove("reasoning");
+    object.remove("summary");
+    object.remove("commentary");
+
+    let raw = fold_responses_to_sse(&[sanitized])?;
+    if raw.len() > max_output_bytes {
+        return Err(format!(
+            "sanitized client SSE exceeded reconstruction cap ({} > {max_output_bytes})",
+            raw.len()
+        ));
+    }
+    let reparsed = crate::usage::parse_usage_from_json_or_sse_bytes("codex", raw.as_ref())
+        .ok_or_else(|| "sanitized client usage missing".to_string())?;
+    if reparsed.usage_json != client_usage.usage_json {
+        return Err("sanitized terminal usage does not match client usage".to_string());
+    }
+    let raw_text = String::from_utf8_lossy(raw.as_ref());
+    for forbidden in [
+        "encrypted_content",
+        "\"type\":\"reasoning\"",
+        "\"summary\"",
+        "\"commentary\"",
+        CONTINUATION_MARKER_TEXT,
+    ] {
+        if raw_text.contains(forbidden) {
+            return Err(format!(
+                "sanitized client SSE retained forbidden marker: {forbidden}"
+            ));
+        }
+    }
+    Ok(raw)
+}
+
+fn sanitized_final_output_items(
+    final_round: &ContinuationRepairRound,
+    final_visibility: &RoundVisibility,
+) -> Result<Vec<Value>, String> {
+    let mut output_items = experimental_safe_replay_output_items(&final_round.aggregated);
+    output_items.extend(experimental_safe_replay_raw_lifecycle_output_items(
+        final_round.raw_sse.as_ref(),
+    ));
+    let merged = merged_output_items(&[json!({ "output": output_items })]);
+    let text = merged
+        .iter()
+        .filter_map(folded_visible_message_output_text)
+        .collect::<Vec<_>>()
+        .join("");
+    let expected = final_visibility
+        .assistant_message_text
+        .as_deref()
+        .ok_or_else(|| "sanitized final output missing assistant message text".to_string())?;
+    if normalize_visible_message_text(&text) != normalize_visible_message_text(expected) {
+        return Err("sanitized final output text does not match final visibility".to_string());
+    }
+    if merged.is_empty() {
+        return Err("sanitized final output has no safe assistant message".to_string());
+    }
+    Ok(merged)
+}
+
+fn validate_final_raw_for_sanitized_rebuild(
+    round: &ContinuationRepairRound,
+    final_visibility: &RoundVisibility,
+) -> Result<(), String> {
+    let raw_text = std::str::from_utf8(round.raw_sse.as_ref())
+        .map_err(|err| format!("final raw SSE is not utf-8: {err}"))?;
+    if raw_text.contains(CONTINUATION_MARKER_TEXT) {
+        return Err("final raw contains synthetic continuation marker".to_string());
+    }
+
+    let mut cursor = 0usize;
+    let mut created_count = 0usize;
+    let mut completed_count = 0usize;
+    let mut created_id: Option<String> = None;
+    let mut completed_id: Option<String> = None;
+    let mut raw_visible = FinalRawVisibleStream::default();
+    while let Some(relative_end) =
+        crate::gateway::proxy::sse::find_sse_event_end(&round.raw_sse[cursor..])
+    {
+        let event_end = cursor + relative_end;
+        let frame = &round.raw_sse[cursor..event_end];
+        cursor = event_end;
+        let frame_text =
+            std::str::from_utf8(frame).map_err(|err| format!("invalid final SSE frame: {err}"))?;
+        let parsed = crate::gateway::proxy::sse::parse_sse_frame(frame_text);
+        if completed_count > 0 {
+            if parsed.is_some() {
+                return Err("final raw has semantic event after response.completed".to_string());
+            }
+            if !sse_frame_is_nonsemantic_after_completed(frame_text) {
+                return Err(
+                    "final raw has unparseable SSE frame after response.completed".to_string(),
+                );
+            }
+            continue;
+        }
+        let Some((event_name, data)) = parsed else {
+            if sse_frame_is_comment_only(frame_text) {
+                continue;
+            }
+            return Err(
+                "final raw has unparseable SSE frame before response.completed".to_string(),
+            );
+        };
+        if final_sanitized_internal_stream_event_is_suppressible(&event_name, &data) {
+            continue;
+        }
+        if !is_allowed_pre_completed_final_raw_event(&event_name)
+            && (sse_event_name_has_internal_payload(&event_name)
+                || value_contains_internal_payload_key(&data))
+        {
+            return Err("final raw has unsafe pre-completed event".to_string());
+        }
+        if !is_allowed_pre_completed_final_raw_event(&event_name)
+            && !pre_completed_event_is_nonsemantic(&event_name, &data)
+            && !response_metadata_event_is_suppressible(&event_name, &data)
+        {
+            return Err("sanitized final raw has unknown pre-completed event".to_string());
+        }
+        if matches!(
+            event_name.as_str(),
+            "response.failed" | "response.incomplete" | "error"
+        ) {
+            return Err("final raw has unsafe terminal event".to_string());
+        }
+        if event_name.starts_with("response.function_call_arguments.") {
+            return Err("final raw has function_call_arguments event".to_string());
+        }
+        validate_sanitized_final_lifecycle_output_payload(&event_name, &data)?;
+        if matches!(
+            event_name.as_str(),
+            "response.output_item.added" | "response.output_item.done"
+        ) {
+            let item = data.get("item").unwrap_or(&data);
+            validate_sanitized_final_output_item_event(&event_name, item)?;
+        }
+        raw_visible.record_event(&event_name, &data, "final raw")?;
+        match event_name.as_str() {
+            "response.created" => {
+                created_count = created_count.saturating_add(1);
+                let id = lifecycle_response_id(&data)
+                    .ok_or_else(|| "final created response missing id".to_string())?;
+                created_id = Some(id.to_string());
+            }
+            "response.completed" => {
+                completed_count = completed_count.saturating_add(1);
+                let id = lifecycle_response_id(&data)
+                    .ok_or_else(|| "final completed response missing id".to_string())?;
+                completed_id = Some(id.to_string());
+            }
+            _ => {}
+        }
+    }
+    if !round.raw_sse[cursor..].iter().all(u8::is_ascii_whitespace) {
+        return Err("final raw has trailing partial SSE data".to_string());
+    }
+    if created_count != 1 {
+        return Err(format!(
+            "final raw must contain exactly one response.created event, found {created_count}"
+        ));
+    }
+    if completed_count != 1 {
+        return Err(format!(
+            "final raw must contain exactly one response.completed event, found {completed_count}"
+        ));
+    }
+    if created_id != completed_id {
+        return Err("final response.created id does not match response.completed id".to_string());
+    }
+    let aggregated_id = round
+        .aggregated
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "final aggregated response missing id".to_string())?;
+    if created_id.as_deref() != Some(aggregated_id) {
+        return Err("final raw response id does not match aggregated response id".to_string());
+    }
+    raw_visible.validate_against_final_output(round, final_visibility)?;
+    Ok(())
+}
+
+fn validate_sanitized_final_lifecycle_output_payload(
+    event_name: &str,
+    data: &Value,
+) -> Result<(), String> {
+    if !matches!(
+        event_name,
+        "response.created" | "response.in_progress" | "response.completed"
+    ) {
+        return Ok(());
+    }
+    for item in lifecycle_raw_output_items(data) {
+        validate_sanitizable_final_output_item(item)?;
+    }
+    Ok(())
+}
+
+fn validate_sanitized_final_output_item_event(
+    event_name: &str,
+    item: &Value,
+) -> Result<(), String> {
+    if event_name == "response.output_item.added"
+        && item.get("type").and_then(Value::as_str) == Some("reasoning")
+        && !sanitized_final_raw_output_item_added_is_suppressible_reasoning_metadata(item)
+    {
+        return Err("final raw has unsafe pre-completed event".to_string());
+    }
+    if event_name == "response.output_item.added"
+        && sanitized_final_raw_output_item_added_is_visible_or_unknown(item)
+    {
+        return Err("final raw output_item.added contains visible or unknown payload".to_string());
+    }
+    validate_sanitizable_final_output_item(item)
+}
+
+fn sanitized_final_raw_output_item_added_is_visible_or_unknown(item: &Value) -> bool {
+    non_final_raw_output_item_added_is_visible_or_unknown(item)
+        && !sanitized_final_raw_output_item_added_is_suppressible_message_metadata(item)
+        && !sanitized_final_raw_output_item_added_is_suppressible_reasoning_metadata(item)
+}
+
+fn sanitized_final_raw_output_item_added_is_suppressible_message_metadata(item: &Value) -> bool {
+    non_final_raw_output_item_added_is_suppressible_message_metadata(item)
+        && item
+            .as_object()
+            .is_some_and(|object| object.contains_key("internal_chat_message_metadata_passthrough"))
+}
+
+fn sanitized_final_raw_output_item_added_is_suppressible_reasoning_metadata(item: &Value) -> bool {
+    non_final_raw_output_item_added_is_suppressible_reasoning(item)
+        && !value_contains_tool_or_function_marker(item)
+}
+
+fn final_sanitized_internal_stream_event_is_suppressible(event_name: &str, data: &Value) -> bool {
+    if !matches!(
+        event_name,
+        "response.reasoning_text.delta"
+            | "response.reasoning_text.done"
+            | "response.reasoning_summary_text.delta"
+            | "response.reasoning_summary_text.done"
+            | "response.reasoning_summary_part.added"
+            | "response.reasoning_summary_part.done"
+    ) {
+        return false;
+    }
+    if value_contains_tool_or_function_marker(data) {
+        return false;
+    }
+    let Some(object) = data.as_object() else {
+        return false;
+    };
+    object.iter().all(|(key, value)| {
+        final_sanitized_internal_stream_field_is_suppressible(event_name, key, value)
+    })
+}
+
+fn final_sanitized_internal_stream_field_is_suppressible(
+    event_name: &str,
+    key: &str,
+    value: &Value,
+) -> bool {
+    match key {
+        "type" => value.as_str() == Some(event_name),
+        "response_id" | "item_id" => value.as_str().is_some_and(|text| !text.trim().is_empty()),
+        "output_index" | "summary_index" | "sequence_number" | "sequence" => {
+            metadata_sequence_value_is_safe(value)
+        }
+        "delta" | "text" => value.as_str().is_some(),
+        "part" | "summary_part" => final_sanitized_internal_stream_part_is_suppressible(value),
+        _ => false,
+    }
+}
+
+fn final_sanitized_internal_stream_part_is_suppressible(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.iter().all(|(key, value)| match key.as_str() {
+        "type" => value.as_str().is_some_and(|part_type| {
+            matches!(part_type, "reasoning_text" | "summary_text" | "text")
+        }),
+        "text" => value.as_str().is_some(),
+        "index" | "sequence_number" | "sequence" => metadata_sequence_value_is_safe(value),
+        _ => false,
+    })
+}
+
+fn validate_sanitizable_final_output_item(item: &Value) -> Result<(), String> {
+    if is_responses_native_tool_context_item(item) {
+        return Err("final raw has tool/function output item".to_string());
+    }
+    match item.get("type").and_then(Value::as_str) {
+        Some("reasoning") => Ok(()),
+        Some("message") => visible_message_output_text(item)
+            .map(|_| ())
+            .map_err(str::to_string),
+        Some(_) => Err("final raw has unsupported output item".to_string()),
+        None => Err("final raw output item is missing type".to_string()),
+    }
 }
 
 fn validate_final_raw_for_passthrough(
@@ -1103,6 +1778,9 @@ fn validate_pre_completed_final_raw_event(event_name: &str, data: &Value) -> Res
         return Err("final raw has unsafe pre-completed event".to_string());
     }
     if !is_allowed_pre_completed_final_raw_event(event_name) {
+        if pre_completed_event_is_nonsemantic(event_name, data) {
+            return Ok(());
+        }
         return Err("final raw has unknown pre-completed event".to_string());
     }
     Ok(())
@@ -1128,11 +1806,181 @@ fn is_allowed_pre_completed_final_raw_event(event_name: &str) -> bool {
     )
 }
 
+fn non_final_pre_completed_event_is_suppressible(event_name: &str, data: &Value) -> bool {
+    if event_name.starts_with("response.")
+        && sse_event_name_has_internal_payload(event_name)
+        && !value_contains_tool_or_function_marker(data)
+    {
+        return true;
+    }
+    pre_completed_event_is_nonsemantic(event_name, data)
+        || response_metadata_event_is_suppressible(event_name, data)
+}
+
+fn unknown_pre_completed_event_shape(event_name: &str, data: &Value) -> String {
+    let segment_count = event_name
+        .split(['.', '_', '-'])
+        .filter(|part| !part.is_empty())
+        .count();
+    let suffix = event_name
+        .rsplit(['.', '_', '-'])
+        .find(|part| !part.is_empty())
+        .filter(|part| {
+            matches!(
+                *part,
+                "added" | "delta" | "done" | "completed" | "created" | "in" | "progress"
+            )
+        })
+        .unwrap_or("other");
+    let data_kind = match data {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    };
+    let mut data_keys = data
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    data_keys.sort_unstable();
+    format!(
+        "event_class={};prefix_response={};contains_reasoning={};contains_summary={};contains_commentary={};contains_encrypted={};suffix={suffix};segments={segment_count};data_kind={data_kind};data_keys={}",
+        event_name_diagnostic_class(event_name),
+        event_name.starts_with("response."),
+        event_name.contains("reasoning"),
+        event_name.contains("summary"),
+        event_name.contains("commentary"),
+        event_name.contains("encrypted"),
+        data_keys.join(","),
+    )
+}
+
+fn event_name_diagnostic_class(event_name: &str) -> &'static str {
+    if event_name.starts_with("response.") {
+        "response_unknown"
+    } else {
+        match event_name {
+            "ping" => "ping",
+            "keepalive" => "keepalive",
+            "heartbeat" => "heartbeat",
+            "message" => "message",
+            "unknown" => "unknown",
+            "" => "empty",
+            _ => "non_response_unknown",
+        }
+    }
+}
+
+fn pre_completed_event_is_nonsemantic(event_name: &str, data: &Value) -> bool {
+    matches!(
+        event_name,
+        "ping" | "keepalive" | "heartbeat" | "message" | "unknown"
+    ) && nonsemantic_event_payload_is_safe(event_name, data)
+}
+
+fn response_metadata_event_is_suppressible(event_name: &str, data: &Value) -> bool {
+    event_name.starts_with("response.")
+        && !is_allowed_pre_completed_final_raw_event(event_name)
+        && !sse_event_name_has_internal_payload(event_name)
+        && !value_contains_tool_or_function_marker(data)
+        && !value_contains_internal_payload_key(data)
+        && data.as_object().is_some_and(|object| {
+            object
+                .iter()
+                .all(|(key, value)| response_metadata_event_field_is_safe(event_name, key, value))
+        })
+}
+
+fn response_metadata_event_field_is_safe(event_name: &str, key: &str, value: &Value) -> bool {
+    match key {
+        "type" => value.as_str().is_some_and(|value| {
+            value == event_name && !sse_event_name_has_internal_payload(value)
+        }),
+        "response_id" => value.as_str().is_some_and(|value| !value.trim().is_empty()),
+        "sequence_number" | "sequence" => metadata_sequence_value_is_safe(value),
+        "metadata" => metadata_payload_is_nonvisible(value),
+        _ => false,
+    }
+}
+
+fn metadata_sequence_value_is_safe(value: &Value) -> bool {
+    matches!(value, Value::Null | Value::Bool(_) | Value::Number(_))
+        || value.as_str().is_some_and(|text| {
+            !text.trim().is_empty() && text.chars().all(|ch| ch.is_ascii_digit())
+        })
+}
+
+fn metadata_payload_is_nonvisible(value: &Value) -> bool {
+    if value_contains_tool_or_function_marker(value) || value_contains_internal_payload_key(value) {
+        return false;
+    }
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => true,
+        Value::Array(items) => items.iter().all(metadata_payload_is_nonvisible),
+        Value::Object(object) => object.iter().all(|(key, value)| {
+            !reasoning_visible_payload_key(key) && metadata_payload_is_nonvisible(value)
+        }),
+    }
+}
+
+fn nonsemantic_event_payload_is_safe(event_name: &str, data: &Value) -> bool {
+    if value_contains_tool_or_function_marker(data) || value_contains_internal_payload_key(data) {
+        return false;
+    }
+    match data {
+        Value::Null | Value::Bool(_) | Value::Number(_) => true,
+        Value::String(_) | Value::Array(_) => false,
+        Value::Object(object) => object
+            .iter()
+            .all(|(key, value)| nonsemantic_event_field_is_safe(event_name, key, value)),
+    }
+}
+
+fn nonsemantic_event_field_is_safe(event_name: &str, key: &str, value: &Value) -> bool {
+    match key {
+        "type" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "ping" | "keepalive" | "heartbeat" | "message" | "unknown"
+            ) || value == event_name
+        }),
+        "sequence_number" | "sequence" | "timestamp" | "created_at" => {
+            matches!(value, Value::Null | Value::Bool(_) | Value::Number(_))
+                || value.as_str().is_some_and(|text| {
+                    !text.trim().is_empty()
+                        && text.chars().all(|ch| {
+                            ch.is_ascii_digit() || matches!(ch, '-' | ':' | '.' | 'T' | 'Z')
+                        })
+                })
+        }
+        _ => false,
+    }
+}
+
 fn sse_event_name_has_internal_payload(event_name: &str) -> bool {
     event_name
         .split(['.', '_', '-'])
         .any(|part| matches!(part, "reasoning" | "summary" | "commentary"))
         || event_name.contains("encrypted_content")
+}
+
+fn value_contains_tool_or_function_marker(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(value_contains_tool_or_function_marker),
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            key.contains("tool")
+                || key.contains("function")
+                || (key == "type"
+                    && value
+                        .as_str()
+                        .is_some_and(|text| text.contains("tool") || text.contains("function")))
+                || value_contains_tool_or_function_marker(value)
+        }),
+        Value::String(_) => false,
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
 }
 
 fn value_contains_internal_payload_key(value: &Value) -> bool {
@@ -1380,8 +2228,11 @@ fn build_round_trace(
                 "byteCount": round.raw_sse.len(),
                 "durationMs": round.duration_ms.map(|value| value.min(u128::from(u64::MAX)) as u64),
                 "hasVisibleClientOutput": visible.has_visible_client_output,
+                "visibleTextSource": visible.assistant_message_source,
                 "visibleTextLen": visible.visible_text_len,
                 "visibleTextHash": visible.visible_text_hash,
+                "normalizedVisibleTextLen": visible.normalized_visible_text_len,
+                "normalizedVisibleTextHash": visible.normalized_visible_text_hash,
                 "hasToolCall": visible.has_tool_call,
                 "hasReasoning": visible.has_reasoning,
                 "hasCommentaryMarker": visible.has_commentary_marker,
@@ -1393,10 +2244,10 @@ fn build_round_trace(
         .collect()
 }
 
-pub(super) fn sanitized_round_trace(rounds: &[ContinuationRepairRound]) -> Vec<Value> {
+pub(super) fn reconstruction_round_trace(rounds: &[ContinuationRepairRound]) -> Vec<Value> {
     let visibility = rounds
         .iter()
-        .map(|round| classify_round_visibility(&round.aggregated))
+        .map(classify_round_visibility_for_reconstruction)
         .collect::<Vec<_>>();
     build_round_trace(rounds, &visibility)
 }
@@ -1587,9 +2438,15 @@ fn validate_raw_round_for_reconstruction(
             return Err("semantic_event_after_completed".to_string());
         }
         if !is_allowed_pre_completed_final_raw_event(&event_name) {
-            return Err("unknown_pre_completed_event".to_string());
+            if non_final_pre_completed_event_is_suppressible(&event_name, &data) {
+                continue;
+            }
+            return Err(format!(
+                "unknown_pre_completed_event:{}",
+                unknown_pre_completed_event_shape(&event_name, &data)
+            ));
         }
-        validate_lifecycle_output_payload(&event_name, &data, round)?;
+        validate_non_final_lifecycle_output_payload(&event_name, &data, round)?;
         if matches!(
             event_name.as_str(),
             "response.failed" | "response.incomplete" | "error"
@@ -1624,8 +2481,13 @@ fn validate_raw_round_for_reconstruction(
             }
             if event_name == "response.output_item.added"
                 && non_final_raw_output_item_added_is_visible_or_unknown(item)
+                && !non_final_raw_output_item_added_is_suppressible_message_metadata(item)
+                && !non_final_raw_output_item_added_is_suppressible_reasoning(item)
             {
-                return Err("output_item_added_visible_or_unknown".to_string());
+                return Err(format!(
+                    "output_item_added_visible_or_unknown:{}",
+                    output_item_added_shape(item)
+                ));
             }
         }
         raw_visible.record_event(&event_name, &data, "non-final raw")?;
@@ -1733,6 +2595,105 @@ fn validate_lifecycle_output_payload(
     Ok(())
 }
 
+fn validate_non_final_lifecycle_output_payload(
+    event_name: &str,
+    data: &Value,
+    round: &ContinuationRepairRound,
+) -> Result<(), String> {
+    if !matches!(
+        event_name,
+        "response.created" | "response.in_progress" | "response.completed"
+    ) {
+        return Ok(());
+    }
+    let response_output = data
+        .get("response")
+        .and_then(|response| response.get("output"));
+    let top_level_output = data.get("output");
+    if response_output.is_none() && top_level_output.is_none() {
+        return Ok(());
+    }
+
+    let response_items = lifecycle_output_items(event_name, "response", response_output)?;
+    let top_level_items = lifecycle_output_items(event_name, "top_level", top_level_output)?;
+    if let (Some(response_items), Some(top_level_items)) = (response_items, top_level_items) {
+        if response_items != top_level_items {
+            return Err(format!("{event_name}_duplicate_output_mismatch"));
+        }
+    }
+
+    let raw_items = response_items
+        .filter(|items| !items.is_empty())
+        .or_else(|| top_level_items.filter(|items| !items.is_empty()));
+    let Some(raw_items) = raw_items else {
+        return Ok(());
+    };
+    let aggregated_items = round.aggregated.get("output").and_then(Value::as_array);
+    if aggregated_items == Some(raw_items) {
+        return Ok(());
+    }
+    if raw_items
+        .iter()
+        .all(non_final_lifecycle_output_item_is_suppressible)
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "{event_name}_output_mismatch:{}",
+        lifecycle_output_items_shape(raw_items)
+    ))
+}
+
+fn non_final_lifecycle_output_item_is_suppressible(item: &Value) -> bool {
+    if is_responses_native_tool_context_item(item) {
+        return false;
+    }
+    match item.get("type").and_then(Value::as_str) {
+        Some("reasoning") => true,
+        Some("message") => !item
+            .get("role")
+            .and_then(Value::as_str)
+            .is_some_and(|role| role != "assistant"),
+        _ => false,
+    }
+}
+
+fn lifecycle_output_items_shape(items: &[Value]) -> String {
+    let shapes = items
+        .iter()
+        .take(8)
+        .map(output_item_shape)
+        .collect::<Vec<_>>()
+        .join("|");
+    format!("len={};items={shapes}", items.len())
+}
+
+fn output_item_shape(item: &Value) -> String {
+    let item_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("<missing>");
+    let mut keys = item
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    keys.sort_unstable();
+    let content_len = item
+        .get("content")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let summary_len = item
+        .get("summary")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    format!(
+        "type={item_type};keys={};content_len={content_len};summary_len={summary_len}",
+        keys.join(",")
+    )
+}
+
 fn lifecycle_output_items<'a>(
     event_name: &str,
     location: &str,
@@ -1766,6 +2727,99 @@ fn non_final_raw_output_item_added_is_visible_or_unknown(item: &Value) -> bool {
         raw_output_item_added_is_empty_message_metadata(object)
             || raw_output_item_added_is_empty_reasoning_metadata(object)
     })
+}
+
+fn non_final_raw_output_item_added_is_suppressible_message_metadata(item: &Value) -> bool {
+    let Some(object) = item.as_object() else {
+        return false;
+    };
+    if object
+        .get("id")
+        .and_then(Value::as_str)
+        .is_none_or(|text| text.trim().is_empty())
+    {
+        return false;
+    }
+    if object.get("type").and_then(Value::as_str) != Some("message") {
+        return false;
+    }
+    if object.get("role").and_then(Value::as_str) != Some("assistant") {
+        return false;
+    }
+    if object.get("status").is_some_and(|value| {
+        value
+            .as_str()
+            .is_none_or(|status| !raw_output_item_added_metadata_status_is_allowed(status))
+    }) {
+        return false;
+    }
+    if !object
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty)
+    {
+        return false;
+    }
+    object.keys().all(|key| {
+        matches!(
+            key.as_str(),
+            "id" | "type"
+                | "role"
+                | "status"
+                | "content"
+                | "phase"
+                | "metadata"
+                | "internal_chat_message_metadata_passthrough"
+        )
+    })
+}
+
+fn non_final_raw_output_item_added_is_suppressible_reasoning(item: &Value) -> bool {
+    let Some(object) = item.as_object() else {
+        return false;
+    };
+    if object
+        .get("id")
+        .and_then(Value::as_str)
+        .is_none_or(|text| text.trim().is_empty())
+    {
+        return false;
+    }
+    if object.get("type").and_then(Value::as_str) != Some("reasoning") {
+        return false;
+    }
+    if object.get("status").is_some_and(|value| {
+        value
+            .as_str()
+            .is_none_or(|status| !raw_output_item_added_metadata_status_is_allowed(status))
+    }) {
+        return false;
+    }
+    object.keys().all(|key| {
+        matches!(
+            key.as_str(),
+            "id" | "type"
+                | "status"
+                | "summary"
+                | "content"
+                | "encrypted_content"
+                | "metadata"
+                | "internal_chat_message_metadata_passthrough"
+        )
+    })
+}
+
+fn output_item_added_shape(item: &Value) -> String {
+    let item_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("<missing>");
+    let mut keys = item
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    keys.sort_unstable();
+    format!("type={item_type};keys={}", keys.join(","))
 }
 
 fn raw_output_item_added_is_empty_message_metadata(object: &Map<String, Value>) -> bool {
@@ -2618,7 +3672,10 @@ mod tests {
                 {"type": "reasoning", "encrypted_content": "input_reasoning_secret"},
                 "plain prompt"
             ],
-            "reasoning": {"effort": "high"}
+            "reasoning": {"effort": "high"},
+            "tools": [{"type": "function", "name": "lookup"}],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true
         }))
         .unwrap();
         let replay_tail = vec![
@@ -2636,7 +3693,13 @@ mod tests {
 
         assert_eq!(value.get("previous_response_id"), None);
         assert_eq!(value["stream"], json!(true));
-        assert_eq!(value["reasoning"], json!({"effort": "high"}));
+        assert_eq!(
+            value["reasoning"],
+            json!({"effort": EXPERIMENTAL_CONTINUATION_REASONING_EFFORT})
+        );
+        assert_eq!(value.get("tools"), None);
+        assert_eq!(value.get("tool_choice"), None);
+        assert_eq!(value.get("parallel_tool_calls"), None);
         assert_eq!(value["include"], json!(["foo"]));
         let input = value["input"].as_array().unwrap();
         assert_eq!(input.len(), 3);
@@ -2652,6 +3715,137 @@ mod tests {
         assert!(!input
             .iter()
             .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning")));
+    }
+
+    #[test]
+    fn experimental_safe_replay_tail_accumulates_safe_assistant_output() {
+        let mut replay_tail = Vec::new();
+        let first = json!({
+            "output": [
+                {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc_1"},
+                {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "encrypted_content": "msg_secret",
+                    "content": [{"type": "output_text", "text": "partial "}]
+                },
+                {
+                    "id": "call_1",
+                    "type": "function_call",
+                    "name": "lookup",
+                    "call_id": "call_1",
+                    "arguments": "{}"
+                }
+            ]
+        });
+
+        let first_tail = ContinuationReplayPolicy::ExperimentalSafeReplay.next_replay_tail(
+            &mut replay_tail,
+            &first,
+            &[],
+        );
+
+        assert_eq!(first_tail.len(), 2);
+        assert_eq!(
+            first_tail[0]
+                .pointer("/content/0/text")
+                .and_then(Value::as_str),
+            Some("partial ")
+        );
+        assert_eq!(first_tail[1]["role"], "user");
+        assert_eq!(
+            first_tail[1].get("content").and_then(Value::as_str),
+            Some(CONTINUATION_MARKER_TEXT)
+        );
+        let first_tail_text = serde_json::to_string(&first_tail).unwrap();
+        assert!(!first_tail_text.contains("encrypted_content"));
+        assert!(!first_tail_text.contains("function_call"));
+        assert!(!first_tail_text.contains("reasoning"));
+
+        let second = json!({
+            "output": [{
+                "id": "msg_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "partial more "}]
+            }]
+        });
+        let second_tail = ContinuationReplayPolicy::ExperimentalSafeReplay.next_replay_tail(
+            &mut replay_tail,
+            &second,
+            &[],
+        );
+
+        assert_eq!(second_tail.len(), 4);
+        assert_eq!(
+            second_tail[0]
+                .pointer("/content/0/text")
+                .and_then(Value::as_str),
+            Some("partial ")
+        );
+        assert_eq!(second_tail[1]["role"], "user");
+        assert_eq!(
+            second_tail[1].get("content").and_then(Value::as_str),
+            Some(CONTINUATION_MARKER_TEXT)
+        );
+        assert_eq!(
+            second_tail[2]
+                .pointer("/content/0/text")
+                .and_then(Value::as_str),
+            Some("partial more ")
+        );
+        assert_eq!(second_tail[3]["role"], "user");
+        assert_eq!(
+            second_tail[3].get("content").and_then(Value::as_str),
+            Some(CONTINUATION_MARKER_TEXT)
+        );
+    }
+
+    #[test]
+    fn experimental_safe_replay_tail_uses_raw_lifecycle_assistant_output() {
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [{
+                        "id": "msg_raw",
+                        "type": "message",
+                        "role": "assistant",
+                        "encrypted_content": "raw-message-secret",
+                        "content": [{"type": "output_text", "text": "raw lifecycle answer"}],
+                    }],
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let mut replay_tail = Vec::new();
+        let tail = ContinuationReplayPolicy::ExperimentalSafeReplay.next_replay_tail(
+            &mut replay_tail,
+            &json!({"output": []}),
+            raw.as_bytes(),
+        );
+
+        assert_eq!(tail.len(), 2);
+        assert_eq!(
+            tail[0].pointer("/content/0/text").and_then(Value::as_str),
+            Some("raw lifecycle answer")
+        );
+        assert_eq!(tail[1]["role"], "user");
+        assert_eq!(
+            tail[1].get("content").and_then(Value::as_str),
+            Some(CONTINUATION_MARKER_TEXT)
+        );
+        let tail_text = serde_json::to_string(&tail).unwrap();
+        assert!(!tail_text.contains("encrypted_content"));
+        assert!(!tail_text.contains("raw-message-secret"));
     }
 
     #[test]
@@ -2712,6 +3906,207 @@ mod tests {
         )
         .expect("client usage");
         assert_eq!(reparsed.usage_json, reconstructed.client_usage.usage_json);
+    }
+
+    #[test]
+    fn final_reasoning_visible_payload_rebuilds_sanitized_client_sse() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(100, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![
+                    json!({
+                        "id": "rs_final",
+                        "type": "reasoning",
+                        "encrypted_content": "final-encrypted-reasoning-secret",
+                        "summary": [{"type": "summary_text", "text": "visible final reasoning secret"}],
+                    }),
+                    message("msg_2", "答案是 21。"),
+                ],
+                usage(200, 30, 20),
+            ),
+        );
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = std::str::from_utf8(reconstructed.client_raw.as_ref()).expect("utf8");
+
+        assert_eq!(
+            reconstructed.reconstruction_status,
+            "final_sanitized_rebuild"
+        );
+        assert_eq!(reconstructed.visible_assembly_kind, "empty_prior");
+        assert!(body.contains("答案是 21。"));
+        assert!(!body.contains("final-encrypted-reasoning-secret"));
+        assert!(!body.contains("visible final reasoning secret"));
+        assert!(!body.contains("\"type\":\"reasoning\""));
+        assert!(!body.contains("\"summary\""));
+        assert_eq!(reconstructed.client_usage.metrics.input_tokens, Some(100));
+        assert_eq!(reconstructed.client_usage.metrics.output_tokens, Some(30));
+        assert_eq!(reconstructed.client_usage.metrics.total_tokens, Some(130));
+        let reparsed = crate::usage::parse_usage_from_json_or_sse_bytes(
+            "codex",
+            reconstructed.client_raw.as_ref(),
+        )
+        .expect("client usage");
+        assert_eq!(reparsed.usage_json, reconstructed.client_usage.usage_json);
+    }
+
+    #[test]
+    fn final_empty_message_added_metadata_rebuilds_sanitized_client_sse() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1"), message("msg_1", "ok")],
+                usage(100, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "msg_2",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "in_progress",
+                    "phase": "final_answer",
+                    "content": [],
+                    "metadata": {"trace": "final-added-message-metadata-secret"},
+                    "internal_chat_message_metadata_passthrough": {"kind": "message"}
+                },
+            }),
+        )
+        .expect("added");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("done");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(100, 3, 0),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = std::str::from_utf8(reconstructed.client_raw.as_ref()).expect("utf8");
+
+        assert_eq!(
+            reconstructed.reconstruction_status,
+            "final_sanitized_rebuild"
+        );
+        assert_eq!(reconstructed.visible_assembly_kind, "exact_duplicate");
+        assert!(body.contains("ok"));
+        assert!(!body.contains("final-added-message-metadata-secret"));
+        assert!(!body.contains("internal_chat_message_metadata_passthrough"));
+    }
+
+    #[test]
+    fn final_lifecycle_internal_reasoning_rebuilds_sanitized_client_sse() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1"), message("msg_1", "ok")],
+                usage(100, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {
+                    "id": "resp_2",
+                    "status": "in_progress",
+                    "model": "gpt-cont",
+                    "output": [{
+                        "id": "rs_created",
+                        "type": "reasoning",
+                        "encrypted_content": "final-created-encrypted-secret",
+                        "summary": [{"type": "summary_text", "text": "final-created-summary-secret"}],
+                    }]
+                }
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("done");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(100, 3, 0),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = std::str::from_utf8(reconstructed.client_raw.as_ref()).expect("utf8");
+
+        assert_eq!(
+            reconstructed.reconstruction_status,
+            "final_sanitized_rebuild"
+        );
+        assert_eq!(reconstructed.visible_assembly_kind, "exact_duplicate");
+        assert!(body.contains("ok"));
+        assert!(!body.contains("final-created-encrypted-secret"));
+        assert!(!body.contains("final-created-summary-secret"));
+        assert!(!body.contains("\"type\":\"reasoning\""));
     }
 
     #[test]
@@ -2946,7 +4341,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_summary_payload_is_unsafe() {
+    fn non_final_reasoning_summary_payload_can_be_suppressed() {
         let first = repair_round(
             ContinuationRepairRoundKind::Initial,
             sse_round(
@@ -2965,9 +4360,12 @@ mod tests {
             sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
         );
 
-        let err =
-            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
-        assert!(err.contains("reasoning_visible_payload"));
+        let reconstruction =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("safe final");
+        assert_eq!(reconstruction.visible_assembly_kind, "empty_prior");
+        let text = String::from_utf8_lossy(&reconstruction.client_raw);
+        assert!(text.contains("ok"));
+        assert!(!text.contains("visible reasoning"));
     }
 
     #[test]
@@ -3304,6 +4702,273 @@ mod tests {
     }
 
     #[test]
+    fn non_final_raw_nonsemantic_ping_can_be_suppressed() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(&mut first_raw, "ping", json!({})).expect("ping");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": reasoning("rs_1", "enc_1"),
+            }),
+        )
+        .expect("reasoning");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("safe");
+
+        assert_eq!(reconstructed.visible_assembly_kind, "empty_prior");
+        assert!(String::from_utf8_lossy(&reconstructed.client_raw).contains("ok"));
+    }
+
+    #[test]
+    fn non_final_raw_keepalive_metadata_can_be_suppressed() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "keepalive",
+            json!({"type": "keepalive", "sequence_number": 1}),
+        )
+        .expect("keepalive");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": reasoning("rs_1", "enc_1"),
+            }),
+        )
+        .expect("reasoning");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("safe");
+
+        assert_eq!(reconstructed.visible_assembly_kind, "empty_prior");
+        assert!(String::from_utf8_lossy(&reconstructed.client_raw).contains("ok"));
+    }
+
+    #[test]
+    fn non_final_raw_response_metadata_event_can_be_suppressed() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.metadata",
+            json!({
+                "type": "response.metadata",
+                "response_id": "resp_1",
+                "sequence_number": 1,
+                "metadata": {"trace": "suppressed-response-metadata-secret"},
+            }),
+        )
+        .expect("metadata");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": reasoning("rs_1", "enc_1"),
+            }),
+        )
+        .expect("reasoning");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("safe");
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+
+        assert_eq!(reconstructed.visible_assembly_kind, "empty_prior");
+        assert!(body.contains("ok"));
+        assert!(!body.contains("suppressed-response-metadata-secret"));
+    }
+
+    #[test]
+    fn non_final_raw_response_metadata_visible_payload_is_unsafe() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.metadata",
+            json!({
+                "type": "response.metadata",
+                "response_id": "resp_1",
+                "sequence_number": 1,
+                "metadata": {"text": "raw-response-metadata-visible-secret"},
+            }),
+        )
+        .expect("metadata");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("unknown_pre_completed_event"));
+        assert!(!err.contains("raw-response-metadata-visible-secret"));
+    }
+
+    #[test]
+    fn final_raw_nonsemantic_ping_before_completed_can_pass_through() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(&mut raw, "ping", json!({})).expect("ping");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("safe");
+
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+        assert!(body.contains("event: ping"));
+        assert!(body.contains("ok"));
+    }
+
+    #[test]
     fn non_final_raw_unknown_semantic_event_is_unsafe_without_payload_leak() {
         let mut first_raw = String::new();
         push_sse_event(
@@ -3401,6 +5066,72 @@ mod tests {
     }
 
     #[test]
+    fn non_final_raw_output_item_added_message_metadata_can_reconstruct() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "msg_added_live_shape",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "in_progress",
+                    "phase": "final_answer",
+                    "content": [],
+                    "internal_chat_message_metadata_passthrough": {"kind": "message"},
+                    "metadata": {"trace": "suppressed raw message metadata"},
+                },
+            }),
+        )
+        .expect("added");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": reasoning("rs_1", "enc_1"),
+            }),
+        )
+        .expect("reasoning");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let reconstructed = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+            .expect("metadata-only non-final message added item is safe");
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+        assert!(body.contains("ok"));
+        assert!(!body.contains("suppressed raw message metadata"));
+    }
+
+    #[test]
     fn non_final_raw_output_item_added_reasoning_metadata_can_reconstruct() {
         for item in [
             json!({
@@ -3413,6 +5144,21 @@ mod tests {
                 "type": "reasoning",
                 "status": "in_progress",
                 "summary": [],
+            }),
+            json!({
+                "id": "rs_added_3",
+                "type": "reasoning",
+                "status": "in_progress",
+                "summary": [{"type": "summary_text", "text": "suppressed raw reasoning summary"}],
+            }),
+            json!({
+                "id": "rs_added_live_shape",
+                "type": "reasoning",
+                "content": [{"type": "output_text", "text": "suppressed raw reasoning content"}],
+                "encrypted_content": "suppressed-raw-reasoning-encrypted",
+                "internal_chat_message_metadata_passthrough": {"kind": "reasoning"},
+                "metadata": {"trace": "suppressed raw reasoning metadata"},
+                "summary": [{"type": "summary_text", "text": "suppressed raw reasoning summary"}],
             }),
         ] {
             let mut first_raw = String::new();
@@ -3467,6 +5213,10 @@ mod tests {
                 .expect("metadata-only reasoning added item is safe");
             let body = String::from_utf8_lossy(&reconstructed.client_raw);
             assert!(body.contains("ok"));
+            assert!(!body.contains("suppressed raw reasoning content"));
+            assert!(!body.contains("suppressed-raw-reasoning-encrypted"));
+            assert!(!body.contains("suppressed raw reasoning metadata"));
+            assert!(!body.contains("suppressed raw reasoning summary"));
         }
     }
 
@@ -3490,37 +5240,18 @@ mod tests {
             ),
             (
                 json!({
-                    "id": "rs_bad_content",
+                    "id": "rs_bad_status",
                     "type": "reasoning",
-                    "status": "in_progress",
-                    "content": [{"type": "output_text", "text": "raw-reasoning-content-secret-551"}],
+                    "status": "completed",
                 }),
-                Some("raw-reasoning-content-secret-551"),
+                None,
             ),
             (
                 json!({
-                    "id": "rs_bad_encrypted",
+                    "id": "rs_bad_unknown",
                     "type": "reasoning",
                     "status": "in_progress",
-                    "encrypted_content": "raw-reasoning-encrypted-secret-552",
-                }),
-                Some("raw-reasoning-encrypted-secret-552"),
-            ),
-            (
-                json!({
-                    "id": "rs_bad_summary",
-                    "type": "reasoning",
-                    "status": "in_progress",
-                    "summary": [{"type": "summary_text", "text": "raw-reasoning-summary-secret-553"}],
-                }),
-                Some("raw-reasoning-summary-secret-553"),
-            ),
-            (
-                json!({
-                    "id": "rs_bad_extra",
-                    "type": "reasoning",
-                    "status": "in_progress",
-                    "metadata": {"trace": "raw-reasoning-extra-secret-554"},
+                    "unknown_payload": "raw-reasoning-extra-secret-554",
                 }),
                 Some("raw-reasoning-extra-secret-554"),
             ),
@@ -3608,9 +5339,96 @@ mod tests {
 
         let err =
             reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
-        assert!(err.contains("raw event-stream"));
-        assert!(err.contains("response.completed_output_mismatch"));
+        assert!(err.contains("visible text chain is distinct or non-prefix"));
         assert!(!err.contains("raw-completed-visible-secret-462"));
+    }
+
+    #[test]
+    fn non_final_lifecycle_output_duplicate_visible_message_can_reconstruct() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [message("msg_hidden", "ok")],
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let reconstructed = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+            .expect("duplicate lifecycle visible message is safe");
+        assert_eq!(reconstructed.visible_assembly_kind, "exact_duplicate");
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+        assert!(body.contains("ok"));
+    }
+
+    #[test]
+    fn non_final_lifecycle_output_reasoning_payload_can_be_suppressed() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [{
+                        "id": "rs_completed_live_shape",
+                        "type": "reasoning",
+                        "content": [{"type": "summary_text", "text": "suppressed completed reasoning content"}],
+                        "encrypted_content": "suppressed-completed-reasoning-encrypted",
+                        "metadata": {"trace": "suppressed completed reasoning metadata"},
+                    }],
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let reconstructed = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+            .expect("non-final completed reasoning output is suppressible");
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+        assert!(body.contains("ok"));
+        assert!(!body.contains("suppressed completed reasoning content"));
+        assert!(!body.contains("suppressed-completed-reasoning-encrypted"));
+        assert!(!body.contains("suppressed completed reasoning metadata"));
     }
 
     #[test]
@@ -3652,7 +5470,7 @@ mod tests {
 
         let err =
             reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
-        assert!(err.contains("raw event-stream"));
+        assert!(err.contains("raw event-stream") || err.contains("raw tool/function call"));
         assert!(err.contains("response.completed_output_mismatch"));
         assert!(!err.contains("raw-completed-tool-secret-504"));
     }
@@ -4380,7 +6198,7 @@ mod tests {
     }
 
     #[test]
-    fn final_raw_reasoning_summary_delta_before_completed_is_unsafe() {
+    fn final_raw_reasoning_summary_delta_before_completed_rebuilds_sanitized_client_sse() {
         let first = repair_round(
             ContinuationRepairRoundKind::Initial,
             sse_round(
@@ -4433,11 +6251,17 @@ mod tests {
         .expect("completed");
         let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
 
-        let err =
-            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
-        assert!(err.contains("unsafe pre-completed event"));
-        assert!(!err.contains("response.reasoning_summary_text.delta"));
-        assert!(!err.contains("hidden chain summary"));
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+
+        assert_eq!(
+            reconstructed.reconstruction_status,
+            "final_sanitized_rebuild"
+        );
+        assert!(body.contains("ok"));
+        assert!(!body.contains("response.reasoning_summary_text.delta"));
+        assert!(!body.contains("hidden chain summary"));
     }
 
     #[test]
@@ -4568,7 +6392,7 @@ mod tests {
     }
 
     #[test]
-    fn final_raw_output_item_added_reasoning_metadata_remains_unsafe() {
+    fn final_raw_output_item_added_reasoning_metadata_rebuilds_sanitized_client_sse() {
         let first = repair_round(
             ContinuationRepairRoundKind::Initial,
             sse_round(
@@ -4626,10 +6450,154 @@ mod tests {
         .expect("completed");
         let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
 
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+
+        assert_eq!(
+            reconstructed.reconstruction_status,
+            "final_sanitized_rebuild"
+        );
+        assert!(body.contains("ok"));
+        assert!(!body.contains("\"type\":\"reasoning\""));
+        assert!(!body.contains("\"summary\""));
+    }
+
+    #[test]
+    fn final_raw_output_item_added_reasoning_payload_rebuilds_sanitized_client_sse() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "rs_2",
+                    "type": "reasoning",
+                    "status": "in_progress",
+                    "content": [{"type": "summary_text", "text": "raw-final-reasoning-secret-811"}],
+                },
+            }),
+        )
+        .expect("added");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+
+        assert_eq!(
+            reconstructed.reconstruction_status,
+            "final_sanitized_rebuild"
+        );
+        assert!(body.contains("ok"));
+        assert!(!body.contains("raw-final-reasoning-secret-811"));
+        assert!(!body.contains("\"type\":\"reasoning\""));
+    }
+
+    #[test]
+    fn final_raw_output_item_added_reasoning_unknown_payload_remains_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "rs_2",
+                    "type": "reasoning",
+                    "status": "in_progress",
+                    "unknown_payload": "raw-final-reasoning-unknown-secret-817",
+                },
+            }),
+        )
+        .expect("added");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
         let err =
             reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
         assert!(err.contains("final raw has unsafe pre-completed event"));
-        assert!(!err.contains("summary"));
+        assert!(!err.contains("raw-final-reasoning-unknown-secret-817"));
     }
 
     #[test]
