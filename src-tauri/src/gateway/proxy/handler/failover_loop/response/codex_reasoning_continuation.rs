@@ -778,7 +778,7 @@ fn validate_final_raw_for_passthrough(
         validate_lifecycle_output_payload(&event_name, &data, round)?;
         if event_name == "response.output_item.added" {
             let item = data.get("item").unwrap_or(&data);
-            if raw_output_item_added_is_visible_or_unknown(item) {
+            if final_raw_output_item_added_is_visible_or_unknown(item) {
                 return Err(
                     "final raw output_item.added contains visible or unknown payload".to_string(),
                 );
@@ -1623,7 +1623,7 @@ fn validate_raw_round_for_reconstruction(
                 return Err("output_item_tool_call_event".to_string());
             }
             if event_name == "response.output_item.added"
-                && raw_output_item_added_is_visible_or_unknown(item)
+                && non_final_raw_output_item_added_is_visible_or_unknown(item)
             {
                 return Err("output_item_added_visible_or_unknown".to_string());
             }
@@ -1755,14 +1755,20 @@ fn lifecycle_response_id(data: &Value) -> Option<&str> {
         .filter(|value| !value.trim().is_empty())
 }
 
-fn raw_output_item_added_is_visible_or_unknown(item: &Value) -> bool {
-    !raw_output_item_added_is_strict_metadata_only(item)
+fn final_raw_output_item_added_is_visible_or_unknown(item: &Value) -> bool {
+    !item
+        .as_object()
+        .is_some_and(raw_output_item_added_is_empty_message_metadata)
 }
 
-fn raw_output_item_added_is_strict_metadata_only(item: &Value) -> bool {
-    let Some(object) = item.as_object() else {
-        return false;
-    };
+fn non_final_raw_output_item_added_is_visible_or_unknown(item: &Value) -> bool {
+    !item.as_object().is_some_and(|object| {
+        raw_output_item_added_is_empty_message_metadata(object)
+            || raw_output_item_added_is_empty_reasoning_metadata(object)
+    })
+}
+
+fn raw_output_item_added_is_empty_message_metadata(object: &Map<String, Value>) -> bool {
     if object.len() != 5 {
         return false;
     }
@@ -1780,6 +1786,33 @@ fn raw_output_item_added_is_strict_metadata_only(item: &Value) -> bool {
             .get("content")
             .and_then(Value::as_array)
             .is_some_and(Vec::is_empty)
+}
+
+fn raw_output_item_added_is_empty_reasoning_metadata(object: &Map<String, Value>) -> bool {
+    if object.len() != 3 && object.len() != 4 {
+        return false;
+    }
+    if object
+        .get("id")
+        .and_then(Value::as_str)
+        .is_none_or(|text| text.trim().is_empty())
+    {
+        return false;
+    }
+    if object.get("type").and_then(Value::as_str) != Some("reasoning") {
+        return false;
+    }
+    if object
+        .get("status")
+        .and_then(Value::as_str)
+        .is_none_or(|status| !raw_output_item_added_metadata_status_is_allowed(status))
+    {
+        return false;
+    }
+    match object.get("summary") {
+        Some(summary) => summary.as_array().is_some_and(Vec::is_empty),
+        None => object.len() == 3,
+    }
 }
 
 fn raw_output_item_added_metadata_status_is_allowed(status: &str) -> bool {
@@ -3368,6 +3401,179 @@ mod tests {
     }
 
     #[test]
+    fn non_final_raw_output_item_added_reasoning_metadata_can_reconstruct() {
+        for item in [
+            json!({
+                "id": "rs_added_1",
+                "type": "reasoning",
+                "status": "in_progress",
+            }),
+            json!({
+                "id": "rs_added_2",
+                "type": "reasoning",
+                "status": "in_progress",
+                "summary": [],
+            }),
+        ] {
+            let mut first_raw = String::new();
+            push_sse_event(
+                &mut first_raw,
+                "response.created",
+                json!({
+                    "type": "response.created",
+                    "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+                }),
+            )
+            .expect("created");
+            push_sse_event(
+                &mut first_raw,
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "item": item,
+                }),
+            )
+            .expect("added");
+            push_sse_event(
+                &mut first_raw,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "item": reasoning("rs_1", "enc_1"),
+                }),
+            )
+            .expect("reasoning");
+            push_sse_event(
+                &mut first_raw,
+                "response.completed",
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_1",
+                        "status": "completed",
+                        "model": "gpt-cont",
+                        "usage": usage(1, 10, 516),
+                    },
+                }),
+            )
+            .expect("completed");
+            let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+            let second = repair_round(
+                ContinuationRepairRoundKind::Continuation,
+                sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+            );
+
+            let reconstructed = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+                .expect("metadata-only reasoning added item is safe");
+            let body = String::from_utf8_lossy(&reconstructed.client_raw);
+            assert!(body.contains("ok"));
+        }
+    }
+
+    #[test]
+    fn non_final_raw_output_item_added_malformed_reasoning_metadata_is_unsafe() {
+        for (item, forbidden) in [
+            (
+                json!({
+                    "type": "reasoning",
+                    "status": "in_progress",
+                }),
+                None,
+            ),
+            (
+                json!({
+                    "id": "   ",
+                    "type": "reasoning",
+                    "status": "in_progress",
+                }),
+                None,
+            ),
+            (
+                json!({
+                    "id": "rs_bad_content",
+                    "type": "reasoning",
+                    "status": "in_progress",
+                    "content": [{"type": "output_text", "text": "raw-reasoning-content-secret-551"}],
+                }),
+                Some("raw-reasoning-content-secret-551"),
+            ),
+            (
+                json!({
+                    "id": "rs_bad_encrypted",
+                    "type": "reasoning",
+                    "status": "in_progress",
+                    "encrypted_content": "raw-reasoning-encrypted-secret-552",
+                }),
+                Some("raw-reasoning-encrypted-secret-552"),
+            ),
+            (
+                json!({
+                    "id": "rs_bad_summary",
+                    "type": "reasoning",
+                    "status": "in_progress",
+                    "summary": [{"type": "summary_text", "text": "raw-reasoning-summary-secret-553"}],
+                }),
+                Some("raw-reasoning-summary-secret-553"),
+            ),
+            (
+                json!({
+                    "id": "rs_bad_extra",
+                    "type": "reasoning",
+                    "status": "in_progress",
+                    "metadata": {"trace": "raw-reasoning-extra-secret-554"},
+                }),
+                Some("raw-reasoning-extra-secret-554"),
+            ),
+        ] {
+            let mut first_raw = String::new();
+            push_sse_event(
+                &mut first_raw,
+                "response.created",
+                json!({
+                    "type": "response.created",
+                    "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+                }),
+            )
+            .expect("created");
+            push_sse_event(
+                &mut first_raw,
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "item": item,
+                }),
+            )
+            .expect("added");
+            push_sse_event(
+                &mut first_raw,
+                "response.completed",
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_1",
+                        "status": "completed",
+                        "model": "gpt-cont",
+                        "usage": usage(1, 10, 516),
+                    },
+                }),
+            )
+            .expect("completed");
+            let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+            let second = repair_round(
+                ContinuationRepairRoundKind::Continuation,
+                sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+            );
+
+            let err = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+                .expect_err("unsafe");
+            assert!(err.contains("output_item_added_visible_or_unknown"));
+            if let Some(forbidden) = forbidden {
+                assert!(!err.contains(forbidden));
+            }
+        }
+    }
+
+    #[test]
     fn non_final_lifecycle_output_visible_payload_is_unsafe_without_payload_leak() {
         let mut first_raw = String::new();
         push_sse_event(
@@ -4359,6 +4565,71 @@ mod tests {
         let body = String::from_utf8_lossy(&reconstructed.client_raw);
         assert!(body.contains("response.output_item.added"));
         assert!(body.contains("ok"));
+    }
+
+    #[test]
+    fn final_raw_output_item_added_reasoning_metadata_remains_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "rs_2",
+                    "type": "reasoning",
+                    "status": "in_progress",
+                    "summary": [],
+                },
+            }),
+        )
+        .expect("added");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("final raw has unsafe pre-completed event"));
+        assert!(!err.contains("summary"));
     }
 
     #[test]
