@@ -7,12 +7,18 @@ import { subscribeGatewayEvent } from "../../../services/gateway/gatewayEventBus
 import { normalizeGatewayRequestSignalEvent } from "../../../services/gateway/gatewayEvents";
 import { isRequestSignalComplete } from "../../../services/gateway/requestLogState";
 
-type RefreshSource = "request_signal.complete" | "foreground" | "manual";
+type RefreshSource =
+  | "request_signal.complete"
+  | "foreground"
+  | "manual"
+  | "request_activity.watchdog";
 
 type UseHomeFreshnessOwnerOptions = {
   overviewActive: boolean;
   foregroundActive: boolean;
+  requestActivityPending?: boolean;
   requestLogsRefreshWindowMs?: number;
+  requestActivityWatchdogIntervalMs?: number | false;
   foregroundThrottleMs?: number;
   onRefreshRequestLogs: () => Promise<unknown>;
 };
@@ -22,15 +28,26 @@ function resolveRequestLogsRefreshWindowMs(input: number | undefined) {
   return Math.max(200, Math.min(2_000, Math.trunc(input)));
 }
 
+function resolveRequestActivityWatchdogIntervalMs(input: number | false | undefined) {
+  if (input === false) return false;
+  if (!Number.isFinite(input) || input == null) return 15_000;
+  return Math.max(5_000, Math.min(60_000, Math.trunc(input)));
+}
+
 export function useHomeFreshnessOwner({
   overviewActive,
   foregroundActive,
+  requestActivityPending = false,
   requestLogsRefreshWindowMs,
+  requestActivityWatchdogIntervalMs,
   foregroundThrottleMs = 1000,
   onRefreshRequestLogs,
 }: UseHomeFreshnessOwnerOptions) {
   const active = overviewActive && foregroundActive;
   const refreshWindowMs = resolveRequestLogsRefreshWindowMs(requestLogsRefreshWindowMs);
+  const watchdogIntervalMs = resolveRequestActivityWatchdogIntervalMs(
+    requestActivityWatchdogIntervalMs
+  );
   const { flush: flushRequestLogs, schedule: scheduleRequestLogsRefresh } =
     useCoalescedAsyncRefresh<RefreshSource, unknown>({
       enabled: active,
@@ -56,6 +73,20 @@ export function useHomeFreshnessOwner({
       scheduleRequestLogsRefresh("foreground");
     },
   });
+
+  useEffect(() => {
+    if (!active || !requestActivityPending || watchdogIntervalMs === false) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      scheduleRequestLogsRefresh("request_activity.watchdog");
+    }, watchdogIntervalMs);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [active, requestActivityPending, scheduleRequestLogsRefresh, watchdogIntervalMs]);
 
   useEffect(() => {
     if (!active) {
