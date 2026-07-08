@@ -397,8 +397,6 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     let include_outcome = codex_reasoning_continuation::ensure_encrypted_reasoning_include(
         codex_reasoning_continuation::IncludeMergeInput {
             repair_enabled: continuation_repair_enabled,
-            auto_add_encrypted_reasoning_include: continuation_replay_policy
-                .is_some_and(|policy| policy.auto_add_encrypted_reasoning_include()),
             cli_key: &input.cli_key,
             upstream_forwarded_path: &upstream_forwarded_path,
             body: upstream_body_bytes.as_ref(),

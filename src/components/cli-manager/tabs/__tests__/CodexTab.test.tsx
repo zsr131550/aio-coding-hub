@@ -1106,9 +1106,9 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     const dialog = screen.getByRole("dialog");
     const strategySelect = within(dialog).getByLabelText("命中后策略");
     expect(within(dialog).getByRole("option", { name: "思考续写" })).toBeInTheDocument();
-    expect(within(dialog).getByRole("option", { name: "思考续写（实验）" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("option", { name: "思考续写（实验）" })).toBeNull();
     fireEvent.change(strategySelect, {
-      target: { value: "continuation_repair_experimental" },
+      target: { value: "continuation_repair" },
     });
     fireEvent.change(within(dialog).getByLabelText("思考续写次数"), {
       target: { value: "4" },
@@ -1118,7 +1118,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith(
       expect.objectContaining({
         codex_reasoning_guard_continuation_repair_enabled: true,
-        codex_reasoning_guard_post_match_strategy: "continuation_repair_experimental",
+        codex_reasoning_guard_post_match_strategy: "continuation_repair",
         codex_reasoning_guard_immediate_retry_budget: 4,
       })
     );

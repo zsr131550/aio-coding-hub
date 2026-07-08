@@ -308,12 +308,11 @@ function formatCodexReasoningGuardPostMatchStrategyLabel(
   strategy: CodexReasoningGuardPostMatchStrategy
 ) {
   if (strategy === "continuation_repair") return "思考续写";
-  if (strategy === "continuation_repair_experimental") return "思考续写（实验）";
   return "自动重试";
 }
 
 function isCodexReasoningGuardContinuationStrategy(strategy: CodexReasoningGuardPostMatchStrategy) {
-  return strategy === "continuation_repair" || strategy === "continuation_repair_experimental";
+  return strategy === "continuation_repair";
 }
 
 function formatCodexReasoningGuardModelFallbacks(models: string[] | null | undefined) {
@@ -3271,9 +3270,6 @@ export function CliManagerCodexTab({
                             className="mt-3 font-mono text-xs"
                           >
                             <option value="continuation_repair">思考续写</option>
-                            <option value="continuation_repair_experimental">
-                              思考续写（实验）
-                            </option>
                             <option value="retry_same_provider">自动重试</option>
                           </Select>
                         </label>
@@ -3281,10 +3277,7 @@ export function CliManagerCodexTab({
                           {isCodexReasoningGuardContinuationStrategy(
                             codexReasoningGuardPostMatchStrategy
                           )
-                            ? codexReasoningGuardPostMatchStrategy ===
-                              "continuation_repair_experimental"
-                              ? "命中后使用当前次数预算发送 continuation，并启用实验 B+ 协议重建。"
-                              : "命中后使用当前次数预算发送 continuation，并使用稳定折叠输出。"
+                            ? "命中后使用当前次数预算发送 continuation，并使用稳定折叠输出。"
                             : "命中后按立即预算、等待预算和并发设置重试同一 provider。"}
                         </div>
                       </div>

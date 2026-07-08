@@ -743,8 +743,7 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
     }
     match settings.codex_reasoning_guard_post_match_strategy {
         CodexReasoningGuardPostMatchStrategy::RetrySameProvider
-        | CodexReasoningGuardPostMatchStrategy::ContinuationRepair
-        | CodexReasoningGuardPostMatchStrategy::ContinuationRepairExperimental => {}
+        | CodexReasoningGuardPostMatchStrategy::ContinuationRepair => {}
     }
     match settings.codex_reasoning_guard_retry_policy {
         CodexReasoningGuardRetryPolicy::Single | CodexReasoningGuardRetryPolicy::Concurrent => {}
@@ -1158,6 +1157,27 @@ mod tests {
         assert_eq!(settings.log_retention_days, DEFAULT_LOG_RETENTION_DAYS);
         assert!(settings.tray_enabled);
         assert!(!settings.auto_start);
+    }
+
+    #[test]
+    fn parse_settings_json_aliases_removed_experimental_continuation_strategy_to_stable() {
+        let json = r#"{
+            "codex_reasoning_guard_post_match_strategy": "continuation_repair_experimental"
+        }"#;
+
+        let (settings, _, _) = parse_settings_json(json).unwrap();
+
+        assert_eq!(
+            settings.codex_reasoning_guard_post_match_strategy,
+            CodexReasoningGuardPostMatchStrategy::ContinuationRepair
+        );
+        let canonical = canonical_settings_json(&settings).unwrap();
+        assert_eq!(
+            canonical
+                .get("codex_reasoning_guard_post_match_strategy")
+                .and_then(serde_json::Value::as_str),
+            Some("continuation_repair")
+        );
     }
 
     #[test]

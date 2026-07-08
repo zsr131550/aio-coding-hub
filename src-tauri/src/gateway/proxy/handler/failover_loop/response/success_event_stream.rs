@@ -56,7 +56,9 @@ fn stream_transport_decision(
 #[derive(Clone, Copy)]
 struct EffectiveStreamIdleTimeout {
     duration: Option<Duration>,
+    #[cfg(test)]
     seconds: Option<u32>,
+    #[cfg(test)]
     source: &'static str,
 }
 
@@ -67,14 +69,18 @@ fn resolve_effective_stream_idle_timeout(
     if let Some(seconds) = provider_seconds.filter(|seconds| *seconds > 0) {
         return EffectiveStreamIdleTimeout {
             duration: Some(Duration::from_secs(seconds as u64)),
+            #[cfg(test)]
             seconds: Some(seconds),
+            #[cfg(test)]
             source: "provider",
         };
     }
 
     EffectiveStreamIdleTimeout {
         duration: global_timeout,
+        #[cfg(test)]
         seconds: global_timeout.map(|timeout| timeout.as_secs().min(u64::from(u32::MAX)) as u32),
+        #[cfg(test)]
         source: "global",
     }
 }
@@ -197,10 +203,6 @@ struct ContinuationRepairOutcome {
     client_usage: Option<usage::UsageExtract>,
     provider_repair_usage: Option<usage::UsageExtract>,
     round_trace: Vec<Value>,
-    reconstruction_status: Option<&'static str>,
-    visible_assembly_kind: Option<&'static str>,
-    canonical_response_id: Option<String>,
-    canonical_response_id_continuity: Option<&'static str>,
     aggregate_raw_bytes: usize,
     repair_elapsed_ms: Option<u128>,
     cumulative_elapsed_ms: Option<u128>,
@@ -220,10 +222,6 @@ impl ContinuationRepairOutcome {
             client_usage: None,
             provider_repair_usage: None,
             round_trace: Vec::new(),
-            reconstruction_status: None,
-            visible_assembly_kind: None,
-            canonical_response_id: None,
-            canonical_response_id_continuity: None,
             aggregate_raw_bytes: 0,
             repair_elapsed_ms: None,
             cumulative_elapsed_ms: None,
@@ -264,10 +262,6 @@ impl ContinuationRepairOutcome {
             client_usage: None,
             provider_repair_usage: None,
             round_trace: Vec::new(),
-            reconstruction_status: None,
-            visible_assembly_kind: None,
-            canonical_response_id: None,
-            canonical_response_id_continuity: None,
             aggregate_raw_bytes: 0,
             repair_elapsed_ms: None,
             cumulative_elapsed_ms: None,
@@ -303,40 +297,12 @@ impl ContinuationRepairOutcome {
         outcome
     }
 
-    fn repaired_bplus(
-        reconstruction: codex_reasoning_continuation::ContinuationReconstruction,
-        token: Option<codex_reasoning_features::ExtractedReasoningTokens>,
-        sent_rounds: u32,
-        repair_elapsed_ms: u128,
-        cumulative_elapsed_ms: u128,
-        round_durations_ms: Vec<u128>,
-    ) -> Self {
-        Self {
-            status: ContinuationRepairStatus::Repaired,
-            client_raw: Some(reconstruction.client_raw),
-            client_usage: Some(reconstruction.client_usage),
-            provider_repair_usage: Some(reconstruction.provider_repair_usage),
-            round_trace: reconstruction.round_trace,
-            reconstruction_status: Some(reconstruction.reconstruction_status),
-            visible_assembly_kind: Some(reconstruction.visible_assembly_kind),
-            canonical_response_id: Some(reconstruction.canonical_response_id),
-            canonical_response_id_continuity: Some(reconstruction.canonical_response_id_continuity),
-            aggregate_raw_bytes: reconstruction.aggregate_raw_bytes,
-            repair_elapsed_ms: Some(repair_elapsed_ms),
-            cumulative_elapsed_ms: Some(cumulative_elapsed_ms),
-            round_durations_ms,
-            reasoning_tokens: token.map(|value| value.reasoning_tokens),
-            reasoning_tokens_pointer: token.map(|value| value.pointer),
-            sent_rounds,
-            failure_kind: None,
-            reason: None,
-        }
-    }
-
+    #[allow(clippy::too_many_arguments)]
     fn repaired_folded(
         client_raw: Bytes,
         token: Option<codex_reasoning_features::ExtractedReasoningTokens>,
         sent_rounds: u32,
+        rounds: &[codex_reasoning_continuation::ContinuationRepairRound],
         aggregate_raw_bytes: usize,
         repair_elapsed_ms: u128,
         cumulative_elapsed_ms: u128,
@@ -347,11 +313,7 @@ impl ContinuationRepairOutcome {
             client_raw: Some(client_raw),
             client_usage: None,
             provider_repair_usage: None,
-            round_trace: Vec::new(),
-            reconstruction_status: None,
-            visible_assembly_kind: None,
-            canonical_response_id: None,
-            canonical_response_id_continuity: None,
+            round_trace: codex_reasoning_continuation::reconstruction_round_trace(rounds),
             aggregate_raw_bytes,
             repair_elapsed_ms: Some(repair_elapsed_ms),
             cumulative_elapsed_ms: Some(cumulative_elapsed_ms),
@@ -460,60 +422,30 @@ where
             codex_reasoning_continuation::is_truncation_continuation_pattern(
                 current_token.map(|value| value.reasoning_tokens),
             );
-        let mut continue_after_bplus_reconstruction_failure = None;
         if !current_matches_truncation {
-            if replay_policy.is_experimental() {
-                match codex_reasoning_continuation::reconstruct_bplus_client_sse(
+            let responses = rounds
+                .iter()
+                .map(|round| round.aggregated.clone())
+                .collect::<Vec<_>>();
+            return match codex_reasoning_continuation::fold_responses_to_sse(&responses) {
+                Ok(raw) => ContinuationRepairOutcome::repaired_folded(
+                    raw,
+                    current_token,
+                    sent_rounds,
                     &rounds,
-                    MAX_NON_SSE_BODY_BYTES,
-                ) {
-                    Ok(reconstruction) => {
-                        return ContinuationRepairOutcome::repaired_bplus(
-                            reconstruction,
-                            current_token,
-                            sent_rounds,
-                            repair_started.elapsed().as_millis(),
-                            attempt_started.elapsed().as_millis(),
-                            round_durations_ms,
-                        );
-                    }
-                    Err(err) if bplus_reconstruction_error_can_continue(&err) => {
-                        continue_after_bplus_reconstruction_failure = Some(err);
-                    }
-                    Err(err) => {
-                        return terminal_with_trace!(
-                            ContinuationRepairStatus::Failed,
-                            current_token,
-                            sent_rounds,
-                            Some("bplus_reconstruction"),
-                            Some(err),
-                        );
-                    }
-                }
-            } else {
-                let responses = rounds
-                    .iter()
-                    .map(|round| round.aggregated.clone())
-                    .collect::<Vec<_>>();
-                return match codex_reasoning_continuation::fold_responses_to_sse(&responses) {
-                    Ok(raw) => ContinuationRepairOutcome::repaired_folded(
-                        raw,
-                        current_token,
-                        sent_rounds,
-                        aggregate_raw_bytes,
-                        repair_started.elapsed().as_millis(),
-                        attempt_started.elapsed().as_millis(),
-                        round_durations_ms,
-                    ),
-                    Err(err) => terminal_with_trace!(
-                        ContinuationRepairStatus::Failed,
-                        current_token,
-                        sent_rounds,
-                        Some("fold"),
-                        Some(err),
-                    ),
-                };
-            }
+                    aggregate_raw_bytes,
+                    repair_started.elapsed().as_millis(),
+                    attempt_started.elapsed().as_millis(),
+                    round_durations_ms,
+                ),
+                Err(err) => terminal_with_trace!(
+                    ContinuationRepairStatus::Failed,
+                    current_token,
+                    sent_rounds,
+                    Some("fold"),
+                    Some(err),
+                ),
+            };
         }
         if max_output_tokens > 0 && cumulative_output_tokens >= max_output_tokens as u64 {
             return terminal_with_trace!(
@@ -525,17 +457,6 @@ where
             );
         }
         if sent_rounds >= max_rounds {
-            if let Some(reason) = continue_after_bplus_reconstruction_failure {
-                return terminal_with_trace!(
-                    ContinuationRepairStatus::Failed,
-                    current_token,
-                    sent_rounds,
-                    Some("bplus_reconstruction"),
-                    Some(format!(
-                        "continuation final output remained unsafe after max rounds: {reason}"
-                    )),
-                );
-            }
             return terminal_with_trace!(
                 ContinuationRepairStatus::StillMatched,
                 current_token,
@@ -556,20 +477,10 @@ where
                 Some("continuation round matched but encrypted reasoning was missing".to_string()),
             );
         }
-        let current_raw_sse = rounds
-            .last()
-            .map(|round| round.raw_sse.as_ref())
-            .unwrap_or_default();
-        let replay_tail_for_payload = replay_policy.next_replay_tail(
-            &mut replay_tail,
-            &current,
-            current_raw_sse,
-            sent_rounds,
-        );
+        let replay_tail_for_payload = replay_policy.next_replay_tail(&mut replay_tail, &current);
         let payload = match codex_reasoning_continuation::build_continuation_payload(
             prepared.upstream_body_bytes.as_ref(),
             &replay_tail_for_payload,
-            replay_policy.payload_mode(),
         ) {
             Ok(payload) => payload,
             Err(err) => {
@@ -729,15 +640,6 @@ where
         let aggregated =
             match crate::gateway::proxy::sse::aggregate_responses_event_stream(raw.as_ref()) {
                 Ok(value) => value,
-                Err(err)
-                    if replay_policy.is_experimental()
-                        && continuation_aggregate_error_can_continue(&err) =>
-                {
-                    aggregate_raw_bytes = aggregate_raw_bytes.saturating_sub(raw.len());
-                    sent_rounds = sent_rounds.saturating_add(1);
-                    round_durations_ms.push(round_duration_ms);
-                    continue;
-                }
                 Err(err) => {
                     return terminal_with_trace!(
                         ContinuationRepairStatus::Failed,
@@ -760,24 +662,6 @@ where
             Some(round_duration_ms),
         ));
     }
-}
-
-fn bplus_reconstruction_error_can_continue(reason: &str) -> bool {
-    matches!(
-        reason,
-        "final round has no client-visible output"
-            | "final round unsafe: reasoning_visible_payload"
-            | "final output is unsafe: reasoning_visible_payload"
-    )
-}
-
-fn continuation_aggregate_error_can_continue(reason: &str) -> bool {
-    matches!(
-        reason,
-        "missing response.created/response.completed"
-            | "missing response.completed"
-            | "responses stream ended with [DONE] before response.completed"
-    )
 }
 
 fn sanitized_continuation_aggregate_failure_reason(_reason: &str) -> String {
@@ -898,51 +782,8 @@ struct ContinuationSpecialSettingContext<'a> {
     provider_id: i64,
     provider_name: &'a str,
     retry_index: u32,
-    post_match_strategy: crate::settings::CodexReasoningGuardPostMatchStrategy,
     max_rounds: u32,
     max_output_tokens: u32,
-    upstream_first_byte_timeout_secs: Option<u32>,
-    upstream_stream_idle_timeout_secs: Option<u32>,
-    upstream_stream_idle_timeout_source: &'static str,
-}
-
-fn continuation_timeout_source(outcome: &ContinuationRepairOutcome) -> Option<&'static str> {
-    match outcome.failure_kind {
-        Some("upstream_timeout") => Some("first_byte"),
-        Some("upstream_stream")
-            if outcome
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("terminal event timeout disabled")) =>
-        {
-            Some("terminal_event_disabled")
-        }
-        Some("upstream_stream")
-            if outcome
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("terminal event timeout")) =>
-        {
-            Some("terminal_event")
-        }
-        Some("upstream_stream")
-            if outcome
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("idle timeout")) =>
-        {
-            Some("stream_idle")
-        }
-        _ => None,
-    }
-}
-
-fn continuation_fallback_action(status: ContinuationRepairStatus) -> &'static str {
-    match status {
-        ContinuationRepairStatus::Repaired => "none",
-        ContinuationRepairStatus::NotApplicable => "not_applicable",
-        _ => "existing_guard_failover_or_exhausted",
-    }
 }
 
 fn push_continuation_special_setting(
@@ -953,7 +794,7 @@ fn push_continuation_special_setting(
     if outcome.status == ContinuationRepairStatus::NotApplicable {
         return;
     }
-    let mut setting = serde_json::json!({
+    let setting = serde_json::json!({
             "type": "codex_reasoning_continuation",
             "scope": "attempt",
             "providerId": context.provider_id,
@@ -967,154 +808,25 @@ fn push_continuation_special_setting(
             "reasoningTokensPointer": outcome.reasoning_tokens_pointer,
             "failureKind": outcome.failure_kind,
             "reason": outcome.reason.as_deref(),
-    });
-
-    if context
-        .post_match_strategy
-        .is_experimental_continuation_repair()
-    {
-        let object = setting
-            .as_object_mut()
-            .expect("continuation special setting is an object");
-        object.insert(
-            "timing".to_string(),
-            serde_json::json!({
-                "observedCumulativeDurationMs":
-                outcome
+            "timing": {
+                "observedCumulativeDurationMs": outcome
                     .cumulative_elapsed_ms
                     .map(|value| value.min(u128::from(u64::MAX)) as u64),
-                "observedRepairDurationMs":
-                outcome
+                "observedRepairDurationMs": outcome
                     .repair_elapsed_ms
                     .map(|value| value.min(u128::from(u64::MAX)) as u64),
-                "observedRoundDurationsMs":
-                    outcome
-                        .round_durations_ms
-                        .iter()
-                        .map(|value| Value::from((*value).min(u128::from(u64::MAX)) as u64))
-                        .collect::<Vec<_>>(),
-            }),
-        );
-        object.insert(
-            "timeoutPolicy".to_string(),
-            serde_json::json!({
-                "source": "global_upstream_timeout_settings",
-                "firstByteTimeoutSeconds": context.upstream_first_byte_timeout_secs,
-                "streamIdleTimeoutSeconds": context.upstream_stream_idle_timeout_secs,
-                "streamIdleTimeoutSource": context.upstream_stream_idle_timeout_source,
-                "terminalEventTimeoutSeconds": context.upstream_stream_idle_timeout_secs,
-                "terminalEventTimeoutSource": context.upstream_stream_idle_timeout_source,
-                "privateRoundTimeoutSeconds": Value::Null,
-                "privateRepairWallClockCapSeconds": Value::Null,
-            }),
-        );
-        object.insert(
-            "timeoutSource".to_string(),
-            serde_json::to_value(continuation_timeout_source(outcome)).unwrap_or(Value::Null),
-        );
-        object.insert(
-            "fallbackAction".to_string(),
-            Value::String(continuation_fallback_action(outcome.status).to_string()),
-        );
-        object.insert(
-            "downstreamHeadersCommittedDuringRepair".to_string(),
-            Value::Bool(false),
-        );
-        object.insert(
-            "aggregateRawBytes".to_string(),
-            serde_json::to_value(outcome.aggregate_raw_bytes).unwrap_or(Value::Null),
-        );
-        object.insert(
-            "clientContractVersion".to_string(),
-            Value::String(codex_reasoning_continuation::BPLUS_CLIENT_CONTRACT_VERSION.to_string()),
-        );
-        object.insert(
-            "reconstructionStatus".to_string(),
-            serde_json::to_value(outcome.reconstruction_status).unwrap_or(Value::Null),
-        );
-        object.insert(
-            "visibleAssemblyKind".to_string(),
-            serde_json::to_value(outcome.visible_assembly_kind).unwrap_or(Value::Null),
-        );
-        object.insert(
-            "clientUsageKind".to_string(),
-            serde_json::to_value(if outcome.client_usage.is_some() {
-                Some("delivered_client_body_usage")
-            } else {
-                None
-            })
-            .unwrap_or(Value::Null),
-        );
-        object.insert(
-            "providerUsageKind".to_string(),
-            serde_json::to_value(if outcome.provider_repair_usage.is_some() {
-                Some("provider_repair_usage")
-            } else {
-                None
-            })
-            .unwrap_or(Value::Null),
-        );
-        object.insert(
-            "clientUsage".to_string(),
-            usage_extract_json_value(outcome.client_usage.as_ref()).unwrap_or(Value::Null),
-        );
-        object.insert(
-            "providerRepairUsage".to_string(),
-            usage_extract_json_value(outcome.provider_repair_usage.as_ref()).unwrap_or(Value::Null),
-        );
-        object.insert(
-            "canonicalResponseId".to_string(),
-            serde_json::to_value(outcome.canonical_response_id.as_deref()).unwrap_or(Value::Null),
-        );
-        object.insert(
-            "canonicalResponseIdContinuity".to_string(),
-            serde_json::to_value(outcome.canonical_response_id_continuity).unwrap_or(Value::Null),
-        );
-        object.insert(
-            "rounds".to_string(),
-            Value::Array(outcome.round_trace.clone()),
-        );
-        object.insert(
-            "nonVisiblePolicy".to_string(),
-            serde_json::json!({
-                "reasoningItems": outcome.round_trace.iter().filter_map(|entry| {
-                    entry
-                        .get("hasReasoning")
-                        .and_then(Value::as_bool)
-                        .is_some_and(|value| value)
-                        .then_some(1u64)
-                }).sum::<u64>(),
-                "commentaryMarkers": outcome.round_trace.iter().filter_map(|entry| {
-                    entry
-                        .get("hasCommentaryMarker")
-                        .and_then(Value::as_bool)
-                        .is_some_and(|value| value)
-                        .then_some(1u64)
-                }).sum::<u64>(),
-                "toolCallRounds": outcome.round_trace.iter().filter_map(|entry| {
-                    entry
-                        .get("hasToolCall")
-                        .and_then(Value::as_bool)
-                        .is_some_and(|value| value)
-                        .then_some(1u64)
-                }).sum::<u64>(),
-                "policyResult": outcome.reconstruction_status.unwrap_or(outcome.status.as_str()),
-            }),
-        );
-        object.insert(
-            "phase0SampleAudit".to_string(),
-            serde_json::json!({
-                "cleanAppendEnabled": codex_reasoning_continuation::BPLUS_CLEAN_APPEND_ENABLED,
-                "realUpstreamTranscriptContinuity": codex_reasoning_continuation::BPLUS_RESPONSE_ID_CONTINUITY,
-            }),
-        );
-    }
+                "observedRoundDurationsMs": outcome
+                    .round_durations_ms
+                    .iter()
+                    .map(|value| Value::from((*value).min(u128::from(u64::MAX)) as u64))
+                    .collect::<Vec<_>>(),
+            },
+            "aggregateRawBytes": outcome.aggregate_raw_bytes,
+            "aggregateCapBytes": MAX_NON_SSE_BODY_BYTES,
+            "rounds": outcome.round_trace.clone(),
+    });
 
     response_fixer::push_special_setting(special_settings, setting);
-}
-
-fn usage_extract_json_value(usage: Option<&usage::UsageExtract>) -> Option<Value> {
-    usage.and_then(|usage| serde_json::from_str::<Value>(&usage.usage_json).ok())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2037,16 +1749,9 @@ where
                             provider_id,
                             provider_name: provider_ctx_owned.provider_name_base.as_str(),
                             retry_index,
-                            post_match_strategy: common.codex_reasoning_guard_post_match_strategy,
                             max_rounds: common.codex_reasoning_guard_immediate_retry_budget,
                             max_output_tokens: common
                                 .codex_reasoning_guard_continuation_max_output_tokens,
-                            upstream_first_byte_timeout_secs: upstream_first_byte_timeout
-                                .map(|_| upstream_first_byte_timeout_secs),
-                            upstream_stream_idle_timeout_secs: effective_stream_idle_timeout
-                                .seconds,
-                            upstream_stream_idle_timeout_source: effective_stream_idle_timeout
-                                .source,
                         },
                         &continuation_outcome,
                     );

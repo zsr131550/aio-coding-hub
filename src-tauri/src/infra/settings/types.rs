@@ -129,20 +129,13 @@ pub enum CodexReasoningGuardRetryPolicy {
 pub enum CodexReasoningGuardPostMatchStrategy {
     RetrySameProvider,
     #[default]
+    #[serde(alias = "continuation_repair_experimental")]
     ContinuationRepair,
-    ContinuationRepairExperimental,
 }
 
 impl CodexReasoningGuardPostMatchStrategy {
     pub fn is_continuation_repair(self) -> bool {
-        matches!(
-            self,
-            Self::ContinuationRepair | Self::ContinuationRepairExperimental
-        )
-    }
-
-    pub fn is_experimental_continuation_repair(self) -> bool {
-        matches!(self, Self::ContinuationRepairExperimental)
+        matches!(self, Self::ContinuationRepair)
     }
 }
 

@@ -87,9 +87,9 @@ describe("services/settings/settingsValidation", () => {
     ).toBeNull();
     expect(
       validateSettingsSetInput({
-        codexReasoningGuardPostMatchStrategy: "continuation_repair_experimental",
+        codexReasoningGuardPostMatchStrategy: "continuation_repair_experimental" as never,
       })
-    ).toBeNull();
+    ).toContain("Codex 降智拦截命中后策略仅支持");
     expect(
       validateSettingsSetInput({
         codexReasoningGuardPostMatchStrategy: "unknown_strategy" as never,
