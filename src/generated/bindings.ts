@@ -1875,6 +1875,17 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async usageLeaderboardCsvExport(filePath: string, csv: string): Promise<Result<boolean, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("usage_leaderboard_csv_export", { filePath, csv }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async usageHourlySeries(days: number): Promise<Result<UsageHourlyRow[], string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("usage_hourly_series", { days }) };
@@ -4117,6 +4128,7 @@ export type UsageDayDetailParams = {
   providerId: number | null;
   folderLimit: number | null;
   folderKeys: string[] | null;
+  dayStartHour: number | null;
   excludeCx2CcGatewayBridge: boolean | null;
 };
 export type UsageDayDetailV1 = {
@@ -4181,6 +4193,9 @@ export type UsageLeaderboardRow = {
   requests_total: number;
   requests_success: number;
   requests_failed: number;
+  total_duration_ms: number;
+  first_request_created_at_ms: number | null;
+  last_request_created_at_ms: number | null;
   total_tokens: number;
   io_total_tokens: number;
   input_tokens: number;
@@ -4226,6 +4241,7 @@ export type UsageQueryParams = {
   cliKey: string | null;
   providerId: number | null;
   folderKeys: string[] | null;
+  dayStartHour: number | null;
   excludeCx2CcGatewayBridge: boolean | null;
 };
 export type UsageSummary = {
@@ -4234,6 +4250,7 @@ export type UsageSummary = {
   requests_success: number;
   requests_failed: number;
   cost_covered_success: number;
+  total_duration_ms: number;
   avg_duration_ms: number | null;
   avg_ttfb_ms: number | null;
   avg_output_tokens_per_second: number | null;

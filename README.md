@@ -296,6 +296,6 @@ docs: update installation guide
 
 [MIT License](LICENSE)
 
----
+## Star History
 
 [![Stargazers over time](https://starchart.cc/FingerCaster/aio-coding-hub.svg?variant=adaptive)](https://starchart.cc/FingerCaster/aio-coding-hub)

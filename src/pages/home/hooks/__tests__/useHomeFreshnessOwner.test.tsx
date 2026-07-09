@@ -77,7 +77,7 @@ describe("pages/home/hooks/useHomeFreshnessOwner", () => {
     vi.useRealTimers();
   });
 
-  it("waits for foreground-active state before refreshing from foreground events", async () => {
+  it("refreshes from foreground events while overview is active even if the foreground prop lags", async () => {
     vi.useFakeTimers();
     const refreshRequestLogs = vi.fn().mockResolvedValue(null);
     let foregroundArgs: { onForeground: () => void } | null = null;
@@ -86,19 +86,13 @@ describe("pages/home/hooks/useHomeFreshnessOwner", () => {
       foregroundArgs = args;
     });
 
-    const view = renderHook(
-      (props: { overviewActive: boolean; foregroundActive: boolean }) =>
-        useHomeFreshnessOwner({
-          ...props,
-          requestLogsRefreshWindowMs: 400,
-          onRefreshRequestLogs: refreshRequestLogs,
-        }),
-      {
-        initialProps: {
-          overviewActive: true,
-          foregroundActive: false,
-        },
-      }
+    renderHook(() =>
+      useHomeFreshnessOwner({
+        overviewActive: true,
+        foregroundActive: false,
+        requestLogsRefreshWindowMs: 400,
+        onRefreshRequestLogs: refreshRequestLogs,
+      })
     );
 
     act(() => {
@@ -110,15 +104,95 @@ describe("pages/home/hooks/useHomeFreshnessOwner", () => {
       await Promise.resolve();
     });
 
+    expect(refreshRequestLogs).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("polls while request activity is pending so stale active snapshots self-correct", async () => {
+    vi.useFakeTimers();
+    const refreshRequestLogs = vi.fn().mockResolvedValue(null);
+
+    const view = renderHook(
+      (props: {
+        overviewActive: boolean;
+        foregroundActive: boolean;
+        requestActivityPending: boolean;
+      }) =>
+        useHomeFreshnessOwner({
+          ...props,
+          requestLogsRefreshWindowMs: 200,
+          requestActivityWatchdogIntervalMs: 5000,
+          onRefreshRequestLogs: refreshRequestLogs,
+        }),
+      {
+        initialProps: {
+          overviewActive: true,
+          foregroundActive: true,
+          requestActivityPending: true,
+        },
+      }
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4999);
+      await Promise.resolve();
+    });
     expect(refreshRequestLogs).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+    });
+    expect(refreshRequestLogs).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+      await Promise.resolve();
+    });
+    expect(refreshRequestLogs).toHaveBeenCalledTimes(1);
 
     view.rerender({
       overviewActive: true,
       foregroundActive: true,
+      requestActivityPending: false,
     });
 
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5200);
+      await Promise.resolve();
+    });
+
+    expect(refreshRequestLogs).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("keeps signal-driven refresh while the window is backgrounded", async () => {
+    vi.useFakeTimers();
+    const refreshRequestLogs = vi.fn().mockResolvedValue(null);
+    let eventHandler:
+      | ((payload: { trace_id: string; cli_key: string; phase: "complete"; ts: number }) => void)
+      | null = null;
+
+    vi.mocked(subscribeGatewayEvent).mockImplementation((event: string, handler: any) => {
+      expect(event).toBe(gatewayEventNames.requestSignal);
+      eventHandler = handler;
+      return {
+        ready: Promise.resolve(),
+        unsubscribe: vi.fn(),
+      };
+    });
+
+    renderHook(() =>
+      useHomeFreshnessOwner({
+        overviewActive: true,
+        foregroundActive: false,
+        requestLogsRefreshWindowMs: 400,
+        onRefreshRequestLogs: refreshRequestLogs,
+      })
+    );
+
     act(() => {
-      foregroundArgs?.onForeground();
+      eventHandler?.({ trace_id: "t-1", cli_key: "claude", phase: "complete", ts: 2 });
     });
 
     await act(async () => {
@@ -127,21 +201,10 @@ describe("pages/home/hooks/useHomeFreshnessOwner", () => {
     });
 
     expect(refreshRequestLogs).toHaveBeenCalledTimes(1);
-
-    act(() => {
-      foregroundArgs?.onForeground();
-    });
-
-    await act(async () => {
-      await vi.runOnlyPendingTimersAsync();
-      await Promise.resolve();
-    });
-
-    expect(refreshRequestLogs).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
 
-  it("drops queued request log refresh when overview leaves foreground", async () => {
+  it("drops queued request log refresh when overview deactivates", async () => {
     vi.useFakeTimers();
     const refreshRequestLogs = vi.fn().mockResolvedValue(null);
     let eventHandler:
@@ -177,12 +240,36 @@ describe("pages/home/hooks/useHomeFreshnessOwner", () => {
     });
 
     view.rerender({
-      overviewActive: true,
-      foregroundActive: false,
+      overviewActive: false,
+      foregroundActive: true,
     });
 
     await act(async () => {
       await vi.runOnlyPendingTimersAsync();
+      await Promise.resolve();
+    });
+
+    expect(refreshRequestLogs).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("does not run the activity watchdog while the window is backgrounded", async () => {
+    vi.useFakeTimers();
+    const refreshRequestLogs = vi.fn().mockResolvedValue(null);
+
+    renderHook(() =>
+      useHomeFreshnessOwner({
+        overviewActive: true,
+        foregroundActive: false,
+        requestActivityPending: true,
+        requestLogsRefreshWindowMs: 200,
+        requestActivityWatchdogIntervalMs: 5000,
+        onRefreshRequestLogs: refreshRequestLogs,
+      })
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11_000);
       await Promise.resolve();
     });
 

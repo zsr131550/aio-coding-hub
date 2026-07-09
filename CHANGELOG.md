@@ -15,6 +15,29 @@
 * **providers:** adapt segmented controls to dark theme ([de78962](https://github.com/FingerCaster/aio-coding-hub/commit/de789628be6b5742f56b9ae0e9744e78d5fd97b1))
 * **providers:** show sub2api plan remaining alongside balance ([8984bba](https://github.com/FingerCaster/aio-coding-hub/commit/8984bbabbad7ce57a720d203d60a17ace23e2007))
 
+## [0.60.11](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.10...aio-coding-hub-v0.60.11) (2026-07-09)
+
+
+### Bug Fixes
+
+* **plugins:** stabilize extension host process CI ([ea4001a](https://github.com/dyndynjyxa/aio-coding-hub/commit/ea4001a5e7ff92f6e204322b3340d0427d014632))
+
+## [0.60.10](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.9...aio-coding-hub-v0.60.10) (2026-07-09)
+
+
+### Bug Fixes
+
+* **gateway:** arm request abort guard before active-request registration ([49d590c](https://github.com/dyndynjyxa/aio-coding-hub/commit/49d590c4df63a4cd9a1428cb5cbacb58b1d0f080))
+* **home:** keep freshness watchdog alive while a recent log row lacks terminal state ([46ce59e](https://github.com/dyndynjyxa/aio-coding-hub/commit/46ce59eebce5ad962592db6121c9e77ae8cc0044))
+* **home:** keep signal-driven request log refresh alive while backgrounded ([4ed3b4b](https://github.com/dyndynjyxa/aio-coding-hub/commit/4ed3b4b4d89ef840813e3f32e2ccc0a6ccd1e432))
+
+## [0.60.9](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.8...aio-coding-hub-v0.60.9) (2026-07-07)
+
+
+### Bug Fixes
+
+* **home:** refresh stale request log activity ([dc30559](https://github.com/dyndynjyxa/aio-coding-hub/commit/dc30559e63ed37d3946ca2f6b8061bc5d3cc6c33))
+
 ## [0.60.19](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.18...aio-coding-hub-v0.60.19) (2026-07-06)
 
 
