@@ -19,7 +19,17 @@ use super::{
     SQL_EFFECTIVE_INPUT_TOKENS_EXPR,
 };
 
+fn local_day_bucket_sql(timestamp_expr: &str, day_start_hour: i64) -> String {
+    if day_start_hour == 0 {
+        return format!("strftime('%Y-%m-%d', {timestamp_expr}, 'unixepoch', 'localtime')");
+    }
+    format!(
+        "strftime('%Y-%m-%d', {timestamp_expr}, 'unixepoch', 'localtime', '-{day_start_hour} hours')"
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) fn leaderboard_v2_with_conn(
     conn: &Connection,
     scope: UsageScopeV2,
@@ -30,8 +40,34 @@ pub(super) fn leaderboard_v2_with_conn(
     limit: Option<usize>,
     exclude_cx2cc_gateway_bridge: bool,
 ) -> Result<Vec<UsageLeaderboardRow>, String> {
+    leaderboard_v2_with_conn_day_start(
+        conn,
+        scope,
+        start_ts,
+        end_ts,
+        cli_key,
+        provider_id,
+        limit,
+        exclude_cx2cc_gateway_bridge,
+        0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn leaderboard_v2_with_conn_day_start(
+    conn: &Connection,
+    scope: UsageScopeV2,
+    start_ts: Option<i64>,
+    end_ts: Option<i64>,
+    cli_key: Option<&str>,
+    provider_id: Option<i64>,
+    limit: Option<usize>,
+    exclude_cx2cc_gateway_bridge: bool,
+    day_start_hour: i64,
+) -> Result<Vec<UsageLeaderboardRow>, String> {
     let effective_input_expr = SQL_EFFECTIVE_INPUT_TOKENS_EXPR;
     let effective_total_expr = sql_effective_total_tokens_expr();
+    let day_bucket_sql = local_day_bucket_sql("created_at", day_start_hour);
     let (where_clause, where_params) = build_optional_range_cli_provider_filters(
         "created_at",
         "cli_key",
@@ -90,6 +126,7 @@ SELECT
 	      cost_usd_femto IS NOT NULL AND cost_usd_femto > 0
 	    ) THEN cost_usd_femto ELSE 0 END
 	  ) AS total_cost_usd_femto,
+	  SUM(duration_ms) AS total_duration_ms,
 	  SUM(CASE WHEN status >= 200 AND status < 300 AND error_code IS NULL THEN duration_ms ELSE 0 END) AS success_duration_ms_sum,
 	  SUM(
 	    CASE WHEN (
@@ -145,6 +182,11 @@ GROUP BY cli_key
                             .get::<_, Option<i64>>("requests_success")?
                             .unwrap_or(0),
                         requests_failed: row.get::<_, Option<i64>>("requests_failed")?.unwrap_or(0),
+                        total_duration_ms: row
+                            .get::<_, Option<i64>>("total_duration_ms")?
+                            .unwrap_or(0),
+                        first_request_created_at_ms: None,
+                        last_request_created_at_ms: None,
                         success_duration_ms_sum: row
                             .get::<_, Option<i64>>("success_duration_ms_sum")?
                             .unwrap_or(0),
@@ -221,6 +263,7 @@ SELECT
 	      cost_usd_femto IS NOT NULL AND cost_usd_femto > 0
 	    ) THEN cost_usd_femto ELSE 0 END
 	  ) AS total_cost_usd_femto,
+	  SUM(duration_ms) AS total_duration_ms,
 	  SUM(CASE WHEN status >= 200 AND status < 300 AND error_code IS NULL THEN duration_ms ELSE 0 END) AS success_duration_ms_sum,
 	  SUM(
 	    CASE WHEN (
@@ -276,6 +319,11 @@ GROUP BY COALESCE(NULLIF(requested_model, ''), 'Unknown')
                             .get::<_, Option<i64>>("requests_success")?
                             .unwrap_or(0),
                         requests_failed: row.get::<_, Option<i64>>("requests_failed")?.unwrap_or(0),
+                        total_duration_ms: row
+                            .get::<_, Option<i64>>("total_duration_ms")?
+                            .unwrap_or(0),
+                        first_request_created_at_ms: None,
+                        last_request_created_at_ms: None,
                         success_duration_ms_sum: row
                             .get::<_, Option<i64>>("success_duration_ms_sum")?
                             .unwrap_or(0),
@@ -324,7 +372,7 @@ GROUP BY COALESCE(NULLIF(requested_model, ''), 'Unknown')
             let sql = format!(
                 r#"
 SELECT
-  strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime') AS key,
+  {day_bucket_sql} AS key,
   COUNT(*) AS requests_total,
   SUM(CASE WHEN status >= 200 AND status < 300 AND error_code IS NULL THEN 1 ELSE 0 END) AS requests_success,
   SUM(
@@ -352,6 +400,9 @@ SELECT
       cost_usd_femto IS NOT NULL AND cost_usd_femto > 0
     ) THEN cost_usd_femto ELSE 0 END
   ) AS total_cost_usd_femto,
+  SUM(duration_ms) AS total_duration_ms,
+  MIN(CASE WHEN created_at_ms > 0 THEN created_at_ms ELSE created_at * 1000 END) AS first_request_created_at_ms,
+  MAX(CASE WHEN created_at_ms > 0 THEN created_at_ms ELSE created_at * 1000 END) AS last_request_created_at_ms,
   SUM(CASE WHEN status >= 200 AND status < 300 AND error_code IS NULL THEN duration_ms ELSE 0 END) AS success_duration_ms_sum,
   SUM(
     CASE WHEN (
@@ -392,7 +443,8 @@ GROUP BY key
                 effective_input_expr = effective_input_expr,
                 effective_total_expr = effective_total_expr.as_str(),
                 where_clause = where_clause,
-                cx2cc_filter_clause = cx2cc_filter_clause
+                cx2cc_filter_clause = cx2cc_filter_clause,
+                day_bucket_sql = day_bucket_sql
             );
             let mut stmt = conn
                 .prepare(&sql)
@@ -407,6 +459,11 @@ GROUP BY key
                             .get::<_, Option<i64>>("requests_success")?
                             .unwrap_or(0),
                         requests_failed: row.get::<_, Option<i64>>("requests_failed")?.unwrap_or(0),
+                        total_duration_ms: row
+                            .get::<_, Option<i64>>("total_duration_ms")?
+                            .unwrap_or(0),
+                        first_request_created_at_ms: row.get("first_request_created_at_ms")?,
+                        last_request_created_at_ms: row.get("last_request_created_at_ms")?,
                         success_duration_ms_sum: row
                             .get::<_, Option<i64>>("success_duration_ms_sum")?
                             .unwrap_or(0),
@@ -490,6 +547,7 @@ SELECT
       r.cost_usd_femto IS NOT NULL AND r.cost_usd_femto > 0
     ) THEN r.cost_usd_femto ELSE 0 END
   ) AS total_cost_usd_femto,
+  SUM(r.duration_ms) AS total_duration_ms,
   SUM(CASE WHEN r.status >= 200 AND r.status < 300 AND r.error_code IS NULL THEN r.duration_ms ELSE 0 END) AS success_duration_ms_sum,
   SUM(
     CASE WHEN (
@@ -552,6 +610,11 @@ GROUP BY r.cli_key, r.final_provider_id
                             .get::<_, Option<i64>>("requests_success")?
                             .unwrap_or(0),
                         requests_failed: row.get::<_, Option<i64>>("requests_failed")?.unwrap_or(0),
+                        total_duration_ms: row
+                            .get::<_, Option<i64>>("total_duration_ms")?
+                            .unwrap_or(0),
+                        first_request_created_at_ms: None,
+                        last_request_created_at_ms: None,
                         success_duration_ms_sum: row
                             .get::<_, Option<i64>>("success_duration_ms_sum")?
                             .unwrap_or(0),
@@ -734,6 +797,7 @@ pub(super) struct FolderFilteredLeaderboardParams<'a> {
     pub(super) folder_keys: &'a [String],
     pub(super) limit: Option<usize>,
     pub(super) exclude_cx2cc_gateway_bridge: bool,
+    pub(super) day_start_hour: i64,
 }
 
 pub(super) fn leaderboard_v2_folder_filtered_with_conn<F>(
@@ -744,15 +808,14 @@ pub(super) fn leaderboard_v2_folder_filtered_with_conn<F>(
 where
     F: FnOnce(&[UsageSessionLookupKey]) -> Vec<UsageResolvedFolder>,
 {
+    let day_bucket_sql = local_day_bucket_sql("r.created_at", params.day_start_hour);
     let bucket_sql = match params.scope {
         UsageScopeV2::Cli => None,
         UsageScopeV2::Provider => {
             Some("CASE WHEN r.final_provider_id IS NULL THEN NULL ELSE CAST(r.final_provider_id AS TEXT) END")
         }
         UsageScopeV2::Model => Some("COALESCE(NULLIF(r.requested_model, ''), 'Unknown')"),
-        UsageScopeV2::Day => {
-            Some("strftime('%Y-%m-%d', r.created_at, 'unixepoch', 'localtime')")
-        }
+        UsageScopeV2::Day => Some(day_bucket_sql.as_str()),
     };
 
     let rows = usage_event_rows(
@@ -801,7 +864,12 @@ where
         let entry = by_key
             .entry(key)
             .or_insert_with(|| (name, ProviderAgg::default()));
-        entry.1.merge(row.agg);
+        let mut agg = row.agg;
+        if !matches!(params.scope, UsageScopeV2::Day) {
+            agg.first_request_created_at_ms = None;
+            agg.last_request_created_at_ms = None;
+        }
+        entry.1.merge(agg);
     }
 
     let mut out: Vec<UsageLeaderboardRow> = by_key
@@ -853,12 +921,13 @@ where
                 folder_keys,
                 limit,
                 exclude_cx2cc_gateway_bridge: resolved.exclude_cx2cc_gateway_bridge,
+                day_start_hour: resolved.day_start_hour,
             },
             folder_lookup,
         )?);
     }
 
-    Ok(leaderboard_v2_with_conn(
+    Ok(leaderboard_v2_with_conn_day_start(
         &conn,
         scope,
         resolved.start_ts,
@@ -867,5 +936,27 @@ where
         resolved.provider_id,
         limit,
         resolved.exclude_cx2cc_gateway_bridge,
+        resolved.day_start_hour,
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_day_bucket_sql;
+
+    #[test]
+    fn local_day_bucket_sql_shifts_after_localtime_for_wall_clock_day_boundaries() {
+        assert_eq!(
+            local_day_bucket_sql("created_at", 0),
+            "strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime')"
+        );
+        assert_eq!(
+            local_day_bucket_sql("created_at", 5),
+            "strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime', '-5 hours')"
+        );
+        assert_eq!(
+            local_day_bucket_sql("r.created_at", 5),
+            "strftime('%Y-%m-%d', r.created_at, 'unixepoch', 'localtime', '-5 hours')"
+        );
+    }
 }
