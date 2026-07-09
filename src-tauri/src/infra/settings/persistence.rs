@@ -14,10 +14,11 @@ use super::types::{
 use crate::app_paths;
 use crate::shared::error::AppResult;
 use crate::shared::fs::read_file_with_max_len;
+use crate::shared::mutex_ext::MutexExt;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::Instant;
 use tauri::Manager;
 
@@ -32,6 +33,7 @@ struct CachedSettings {
 }
 
 static SETTINGS_CACHE: OnceLock<RwLock<Option<CachedSettings>>> = OnceLock::new();
+static SETTINGS_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn cache_settings(path: &Path, settings: &AppSettings) {
     let cache = SETTINGS_CACHE.get_or_init(|| RwLock::new(None));
@@ -1055,6 +1057,9 @@ pub fn write<R: tauri::Runtime>(
 
     validate_bounds(&settings)?;
 
+    let _write_guard = SETTINGS_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock_or_recover();
     let path = settings_path(app)?;
     let tmp_path = path.with_file_name("settings.json.tmp");
     let backup_path = path.with_file_name("settings.json.bak");
@@ -1102,6 +1107,30 @@ pub fn clear_cache() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{clear_settings_cache, test_env_lock};
+    use std::ffi::OsString;
+
+    struct EnvVarRestore {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarRestore {
+        fn set(key: &'static str, value: impl Into<OsString>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value.into());
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn valid_codex_reasoning_guard_template() -> super::super::types::CodexReasoningGuardRuleTemplate
     {
@@ -1285,6 +1314,44 @@ mod tests {
         let settings = AppSettings::default();
         let canonical = canonical_settings_json(&settings).unwrap();
         assert_ne!(raw, canonical);
+    }
+
+    #[test]
+    fn write_settings_serializes_concurrent_atomic_replacements() {
+        let _env_lock = test_env_lock();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_restore = EnvVarRestore::set("AIO_CODING_HUB_HOME_DIR", home.path());
+        let _dotdir_restore = EnvVarRestore::set(
+            "AIO_CODING_HUB_DOTDIR_NAME",
+            ".aio-coding-hub-settings-write-test",
+        );
+        clear_settings_cache();
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let mut workers = Vec::new();
+
+        for index in 0..8 {
+            let app = handle.clone();
+            workers.push(std::thread::spawn(move || {
+                for offset in 0..20 {
+                    let settings = AppSettings {
+                        preferred_port: 20_000 + index * 100 + offset,
+                        ..Default::default()
+                    };
+                    write(&app, &settings).expect("write settings");
+                }
+            }));
+        }
+
+        for worker in workers {
+            worker.join().expect("settings writer thread");
+        }
+
+        let persisted = read(&handle).expect("read settings");
+        assert!((20_000..=20_719).contains(&persisted.preferred_port));
+        assert!(settings_path(&handle).expect("settings path").exists());
+        clear_settings_cache();
     }
 
     #[test]
