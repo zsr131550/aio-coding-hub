@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.60.20](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.19...aio-coding-hub-v0.60.20) (2026-07-09)
+
+
+### Features
+
+* **providers:** add optional automatic balance refresh for enabled providers ([2fa0a48](https://github.com/FingerCaster/aio-coding-hub/commit/2fa0a48268d56528e841f403de42ffc4489f4fa2))
+
+
+### Bug Fixes
+
+* **codex:** harden stable continuation folding and usage accounting ([650b31b](https://github.com/FingerCaster/aio-coding-hub/commit/650b31b1fa00da38b8272b0da1a492c39c99cc71))
+* **codex:** remove experimental continuation repair surface ([a3c8f2f](https://github.com/FingerCaster/aio-coding-hub/commit/a3c8f2fd554217a7f2f24cc9c7d399a2f211d067))
+* **providers:** adapt segmented controls to dark theme ([de78962](https://github.com/FingerCaster/aio-coding-hub/commit/de789628be6b5742f56b9ae0e9744e78d5fd97b1))
+* **providers:** show sub2api plan remaining alongside balance ([8984bba](https://github.com/FingerCaster/aio-coding-hub/commit/8984bbabbad7ce57a720d203d60a17ace23e2007))
+
 ## [0.60.19](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.18...aio-coding-hub-v0.60.19) (2026-07-06)
 
 
