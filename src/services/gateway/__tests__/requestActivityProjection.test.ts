@@ -1,13 +1,17 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type { RequestLogSummary } from "../requestLogs";
+import type { GatewayAttemptEvent } from "../gatewayEvents";
 import type { TraceSession, TraceSummary } from "../traceStore";
 import {
   buildRequestActivityProjection,
   shouldTickRequestActivityClock,
+  type ActiveRequestSnapshotItem,
   type ProjectedRealtimeCard,
 } from "../requestActivityProjection";
 
-function activeRequest(overrides: Record<string, unknown> = {}) {
+function activeRequest(
+  overrides: Partial<ActiveRequestSnapshotItem> = {}
+): ActiveRequestSnapshotItem {
   return {
     trace_id: "trace-1",
     cli_key: "claude",
@@ -18,7 +22,34 @@ function activeRequest(overrides: Record<string, unknown> = {}) {
     requested_model: "claude-3-opus",
     created_at_ms: 1_700_000_000_000,
     last_activity_ms: 1_700_000_000_000,
+    current_attempt: null,
     ...overrides,
+  };
+}
+
+function attempt(traceId: string, attemptIndex: number, providerName: string): GatewayAttemptEvent {
+  return {
+    trace_id: traceId,
+    cli_key: "claude",
+    session_id: null,
+    method: "POST",
+    path: "/v1/messages",
+    query: null,
+    requested_model: "claude-3-opus",
+    attempt_index: attemptIndex,
+    provider_id: attemptIndex,
+    session_reuse: null,
+    provider_name: providerName,
+    base_url: "https://provider.example",
+    outcome: "started",
+    status: null,
+    attempt_started_ms: attemptIndex * 100,
+    attempt_duration_ms: 0,
+    circuit_state_before: "CLOSED",
+    circuit_state_after: null,
+    circuit_failure_count: 0,
+    circuit_failure_threshold: 3,
+    claude_model_mapping: null,
   };
 }
 
@@ -162,6 +193,90 @@ describe("services/gateway/requestActivityProjection", () => {
     expect(projection.realtimeCards[0]?.kind).toBe("active");
     expect(projection.realtimeCards[0]?.trace.first_seen_ms).toBe(nowMs - 120_000);
     expect(projection.requestRows).toHaveLength(0);
+  });
+
+  it("replays the current attempt for a registry-only active trace", () => {
+    const nowMs = 1_700_000_900_000;
+    const currentAttempt = attempt("active-background", 1, "78code");
+    const projection = buildRequestActivityProjection({
+      requestLogs: [],
+      activeRequests: [
+        activeRequest({
+          trace_id: "active-background",
+          created_at_ms: nowMs - 3_000,
+          last_activity_ms: nowMs - 240,
+          current_attempt: currentAttempt,
+        }),
+      ],
+      traces: [],
+      nowMs,
+      realtimeCardLimit: 5,
+    });
+
+    expect(projection.realtimeCards[0]?.kind).toBe("active");
+    expect(projection.realtimeCards[0]?.trace.attempts).toEqual([currentAttempt]);
+    expect(projection.realtimeCards[0]?.trace.last_seen_ms).toBe(nowMs - 240);
+  });
+
+  it("fills a missing newer attempt from the active snapshot without replaying older progress", () => {
+    const nowMs = 1_700_000_900_000;
+    const firstAttempt = attempt("active-gap", 1, "Provider A");
+    const latestAttempt = attempt("active-gap", 3, "Provider C");
+    const projection = buildRequestActivityProjection({
+      requestLogs: [],
+      activeRequests: [
+        activeRequest({
+          trace_id: "active-gap",
+          last_activity_ms: nowMs - 100,
+          current_attempt: latestAttempt,
+        }),
+      ],
+      traces: [
+        trace({
+          trace_id: "active-gap",
+          last_seen_ms: nowMs - 1_000,
+          attempts: [firstAttempt],
+        }),
+      ],
+      nowMs,
+      realtimeCardLimit: 5,
+    });
+
+    expect(projection.realtimeCards[0]?.trace.attempts).toEqual([firstAttempt, latestAttempt]);
+    expect(projection.realtimeCards[0]?.trace.last_seen_ms).toBe(nowMs - 100);
+
+    const staleSnapshot = buildRequestActivityProjection({
+      requestLogs: [],
+      activeRequests: [
+        activeRequest({
+          trace_id: "active-gap",
+          current_attempt: firstAttempt,
+        }),
+      ],
+      traces: [trace({ trace_id: "active-gap", attempts: [latestAttempt] })],
+      nowMs,
+      realtimeCardLimit: 5,
+    });
+    expect(staleSnapshot.realtimeCards[0]?.trace.attempts).toEqual([latestAttempt]);
+  });
+
+  it("does not apply active attempt progress after terminal evidence", () => {
+    const terminalAttempt = attempt("terminal-progress", 2, "Provider B");
+    const projection = buildRequestActivityProjection({
+      requestLogs: [log({ trace_id: "terminal-progress", status: 200 })],
+      activeRequests: [
+        activeRequest({
+          trace_id: "terminal-progress",
+          current_attempt: terminalAttempt,
+        }),
+      ],
+      traces: [trace({ trace_id: "terminal-progress", attempts: [] })],
+      nowMs: 1_700_000_000_100,
+      realtimeCardLimit: 5,
+    });
+
+    expect(projection.realtimeCards[0]?.kind).toBe("settling");
+    expect(projection.realtimeCards[0]?.trace.attempts).toEqual([]);
   });
 
   it("keeps terminal logs out of the in-progress projection despite a stale registry entry", () => {

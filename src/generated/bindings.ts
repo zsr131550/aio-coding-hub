@@ -2150,6 +2150,7 @@ export type ActiveRequestSnapshotItem = {
   requested_model: string | null;
   created_at_ms: number;
   last_activity_ms: number;
+  current_attempt: GatewayAttemptEvent | null;
 };
 export type ActiveUiContribution = {
   pluginId: string;

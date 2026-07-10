@@ -160,7 +160,9 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
           (attempt) => attempt.session_reuse === true
         );
         let latestAttempt: NonNullable<typeof trace.attempts>[number] | undefined;
+        let attemptCount = trace.attempts?.length ?? 0;
         for (const attempt of trace.attempts ?? []) {
+          attemptCount = Math.max(attemptCount, attempt.attempt_index);
           if (!latestAttempt || attempt.attempt_index > latestAttempt.attempt_index) {
             latestAttempt = attempt;
           }
@@ -414,7 +416,7 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                     >
                       <div className={LIVE_METRIC_LABEL}>尝试次数</div>
                       <div className={cn(LIVE_METRIC_VALUE, "font-mono tabular-nums")}>
-                        {formatInteger(trace.attempts.length)}
+                        {formatInteger(attemptCount)}
                       </div>
                     </div>
                     <div

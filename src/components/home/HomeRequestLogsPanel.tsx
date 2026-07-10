@@ -570,6 +570,7 @@ export function HomeRequestLogsPanel({
         requested_model: trace.requested_model ?? null,
         created_at_ms: trace.first_seen_ms,
         last_activity_ms: trace.last_seen_ms,
+        current_attempt: null,
       })),
     [previewTraces]
   );

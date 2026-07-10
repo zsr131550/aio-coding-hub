@@ -9,6 +9,7 @@ import {
 } from "./requestLogState";
 import type { RequestLogSummary } from "./requestLogs";
 import { resolveClaudeModelMappingFromSpecialSettings } from "./requestLogSpecialSettings";
+import { MAX_ATTEMPTS_PER_TRACE } from "./traceLimits";
 import type { TraceSession, TraceSummary } from "./traceStore";
 
 export const REALTIME_TRACE_EXIT_START_MS = 600;
@@ -165,9 +166,43 @@ function traceFromActiveRequest(activeRequest: ActiveRequest): ActiveTraceSessio
     path: activeRequest.path,
     query: activeRequest.query ?? null,
     requested_model: activeRequest.requested_model ?? null,
+    claude_model_mapping: activeRequest.current_attempt?.claude_model_mapping ?? null,
     first_seen_ms: createdAtMs,
     last_seen_ms: Math.max(createdAtMs, activeRequest.last_activity_ms ?? 0),
-    attempts: [],
+    attempts: activeRequest.current_attempt ? [activeRequest.current_attempt] : [],
+  };
+}
+
+function mergeTraceWithActiveRequestProgress(
+  trace: TraceSession,
+  activeRequest: ActiveRequest
+): TraceSession {
+  if (trace.summary) return trace;
+
+  const currentAttempt = activeRequest.current_attempt;
+  const traceAttempts = trace.attempts ?? [];
+  const latestAttemptIndex = traceAttempts.reduce(
+    (latest, attempt) => Math.max(latest, attempt.attempt_index),
+    -1
+  );
+  const attempts = (() => {
+    if (!currentAttempt || currentAttempt.attempt_index <= latestAttemptIndex) {
+      return traceAttempts;
+    }
+    const merged = [...traceAttempts, currentAttempt].sort(
+      (a, b) => a.attempt_index - b.attempt_index
+    );
+    return merged.slice(-MAX_ATTEMPTS_PER_TRACE);
+  })();
+
+  return {
+    ...trace,
+    session_id: trace.session_id ?? activeRequest.session_id ?? null,
+    requested_model: trace.requested_model ?? activeRequest.requested_model ?? null,
+    claude_model_mapping:
+      trace.claude_model_mapping ?? currentAttempt?.claude_model_mapping ?? null,
+    last_seen_ms: Math.max(trace.last_seen_ms, activeRequest.last_activity_ms ?? 0),
+    attempts,
   };
 }
 
@@ -199,7 +234,14 @@ function buildRequestActivitySourceIndex(input: {
   }
 
   for (const [traceId, activeRequest] of activeByTraceId) {
-    if (mergedTraceMap.has(traceId)) continue;
+    const existingTrace = mergedTraceMap.get(traceId);
+    if (existingTrace) {
+      mergedTraceMap.set(
+        traceId,
+        mergeTraceWithActiveRequestProgress(existingTrace, activeRequest)
+      );
+      continue;
+    }
     const log = logsByTraceId.get(traceId);
     if (log && isRequestLogTerminal(log)) continue;
     mergedTraceMap.set(

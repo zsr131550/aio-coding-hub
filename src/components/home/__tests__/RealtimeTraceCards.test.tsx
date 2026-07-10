@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ProjectedRealtimeCard } from "../../../services/gateway/requestActivityProjection";
 import { RealtimeTraceCards } from "../RealtimeTraceCards";
@@ -35,6 +35,7 @@ function cards(traces: any[]): ProjectedRealtimeCard[] {
             requested_model: trace.requested_model ?? null,
             created_at_ms: trace.first_seen_ms,
             last_activity_ms: trace.last_seen_ms,
+            current_attempt: null,
           },
         }
   );
@@ -158,6 +159,36 @@ describe("components/home/RealtimeTraceCards", () => {
     expect(screen.getByText("当前阶段")).toBeInTheDocument();
 
     vi.useRealTimers();
+  });
+
+  it("uses the latest attempt index when background suppression leaves a sparse attempt list", () => {
+    const baseTime = 1_700_000_000_000;
+    render(
+      <RealtimeTraceCards
+        folderLookupBySessionKey={new Map()}
+        cards={cards([
+          traceBase({
+            trace_id: "t-background-attempt",
+            attempts: [
+              {
+                attempt_index: 3,
+                provider_name: "Provider C",
+                outcome: "started",
+              },
+            ],
+          }),
+        ])}
+        nowMs={baseTime}
+        formatUnixSeconds={(ts) => String(ts)}
+        showCustomTooltip={false}
+      />
+    );
+
+    const attemptMetric = screen.getByText("尝试次数").parentElement;
+    expect(attemptMetric).not.toBeNull();
+    expect(within(attemptMetric as HTMLElement).getByText("3")).toBeInTheDocument();
+    expect(screen.getByText("处理中")).toBeInTheDocument();
+    expect(screen.getByText("Provider C")).toBeInTheDocument();
   });
 
   it("renders in-progress and completed traces, including route and cache hints", () => {

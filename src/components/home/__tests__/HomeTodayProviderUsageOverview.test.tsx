@@ -86,6 +86,7 @@ function createActiveRequestFromTrace(trace: TraceSession) {
     requested_model: trace.requested_model ?? null,
     created_at_ms: trace.first_seen_ms,
     last_activity_ms: trace.last_seen_ms,
+    current_attempt: null,
   };
 }
 
@@ -1074,6 +1075,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
             requested_model: "claude-3-opus",
             created_at_ms: baseTime - 11 * 60 * 1000,
             last_activity_ms: baseTime - 6 * 60 * 1000,
+            current_attempt: null,
           },
         ]}
       />

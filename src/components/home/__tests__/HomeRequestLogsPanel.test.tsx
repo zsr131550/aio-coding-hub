@@ -44,6 +44,7 @@ function activeRequest(
     created_at_ms: Date.now(),
     last_activity_ms: Date.now(),
     ...overrides,
+    current_attempt: overrides.current_attempt ?? null,
   };
 }
 
