@@ -3912,7 +3912,8 @@ mod tests {
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
 
-        let app_settings = settings::AppSettings::default();
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.codex_reasoning_guard_enabled = false;
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -6859,7 +6860,7 @@ mod tests {
             "event: response.created\n",
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-stream-pass\",\"status\":\"in_progress\",\"model\":\"gpt-stream-pass\"}}\n\n",
             "event: response.output_text.delta\n",
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"stream-full-body-one\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"stream-full-body-one \"}\n\n",
             "event: response.output_text.delta\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"stream-full-body-two\"}\n\n",
             "event: response.completed\n",
@@ -7517,7 +7518,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_empty_success_stream_returns_bad_gateway_without_session_binding() {
+    async fn codex_guard_disabled_responses_streams_first_delta_before_completion() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -7528,6 +7529,300 @@ mod tests {
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
         app_settings.codex_reasoning_guard_enabled = false;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-disabled-responses-stream.sqlite"))
+            .expect("init test db");
+        let first_chunk = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"first visible\"}\n\n"
+        );
+        let completion_chunk = concat!(
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-disabled-stream\",\"status\":\"completed\",\"model\":\"gpt-disabled-stream\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"first visible\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n"
+        );
+        let (sse_base_url, sse_task) = spawn_delayed_chunked_sse_upstream(
+            first_chunk,
+            completion_chunk,
+            Duration::from_secs(3),
+        )
+        .await;
+        let provider_id =
+            insert_codex_provider_with_priority(&db, "Disabled Responses Stream", sse_base_url, 0);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-disabled-stream","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = tokio::time::timeout(Duration::from_secs(2), router.oneshot(request))
+            .await
+            .expect("response returned before delayed completion")
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let mut body_stream = Box::pin(response.into_body().into_data_stream());
+        let first = tokio::time::timeout(
+            Duration::from_secs(2),
+            std::future::poll_fn(|cx| body_stream.as_mut().poll_next(cx)),
+        )
+        .await
+        .expect("first stream chunk before completion timeout")
+        .expect("first stream chunk")
+        .expect("first stream chunk ok");
+        let first_text = String::from_utf8_lossy(&first);
+        assert!(first_text.contains("response.output_text.delta"));
+        assert!(first_text.contains("first visible"));
+        assert!(!first_text.contains("response.completed"));
+
+        let mut full_body = first_text.to_string();
+        loop {
+            let next = tokio::time::timeout(
+                Duration::from_secs(5),
+                std::future::poll_fn(|cx| body_stream.as_mut().poll_next(cx)),
+            )
+            .await
+            .expect("stream completion timeout");
+            let Some(chunk) = next else {
+                break;
+            };
+            let chunk = chunk.expect("stream chunk ok");
+            full_body.push_str(&String::from_utf8_lossy(&chunk));
+        }
+        assert!(full_body.contains("response.completed"));
+        assert!(full_body.contains("resp-disabled-stream"));
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.error_code, None);
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+
+        sse_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_guard_disabled_responses_delta_final_mismatch_streams_successfully() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.codex_reasoning_guard_enabled = false;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("codex-disabled-delta-mismatch-success.sqlite"),
+        )
+        .expect("init test db");
+        let mismatch_sse_body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello \"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-disabled-mismatch\",\"status\":\"completed\",\"model\":\"gpt-disabled-mismatch\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello world\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n"
+        );
+        let (mismatch_base_url, mismatch_task) = spawn_sse_upstream(mismatch_sse_body).await;
+        let provider_id = insert_codex_provider_with_priority(
+            &db,
+            "Disabled Mismatch Stream",
+            mismatch_base_url,
+            0,
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-disabled-mismatch","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body_text = String::from_utf8_lossy(&body);
+        assert!(body_text.contains("hello "));
+        assert!(body_text.contains("hello world"));
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.error_code, None);
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+
+        mismatch_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_guard_enabled_responses_delta_final_mismatch_returns_502_without_failover() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.codex_reasoning_guard_enabled = true;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-responses-delta-mismatch.sqlite"))
+            .expect("init test db");
+        let mismatch_sse_body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello \"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-mismatch\",\"status\":\"completed\",\"model\":\"gpt-mismatch\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello world\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n"
+        );
+        let success_sse_body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fallback ok\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-fallback-unused\",\"status\":\"completed\",\"model\":\"gpt-mismatch\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"fallback ok\"}]}]}}\n\n"
+        );
+        let (mismatch_base_url, mismatch_task) = spawn_sse_upstream(mismatch_sse_body).await;
+        let (success_base_url, success_task) = spawn_sse_upstream(success_sse_body).await;
+        let provider_a =
+            insert_codex_provider_with_priority(&db, "Mismatch First", mismatch_base_url, 0);
+        let provider_b = insert_codex_provider_with_priority(
+            &db,
+            "Fallback Should Not Run",
+            success_base_url,
+            1,
+        );
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig::default(),
+            HashMap::new(),
+            None,
+        ));
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            Arc::new(session_manager::SessionManager::new()),
+        ));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-mismatch","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_RESPONSES_DELTA_FINAL_MISMATCH")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(
+            log.error_code.as_deref(),
+            Some("GW_RESPONSES_DELTA_FINAL_MISMATCH")
+        );
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        let attempt = &attempts[0];
+        assert_eq!(
+            attempt.get("provider_id").and_then(Value::as_i64),
+            Some(provider_a)
+        );
+        assert_ne!(
+            attempt.get("provider_id").and_then(Value::as_i64),
+            Some(provider_b)
+        );
+        assert_eq!(
+            attempt.get("error_code").and_then(Value::as_str),
+            Some("GW_RESPONSES_DELTA_FINAL_MISMATCH")
+        );
+        assert_eq!(
+            attempt.get("decision").and_then(Value::as_str),
+            Some("abort")
+        );
+        assert_eq!(circuit.snapshot(provider_a, 0).failure_count, 0);
+
+        let special_settings = parse_special_settings(&log);
+        assert!(special_settings.iter().any(|entry| {
+            entry.get("type").and_then(Value::as_str)
+                == Some("codex_responses_delta_final_mismatch")
+                && entry.get("responseId").and_then(Value::as_str) == Some("resp-mismatch")
+                && entry.get("deltaLenBytes").and_then(Value::as_u64) == Some(6)
+                && entry.get("finalLenBytes").and_then(Value::as_u64) == Some(11)
+        }));
+
+        mismatch_task.abort();
+        success_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_empty_success_stream_returns_bad_gateway_without_session_binding() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.codex_reasoning_guard_enabled = true;
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -7618,7 +7913,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 2;
-        app_settings.codex_reasoning_guard_enabled = false;
+        app_settings.codex_reasoning_guard_enabled = true;
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -7703,7 +7998,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
-        app_settings.codex_reasoning_guard_enabled = false;
+        app_settings.codex_reasoning_guard_enabled = true;
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -7798,7 +8093,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
-        app_settings.codex_reasoning_guard_enabled = false;
+        app_settings.codex_reasoning_guard_enabled = true;
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -7895,7 +8190,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
-        app_settings.codex_reasoning_guard_enabled = false;
+        app_settings.codex_reasoning_guard_enabled = true;
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -7964,7 +8259,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
-        app_settings.codex_reasoning_guard_enabled = false;
+        app_settings.codex_reasoning_guard_enabled = true;
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");

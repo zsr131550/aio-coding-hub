@@ -101,16 +101,254 @@ fn is_codex_chat_completions_event_stream_path(cli_key: &str, path: &str) -> boo
         )
 }
 
-fn should_buffer_codex_responses_for_empty_detection(cli_key: &str, path: &str) -> bool {
-    is_codex_responses_event_stream_path(cli_key, path)
+fn should_buffer_codex_responses_for_empty_detection(
+    guard_enabled: bool,
+    cli_key: &str,
+    path: &str,
+) -> bool {
+    guard_enabled && is_codex_responses_event_stream_path(cli_key, path)
 }
 
 fn should_buffer_native_codex_responses_for_empty_detection(
+    guard_enabled: bool,
     cli_key: &str,
     path: &str,
     active_bridge_type: Option<&str>,
 ) -> bool {
-    active_bridge_type.is_none() && should_buffer_codex_responses_for_empty_detection(cli_key, path)
+    active_bridge_type.is_none()
+        && should_buffer_codex_responses_for_empty_detection(guard_enabled, cli_key, path)
+}
+
+fn should_buffer_native_codex_responses_for_validation(
+    guard_enabled: bool,
+    cli_key: &str,
+    path: &str,
+    active_bridge_type: Option<&str>,
+) -> bool {
+    guard_enabled
+        && active_bridge_type.is_none()
+        && is_codex_responses_event_stream_path(cli_key, path)
+}
+
+fn upstream_request_identity_from_headers(headers: &HeaderMap) -> Option<(&'static str, String)> {
+    const CANDIDATES: [&str; 5] = [
+        "x-request-id",
+        "request-id",
+        "openai-request-id",
+        "x-openai-request-id",
+        "cf-ray",
+    ];
+
+    for name in CANDIDATES {
+        let Some(value) = headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        return Some((name, value.to_string()));
+    }
+
+    None
+}
+
+fn push_responses_delta_final_mismatch_special_setting(
+    special_settings: &std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    provider_id: i64,
+    provider_name: &str,
+    retry_index: u32,
+    trace_id: &str,
+    upstream_request_identity: Option<(&'static str, String)>,
+    mismatch: &crate::gateway::proxy::sse::ResponsesDeltaFinalMismatch,
+) {
+    let setting = serde_json::json!({
+        "type": "codex_responses_delta_final_mismatch",
+        "scope": "attempt",
+        "providerId": provider_id,
+        "providerName": provider_name,
+        "retryAttemptNumber": retry_index,
+        "traceId": trace_id,
+        "upstreamRequestIdHeader": upstream_request_identity.as_ref().map(|(name, _)| *name),
+        "upstreamRequestId": upstream_request_identity.as_ref().map(|(_, value)| value.as_str()),
+        "responseId": mismatch.response_id.as_deref(),
+        "deltaLenBytes": mismatch.delta_len_bytes,
+        "finalLenBytes": mismatch.final_len_bytes,
+        "deltaSha256": mismatch.delta_sha256.as_str(),
+        "finalSha256": mismatch.final_sha256.as_str(),
+        "finalSource": mismatch.final_source,
+    });
+    response_fixer::push_special_setting(special_settings, setting);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_responses_delta_final_mismatch<R: tauri::Runtime>(
+    ctx: CommonCtx<'_, R>,
+    provider_ctx: ProviderCtx<'_>,
+    attempt_ctx: AttemptCtx<'_>,
+    loop_state: LoopState<'_, R>,
+    status: StatusCode,
+    initial_first_byte_ms: Option<u128>,
+    upstream_request_identity: Option<(&'static str, String)>,
+    mismatch: crate::gateway::proxy::sse::ResponsesDeltaFinalMismatch,
+) -> LoopControl {
+    let ProviderCtx {
+        provider_id,
+        provider_name_base,
+        provider_base_url_base,
+        provider_index,
+        provider_bridged,
+        session_reuse,
+        ..
+    } = provider_ctx;
+    let AttemptCtx {
+        retry_index,
+        attempt_started_ms,
+        attempt_started,
+        circuit_before,
+        ..
+    } = attempt_ctx;
+    let LoopState {
+        attempts,
+        failed_provider_ids: _,
+        last_outcome,
+        active_requested_model: _,
+        circuit_snapshot: _,
+        abort_guard,
+    } = loop_state;
+
+    let error_code = GatewayErrorCode::ResponsesDeltaFinalMismatch.as_str();
+    let category = ErrorCategory::SystemError;
+    let decision = FailoverDecision::Abort;
+    let effective_status = StatusCode::BAD_GATEWAY.as_u16();
+    let outcome = format!(
+        "responses_delta_final_mismatch: category={} code={} decision={} upstream_status={} delta_len_bytes={} final_len_bytes={} final_source={}",
+        category.as_str(),
+        error_code,
+        decision.as_str(),
+        status.as_u16(),
+        mismatch.delta_len_bytes,
+        mismatch.final_len_bytes,
+        mismatch.final_source,
+    );
+
+    tracing::warn!(
+        trace_id = %ctx.trace_id,
+        provider_id,
+        provider_name = provider_name_base.as_str(),
+        upstream_request_id_header = upstream_request_identity.as_ref().map(|(name, _)| *name),
+        upstream_request_id = upstream_request_identity.as_ref().map(|(_, value)| value.as_str()),
+        response_id = mismatch.response_id.as_deref(),
+        delta_len_bytes = mismatch.delta_len_bytes,
+        final_len_bytes = mismatch.final_len_bytes,
+        delta_sha256 = mismatch.delta_sha256.as_str(),
+        final_sha256 = mismatch.final_sha256.as_str(),
+        final_source = mismatch.final_source,
+        "Codex Responses visible delta does not match final visible output"
+    );
+
+    push_responses_delta_final_mismatch_special_setting(
+        ctx.special_settings,
+        provider_id,
+        provider_name_base.as_str(),
+        retry_index,
+        ctx.trace_id.as_str(),
+        upstream_request_identity,
+        &mismatch,
+    );
+
+    attempts.push(FailoverAttempt {
+        provider_id,
+        provider_name: provider_name_base.clone(),
+        base_url: provider_base_url_base.clone(),
+        outcome: outcome.clone(),
+        status: Some(effective_status),
+        provider_index: Some(provider_index),
+        retry_index: Some(retry_index),
+        session_reuse,
+        provider_bridged: Some(provider_bridged),
+        error_category: Some(category.as_str()),
+        error_code: Some(error_code),
+        decision: Some(decision.as_str()),
+        reason: Some(
+            "Codex Responses visible delta did not match final visible output".to_string(),
+        ),
+        selection_method: dc::selection_method(provider_index, retry_index, session_reuse),
+        reason_code: Some(category.reason_code()),
+        attempt_started_ms: Some(attempt_started_ms),
+        attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
+        circuit_state_before: Some(circuit_before.state.as_str()),
+        circuit_state_after: Some(circuit_before.state.as_str()),
+        circuit_failure_count: Some(circuit_before.failure_count),
+        circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        timeout_secs: None,
+    });
+
+    emit_attempt_event_and_log(
+        ctx,
+        provider_ctx,
+        attempt_ctx,
+        outcome,
+        Some(effective_status),
+        AttemptCircuitFields {
+            state_before: Some(circuit_before.state.as_str()),
+            state_after: Some(circuit_before.state.as_str()),
+            failure_count: Some(circuit_before.failure_count),
+            failure_threshold: Some(circuit_before.failure_threshold),
+        },
+    )
+    .await;
+
+    *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
+    let duration_ms = ctx.started.elapsed().as_millis();
+    emit_request_event_and_enqueue_request_log(
+        RequestEndArgs::from_context(RequestEndContextArgs {
+            deps: RequestEndDeps::new(
+                &ctx.state.app,
+                &ctx.state.db,
+                &ctx.state.log_tx,
+                &ctx.state.plugin_pipeline,
+                &ctx.state.active_requests,
+            ),
+            trace_id: ctx.trace_id.as_str(),
+            cli_key: ctx.cli_key.as_str(),
+            method: ctx.method_hint.as_str(),
+            path: ctx.forwarded_path.as_str(),
+            observe: ctx.observe,
+            query: ctx.query.as_deref(),
+            excluded_from_stats: false,
+            duration_ms,
+            attempts: attempts.as_slice(),
+            special_settings_json: response_fixer::special_settings_json(ctx.special_settings),
+            session_id: ctx.session_id.clone(),
+            requested_model: provider_ctx
+                .active_requested_model
+                .map(str::to_string)
+                .or_else(|| ctx.requested_model.clone()),
+            created_at_ms: ctx.created_at_ms,
+            created_at: ctx.created_at,
+        })
+        .with_completion(RequestCompletion::failure_with_visible_ttfb(
+            effective_status,
+            Some(category.as_str()),
+            error_code,
+            initial_first_byte_ms,
+            Some(duration_ms),
+        )),
+    )
+    .await;
+
+    abort_guard.disarm();
+    LoopControl::Return(error_response(
+        StatusCode::BAD_GATEWAY,
+        ctx.trace_id.clone(),
+        error_code,
+        "Codex Responses stream delta/final mismatch".to_string(),
+        attempts.clone(),
+    ))
 }
 
 fn should_buffer_native_codex_responses_for_reasoning_guard(
@@ -1067,10 +1305,18 @@ where
     } = attempt_ctx;
     let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
     let reason_code = dc::success_reason_code(provider_index, retry_index);
-    // Empty-success classification needs terminal SSE usage before response headers are sent,
-    // otherwise the gateway cannot return 502 or fail over to the next provider.
+    // Empty-success classification needs pre-commit buffering, so keep it only
+    // on interception paths that already require buffering.
     let should_buffer_codex_responses_event_stream =
         should_buffer_native_codex_responses_for_empty_detection(
+            common.codex_reasoning_guard_enabled,
+            &common.cli_key,
+            &common.forwarded_path,
+            active_bridge_type,
+        );
+    let should_validate_codex_responses_delta_final =
+        should_buffer_native_codex_responses_for_validation(
+            common.codex_reasoning_guard_enabled,
             &common.cli_key,
             &common.forwarded_path,
             active_bridge_type,
@@ -2246,6 +2492,33 @@ where
                 codex_reasoning_features::push_special_setting(&common.special_settings, sample);
             }
 
+            if should_validate_codex_responses_delta_final {
+                if let Err(mismatch) =
+                    crate::gateway::proxy::sse::validate_responses_delta_matches_final(raw.as_ref())
+                {
+                    let upstream_request_identity =
+                        upstream_request_identity_from_headers(&response_headers);
+                    return record_responses_delta_final_mismatch(
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        LoopState {
+                            attempts,
+                            failed_provider_ids,
+                            last_outcome,
+                            active_requested_model,
+                            circuit_snapshot,
+                            abort_guard,
+                        },
+                        status,
+                        initial_first_byte_ms,
+                        upstream_request_identity,
+                        mismatch,
+                    )
+                    .await;
+                }
+            }
+
             if let (Some(namespace), Some(input)) =
                 (responses_cache_namespace, responses_cache_input)
             {
@@ -2820,14 +3093,22 @@ mod tests {
     #[test]
     fn native_codex_stream_buffering_excludes_bridge_paths() {
         assert!(should_buffer_native_codex_responses_for_empty_detection(
+            true,
             "codex",
             "/v1/responses",
             None
         ));
         assert!(!should_buffer_native_codex_responses_for_empty_detection(
+            true,
             "codex",
             "/v1/responses",
             Some("codex_to_openai_chat")
+        ));
+        assert!(!should_buffer_native_codex_responses_for_empty_detection(
+            false,
+            "codex",
+            "/v1/responses",
+            None
         ));
         assert!(should_buffer_native_codex_responses_for_reasoning_guard(
             true,
