@@ -450,6 +450,30 @@ fn validate_raw_allows_empty() {
 }
 
 #[test]
+fn validate_raw_allows_max_and_ultra_model_reasoning_effort() {
+    for effort in ["max", "ultra"] {
+        let out = validate_codex_config_toml_raw(&format!("model_reasoning_effort = \"{effort}\""));
+        assert!(out.ok, "{effort}: {out:?}");
+        assert!(out.error.is_none(), "{effort}: {out:?}");
+    }
+}
+
+#[test]
+fn patch_writes_ultra_model_reasoning_effort() {
+    let out = patch_config_toml(
+        None,
+        CodexConfigPatch {
+            model_reasoning_effort: Some("ultra".to_string()),
+            ..empty_patch()
+        },
+    )
+    .expect("patch_config_toml");
+
+    let s = String::from_utf8(out).expect("utf8");
+    assert!(s.contains("model_reasoning_effort = \"ultra\""), "{s}");
+}
+
+#[test]
 fn validate_raw_rejects_invalid_toml_with_location_when_available() {
     let out = validate_codex_config_toml_raw("approval_policy =");
     assert!(!out.ok, "{out:?}");

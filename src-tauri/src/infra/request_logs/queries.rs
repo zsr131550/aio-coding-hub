@@ -822,7 +822,7 @@ SELECT
   COALESCE((SELECT COUNT(DISTINCT request_id) FROM feature_samples), 0) AS feature_sample_request_count,
   COALESCE((SELECT COUNT(*) FROM feature_samples), 0) AS feature_sample_count,
   COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.finalAnswerOnly') = 1 THEN 1 ELSE 0 END) FROM feature_samples), 0) AS final_answer_only_sample_count,
-  COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.finalAnswerOnly') = 1 AND request_reasoning_effort IN ('high', 'xhigh') THEN 1 ELSE 0 END) FROM feature_samples), 0) AS high_xhigh_final_answer_only_sample_count,
+  COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.finalAnswerOnly') = 1 AND request_reasoning_effort IN ('high', 'xhigh', 'max', 'ultra') THEN 1 ELSE 0 END) FROM feature_samples), 0) AS high_xhigh_final_answer_only_sample_count,
   COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.reasoningTokens') = 516 AND json_extract(feature, '$.finalAnswerOnly') = 1 AND COALESCE(json_extract(feature, '$.commentaryObserved'), 0) = 0 THEN 1 ELSE 0 END) FROM feature_samples), 0) AS reasoning_516_final_answer_only_no_commentary_count,
   COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.interceptExemptReason') = 'context_compaction' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS compaction_exempt_sample_count,
   COALESCE((SELECT SUM(CASE WHEN json_type(feature, '$.reasoningTokens') IS NOT NULL AND json_type(feature, '$.reasoningTokens') != 'null' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS reasoning_tokens_coverage_count,
@@ -1095,6 +1095,8 @@ WITH codex_requests AS (
             WHEN 'medium' THEN 'medium'
             WHEN 'high' THEN 'high'
             WHEN 'xhigh' THEN 'xhigh'
+            WHEN 'max' THEN 'max'
+            WHEN 'ultra' THEN 'ultra'
             ELSE NULL
           END
         FROM json_each(request_logs.special_settings_json) AS effort
@@ -1843,7 +1845,7 @@ INSERT INTO request_logs (
             "trace-decision-only",
             Some("gpt-5-codex"),
             Some(
-                r#"[{"type":"codex_reasoning_effort","effort":"high"},{"type":"codex_reasoning_guard_decision","hit":false,"matchedRuleAction":"no_intercept"}]"#,
+                r#"[{"type":"codex_reasoning_effort","effort":"max"},{"type":"codex_reasoning_guard_decision","hit":false,"matchedRuleAction":"no_intercept"}]"#,
             ),
         );
         seed_codex_request_log_with_special_settings(
@@ -1852,7 +1854,7 @@ INSERT INTO request_logs (
             "trace-hit-with-decision",
             Some("gpt-5-codex"),
             Some(
-                r#"[{"type":"codex_reasoning_effort","effort":"high"},{"type":"codex_reasoning_guard","hit":true},{"type":"codex_reasoning_guard_decision","hit":false,"matchedRuleAction":"no_intercept"}]"#,
+                r#"[{"type":"codex_reasoning_effort","rawEffort":"Ultra"},{"type":"codex_reasoning_guard","hit":true},{"type":"codex_reasoning_guard_decision","hit":false,"matchedRuleAction":"no_intercept"}]"#,
             ),
         );
         seed_codex_request_log_with_special_settings(
@@ -1882,15 +1884,25 @@ INSERT INTO request_logs (
         assert_eq!(codex_model.normal_request_count, 1);
         assert_eq!(codex_model.hit_attempt_count, 1);
 
-        let codex_high = stats
+        let codex_max = stats
             .by_model_and_effort
             .iter()
-            .find(|row| row.requested_model == "gpt-5-codex" && row.reasoning_effort == "high")
-            .expect("gpt-5-codex high stats");
-        assert_eq!(codex_high.total_request_count, 2);
-        assert_eq!(codex_high.hit_request_count, 1);
-        assert_eq!(codex_high.normal_request_count, 1);
-        assert_eq!(codex_high.hit_attempt_count, 1);
+            .find(|row| row.requested_model == "gpt-5-codex" && row.reasoning_effort == "max")
+            .expect("gpt-5-codex max stats");
+        assert_eq!(codex_max.total_request_count, 1);
+        assert_eq!(codex_max.hit_request_count, 0);
+        assert_eq!(codex_max.normal_request_count, 1);
+        assert_eq!(codex_max.hit_attempt_count, 0);
+
+        let codex_ultra = stats
+            .by_model_and_effort
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex" && row.reasoning_effort == "ultra")
+            .expect("gpt-5-codex ultra stats");
+        assert_eq!(codex_ultra.total_request_count, 1);
+        assert_eq!(codex_ultra.hit_request_count, 1);
+        assert_eq!(codex_ultra.normal_request_count, 0);
+        assert_eq!(codex_ultra.hit_attempt_count, 1);
     }
 
     #[test]
@@ -1929,7 +1941,7 @@ INSERT INTO request_logs (
             "trace-token-active",
             Some("gpt-5-mini-codex"),
             Some(
-                r#"[{"type":"codex_reasoning_features","ruleMode":"reasoning_tokens","reasoningTokens":516,"requestReasoningEffort":"low","responseClassification":"complete","finalAnswerOnly":true,"commentaryObserved":false,"interceptExemptReason":null},{"type":"codex_reasoning_guard"}]"#,
+                r#"[{"type":"codex_reasoning_features","ruleMode":"reasoning_tokens","reasoningTokens":516,"rawRequestReasoningEffort":"Ultra","responseClassification":"complete","finalAnswerOnly":true,"commentaryObserved":false,"interceptExemptReason":null},{"type":"codex_reasoning_guard"}]"#,
             ),
         );
         seed_codex_request_log_with_special_settings(
@@ -1954,7 +1966,7 @@ INSERT INTO request_logs (
         assert_eq!(stats.feature_sample_request_count, 3);
         assert_eq!(stats.feature_sample_count, 3);
         assert_eq!(stats.final_answer_only_sample_count, 2);
-        assert_eq!(stats.high_xhigh_final_answer_only_sample_count, 1);
+        assert_eq!(stats.high_xhigh_final_answer_only_sample_count, 2);
         assert_eq!(stats.reasoning_516_final_answer_only_no_commentary_count, 2);
         assert_eq!(stats.compaction_exempt_sample_count, 1);
         assert_eq!(stats.reasoning_tokens_coverage_count, 2);

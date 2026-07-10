@@ -162,9 +162,9 @@ const CODEX_REASONING_GUARD_BUILTIN_TEMPLATES: CodexReasoningGuardTemplateOption
   },
   {
     id: CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID,
-    name: "Final answer only high/xhigh",
+    name: "Final answer only high/xhigh/max/ultra",
     description:
-      "请求 reasoning effort 为 high/xhigh 且响应只有 final answer 时命中；仅 reasoning_tokens 为 0 的 context_compaction 豁免。",
+      "请求 reasoning effort 为 high/xhigh/max/ultra 且响应只有 final answer 时命中；仅 reasoning_tokens 为 0 的 context_compaction 豁免。",
     source: "builtin",
     readOnly: true,
     rules: [
@@ -179,7 +179,7 @@ const CODEX_REASONING_GUARD_BUILTIN_TEMPLATES: CodexReasoningGuardTemplateOption
       },
       {
         id: "builtin-final-answer-only-high-xhigh",
-        name: "final answer only high/xhigh",
+        name: "final answer only high/xhigh/max/ultra",
         reasoning_tokens: null,
         reasoning_tokens_formula: null,
         action: "intercept",
@@ -192,7 +192,7 @@ const CODEX_REASONING_GUARD_BUILTIN_TEMPLATES: CodexReasoningGuardTemplateOption
             number_value: null,
             bool_value: null,
             string_value: null,
-            string_values: ["high", "xhigh"],
+            string_values: ["high", "xhigh", "max", "ultra"],
           },
           {
             id: "final-answer-only",
@@ -2442,7 +2442,7 @@ export function CliManagerCodexTab({
                       <div className="text-sm font-semibold text-foreground">降智拦截</div>
                       <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
                         支持按 <span className="font-mono">reasoning_tokens</span> 或{" "}
-                        <span className="font-mono">final-answer-only high/xhigh</span>{" "}
+                        <span className="font-mono">final-answer-only high/xhigh/max/ultra</span>{" "}
                         特征拦截；命中后按策略执行思考续写或自动重试，并且不计入熔断。
                       </div>
                       <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
@@ -3865,6 +3865,8 @@ export function CliManagerCodexTab({
                       { value: "medium", label: "中 (medium)" },
                       { value: "high", label: "高 (high)" },
                       { value: "xhigh", label: "极高 (xhigh)" },
+                      { value: "max", label: "最高 (max)" },
+                      { value: "ultra", label: "超高 (ultra)" },
                     ]}
                     disabled={saving}
                   />

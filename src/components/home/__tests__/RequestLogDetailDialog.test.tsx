@@ -257,7 +257,7 @@ describe("home/RequestLogDetailDialog", () => {
         status: 200,
         error_code: null,
         special_settings_json: JSON.stringify([
-          { type: "codex_reasoning_effort", source: "request", effort: "high" },
+          { type: "codex_reasoning_effort", source: "request", effort: "max" },
         ]),
         usage_json: JSON.stringify({
           output_tokens_details: {
@@ -270,7 +270,27 @@ describe("home/RequestLogDetailDialog", () => {
 
     render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
-    expectMetricValue("思考等级", "high");
+    expectMetricValue("思考等级", "max");
+    expectMetricValue("等级来源", "请求显式");
+  });
+
+  it("shows Codex reasoning effort from raw effort on the summary tab", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        requested_model: "gpt-5.5",
+        status: 200,
+        error_code: null,
+        special_settings_json: JSON.stringify([
+          { type: "codex_reasoning_effort", source: "request", rawEffort: "Ultra" },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expectMetricValue("思考等级", "ultra");
     expectMetricValue("等级来源", "请求显式");
   });
 

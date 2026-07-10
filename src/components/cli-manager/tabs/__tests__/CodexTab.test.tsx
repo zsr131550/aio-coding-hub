@@ -202,6 +202,29 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     } as any);
   });
 
+  it("renders max and ultra Codex model reasoning effort options", () => {
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig({ model_reasoning_effort: "ultra" })}
+        codexConfigToml={null}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+      />
+    );
+
+    expect(screen.getByRole("radio", { name: "最高 (max)" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "超高 (ultra)" })).toBeChecked();
+  });
+
   it("handles sandbox confirm flow and toggles", async () => {
     const persistCodexConfig = vi.fn();
     const refreshCodex = vi.fn();
@@ -747,7 +770,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     });
     expect(
       within(dialog).getByText(
-        "请求 reasoning effort 为 high/xhigh 且响应只有 final answer 时命中；仅 reasoning_tokens 为 0 的 context_compaction 豁免。"
+        "请求 reasoning effort 为 high/xhigh/max/ultra 且响应只有 final answer 时命中；仅 reasoning_tokens 为 0 的 context_compaction 豁免。"
       )
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));

@@ -28,7 +28,7 @@ const CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_NAME: &str = "Legac
 const CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_NAME: &str =
     "Reasoning tokens 518*N-2";
 const CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_NAME: &str =
-    "Final-answer-only high/xhigh";
+    "Final-answer-only high/xhigh/max/ultra";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -936,7 +936,7 @@ fn detect_final_answer_only_high_xhigh(
 ) -> Option<CodexReasoningGuardMatch> {
     let sample = input.feature_sample?;
     let effort = sample.request_reasoning_effort.as_deref()?;
-    if !matches!(effort, "high" | "xhigh") {
+    if !matches!(effort, "high" | "xhigh" | "max" | "ultra") {
         return None;
     }
     if sample.final_answer_only != Some(true)
@@ -2558,6 +2558,56 @@ mod tests {
         );
         assert_eq!(matched.request_reasoning_effort.as_deref(), Some("high"));
         assert_eq!(matched.final_answer_only, Some(true));
+    }
+
+    #[test]
+    fn evaluate_feature_mode_matches_max_and_ultra_reasoning_effort() {
+        let response = serde_json::json!({
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "redacted"}]
+            }]
+        });
+
+        for effort in ["max", "ultra"] {
+            let settings = vec![serde_json::json!({
+                "type": "codex_reasoning_effort",
+                "effort": effort,
+                "rawEffort": effort,
+                "pointer": "/reasoning/effort"
+            })];
+            let sample = super::super::codex_reasoning_features::build_complete_sample(
+                "codex",
+                CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh,
+                None,
+                None,
+                &settings,
+                &response,
+            )
+            .expect("feature sample");
+
+            let matched = evaluate(CodexReasoningGuardLegacyEvaluationInput {
+                base: CodexReasoningGuardEvaluationInput {
+                    cli_key: "codex",
+                    requested_model: Some("gpt-5.6"),
+                    value: &response,
+                    rule_mode: CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh,
+                    feature_sample: Some(&sample),
+                },
+                fallback_compare_mode: CodexReasoningGuardCompareMode::Equals,
+                fallback_values: &[516],
+                model_rules: &[],
+            })
+            .expect("feature match");
+
+            assert_eq!(
+                matched.hit_source,
+                CodexReasoningGuardHitSource::FinalAnswerOnlyHighXhigh
+            );
+            assert_eq!(matched.request_reasoning_effort.as_deref(), Some(effort));
+            assert_eq!(matched.final_answer_only, Some(true));
+        }
     }
 
     #[test]

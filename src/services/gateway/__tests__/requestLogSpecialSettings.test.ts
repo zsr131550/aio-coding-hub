@@ -3,6 +3,7 @@ import {
   countCodexReasoningGuardSpecialSettings,
   formatCodexReasoningEffortSource,
   hasClaudeModelMappingSpecialSetting,
+  hasExplicitCodexReasoningEffortSpecialSetting,
   resolveCodexReasoningContinuationSummary,
   resolveCodexReasoningFeatureSummary,
   resolveCodexReasoningEffort,
@@ -373,12 +374,45 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       count: 1,
       latestRuleMode: "final_answer_only_high_xhigh",
       latestHitSource: "final_answer_only_high_xhigh",
-      latestRuleLabel: "final-only high/xhigh",
+      latestRuleLabel: "final-only high/xhigh/max/ultra",
       latestRequestReasoningEffort: "xhigh",
       latestFinalAnswerOnly: true,
       latestCommentaryObserved: false,
       latestHasToolCall: false,
       latestHasReasoningItem: false,
+    });
+  });
+
+  it("counts max and ultra as high-effort final-only Codex feature samples", () => {
+    const summary = resolveCodexReasoningFeatureSummary(
+      JSON.stringify([
+        {
+          type: "codex_reasoning_features",
+          ruleMode: "final_answer_only_high_xhigh",
+          requestReasoningEffort: "max",
+          responseClassification: "complete",
+          finalAnswerOnly: true,
+          commentaryObserved: false,
+        },
+        {
+          type: "codex_reasoning_features",
+          ruleMode: "final_answer_only_high_xhigh",
+          rawRequestReasoningEffort: "Ultra",
+          responseClassification: "complete",
+          finalAnswerOnly: true,
+          commentaryObserved: false,
+        },
+      ])
+    );
+
+    expect(summary).toMatchObject({
+      count: 2,
+      completeCount: 2,
+      finalAnswerOnlyCount: 2,
+      highXhighFinalAnswerOnlyCount: 2,
+      highXhighFinalAnswerOnlyCandidateCount: 2,
+      latestRequestReasoningEffort: "ultra",
+      latestCandidate: true,
     });
   });
 
@@ -432,7 +466,7 @@ describe("services/gateway/requestLogSpecialSettings", () => {
   });
 
   it("resolves explicit Codex reasoning effort from special settings", () => {
-    const settings = JSON.stringify([
+    const highSettings = JSON.stringify([
       {
         type: "codex_reasoning_effort",
         source: "request",
@@ -440,10 +474,41 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       },
     ]);
 
-    expect(resolveCodexReasoningEffort("gpt-5.5", settings)).toEqual({
+    expect(resolveCodexReasoningEffort("gpt-5.5", highSettings)).toEqual({
       effort: "high",
       source: "request",
     });
+    expect(
+      resolveCodexReasoningEffort(
+        "gpt-5.5",
+        JSON.stringify([{ type: "codex_reasoning_effort", source: "request", effort: " MAX " }])
+      )
+    ).toEqual({
+      effort: "max",
+      source: "request",
+    });
+    expect(
+      resolveCodexReasoningEffort(
+        "gpt-5.5",
+        JSON.stringify([{ type: "codex_reasoning_effort", source: "request", rawEffort: "Ultra" }])
+      )
+    ).toEqual({
+      effort: "ultra",
+      source: "request",
+    });
+  });
+
+  it("recognizes raw Codex reasoning effort as explicit", () => {
+    expect(
+      hasExplicitCodexReasoningEffortSpecialSetting(
+        JSON.stringify([{ type: "codex_reasoning_effort", rawEffort: "Ultra" }])
+      )
+    ).toBe(true);
+    expect(
+      hasExplicitCodexReasoningEffortSpecialSetting(
+        JSON.stringify([{ type: "codex_reasoning_effort", rawEffort: "turbo" }])
+      )
+    ).toBe(false);
   });
 
   it("uses conservative Codex effort defaults and unknown fallback", () => {

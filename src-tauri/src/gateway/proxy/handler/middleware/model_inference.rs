@@ -199,7 +199,7 @@ fn extract_codex_reasoning_effort(
 fn normalize_codex_reasoning_effort(value: &str) -> Option<String> {
     let effort = value.trim().to_ascii_lowercase();
     match effort.as_str() {
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => Some(effort),
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" => Some(effort),
         _ => None,
     }
 }
@@ -279,6 +279,22 @@ mod tests {
         assert_eq!(camel_extracted.effort.as_deref(), Some("minimal"));
         assert_eq!(camel_extracted.raw_effort, "minimal");
         assert_eq!(camel_extracted.pointer, "/reasoningEffort");
+    }
+
+    #[test]
+    fn extracts_max_and_ultra_codex_reasoning_effort() {
+        let max = serde_json::json!({ "reasoning_effort": "max" });
+        let ultra = serde_json::json!({ "reasoningEffort": "Ultra" });
+
+        let max_extracted = extract_codex_reasoning_effort(&max).expect("max effort");
+        let ultra_extracted = extract_codex_reasoning_effort(&ultra).expect("ultra effort");
+
+        assert_eq!(max_extracted.effort.as_deref(), Some("max"));
+        assert_eq!(max_extracted.raw_effort, "max");
+        assert_eq!(max_extracted.pointer, "/reasoning_effort");
+        assert_eq!(ultra_extracted.effort.as_deref(), Some("ultra"));
+        assert_eq!(ultra_extracted.raw_effort, "Ultra");
+        assert_eq!(ultra_extracted.pointer, "/reasoningEffort");
     }
 
     #[test]

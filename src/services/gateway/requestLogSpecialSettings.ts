@@ -69,6 +69,8 @@ export type CodexReasoningEffort =
   | "medium"
   | "high"
   | "xhigh"
+  | "max"
+  | "ultra"
   | "unknown";
 
 export type CodexReasoningEffortSource = "request" | "default" | "unknown";
@@ -78,13 +80,24 @@ export type CodexReasoningEffortResolution = {
   source: CodexReasoningEffortSource;
 };
 
-const CODEX_REASONING_EFFORTS = new Set<CodexReasoningEffort>([
+type KnownCodexReasoningEffort = Exclude<CodexReasoningEffort, "unknown">;
+
+const CODEX_REASONING_EFFORTS = new Set<KnownCodexReasoningEffort>([
   "none",
   "minimal",
   "low",
   "medium",
   "high",
   "xhigh",
+  "max",
+  "ultra",
+]);
+
+const CODEX_FINAL_ONLY_HIGH_REASONING_EFFORTS = new Set<KnownCodexReasoningEffort>([
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
 ]);
 
 const KNOWN_CODEX_MODEL_DEFAULT_REASONING_EFFORTS: Readonly<Record<string, CodexReasoningEffort>> =
@@ -140,12 +153,10 @@ function parsedSettingNullableNumber(value: unknown): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
-function normalizeCodexReasoningEffort(
-  value: unknown
-): Exclude<CodexReasoningEffort, "unknown"> | null {
+function normalizeCodexReasoningEffort(value: unknown): KnownCodexReasoningEffort | null {
   const effort = parsedSettingString(value).trim().toLowerCase();
-  return CODEX_REASONING_EFFORTS.has(effort as CodexReasoningEffort)
-    ? (effort as Exclude<CodexReasoningEffort, "unknown">)
+  return CODEX_REASONING_EFFORTS.has(effort as KnownCodexReasoningEffort)
+    ? (effort as KnownCodexReasoningEffort)
     : null;
 }
 
@@ -164,7 +175,8 @@ export function resolveCodexReasoningEffort(
     .reverse()
     .find((setting) => setting.type === "codex_reasoning_effort");
   const explicitEffort = explicitSetting
-    ? normalizeCodexReasoningEffort(explicitSetting.effort)
+    ? (normalizeCodexReasoningEffort(explicitSetting.effort) ??
+      normalizeCodexReasoningEffort(explicitSetting.rawEffort))
     : null;
 
   if (explicitEffort) {
@@ -191,7 +203,10 @@ export function hasExplicitCodexReasoningEffortSpecialSetting(
 ) {
   return parseRequestLogSpecialSettings(specialSettingsJson).some((setting) => {
     if (setting.type !== "codex_reasoning_effort") return false;
-    return normalizeCodexReasoningEffort(setting.effort) !== null;
+    return (
+      (normalizeCodexReasoningEffort(setting.effort) ??
+        normalizeCodexReasoningEffort(setting.rawEffort)) !== null
+    );
   });
 }
 
@@ -331,7 +346,7 @@ export function resolveCodexReasoningGuardSummary(
           : Number.isFinite(matchedRuleToken)
             ? `token ${matchedRuleToken}`
             : latestHitSource === "final_answer_only_high_xhigh"
-              ? "final-only high/xhigh"
+              ? "final-only high/xhigh/max/ultra"
               : null);
       latestReasoningTokens = Number.isFinite(reasoningTokens) ? reasoningTokens : null;
       latestRequestReasoningEffort = normalizeSpecialSettingToken(setting.requestReasoningEffort);
@@ -514,7 +529,8 @@ export function resolveCodexReasoningFeatureSummary(
       normalizeSpecialSettingToken(setting.interceptExemptReason) === "context_compaction";
     const highXhighFinalAnswerOnly =
       finalAnswerOnly === true &&
-      (requestReasoningEffort === "high" || requestReasoningEffort === "xhigh");
+      requestReasoningEffort != null &&
+      CODEX_FINAL_ONLY_HIGH_REASONING_EFFORTS.has(requestReasoningEffort);
     const candidate =
       responseClassification === "complete" && highXhighFinalAnswerOnly && !compactionExempt;
 
