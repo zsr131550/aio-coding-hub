@@ -9,6 +9,7 @@ import type { CliSessionsFolderLookupEntry } from "../../services/cli/cliSession
 import type { CliKey } from "../../services/providers/providers";
 import type { ProjectedRealtimeCard } from "../../services/gateway/requestActivityProjection";
 import { REALTIME_TRACE_EXIT_START_MS } from "../../services/gateway/requestActivityProjection";
+import { requestLogActiveActivityState } from "../../services/gateway/requestLogState";
 import { hasFailoverFromSegments } from "../../services/gateway/traceRoute";
 import { cn } from "../../utils/cn";
 import {
@@ -67,12 +68,10 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
   formatUnixSeconds,
   showCustomTooltip,
 }: RealtimeTraceCardsProps) {
-  const visibleTraces = useMemo(() => cards.map((card) => card.trace), [cards]);
-
   // Compute a batch-aligned exit threshold: if multiple traces completed within
   // BATCH_EXIT_WINDOW_MS of each other, they all exit when the earliest one would.
   const batchExitThresholdMs = useMemo(() => {
-    const completedTraces = visibleTraces.filter((t) => t.summary);
+    const completedTraces = cards.flatMap((card) => (card.kind === "settling" ? [card.trace] : []));
     if (completedTraces.length <= 1) return null;
     // Find earliest completion
     const earliestLastSeen = Math.min(...completedTraces.map((t) => t.last_seen_ms));
@@ -82,24 +81,24 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
       return earliestLastSeen + REALTIME_TRACE_EXIT_START_MS;
     }
     return null;
-  }, [visibleTraces]);
+  }, [cards]);
 
   return (
     <>
-      {visibleTraces.map((trace) => {
-        const completedAgeMs = trace.summary ? Math.max(0, nowMs - trace.last_seen_ms) : 0;
+      {cards.map((card) => {
+        const trace = card.trace;
+        const summary = card.kind === "settling" ? card.trace.summary : null;
+        const isInProgress = card.kind === "active";
+        const completedAgeMs = summary ? Math.max(0, nowMs - trace.last_seen_ms) : 0;
         const isExiting =
-          Boolean(trace.summary) &&
+          summary != null &&
           (batchExitThresholdMs != null
             ? nowMs >= batchExitThresholdMs
             : completedAgeMs >= REALTIME_TRACE_EXIT_START_MS);
-        const runningMs = trace.summary
-          ? trace.summary.duration_ms
-          : Math.max(0, nowMs - trace.first_seen_ms);
+        const runningMs = summary?.duration_ms ?? Math.max(0, nowMs - trace.first_seen_ms);
 
-        const summaryStatus = trace.summary?.status ?? null;
-        const summaryErrorCode = trace.summary?.error_code ?? null;
-        const isInProgress = !trace.summary;
+        const summaryStatus = summary?.status ?? null;
+        const summaryErrorCode = summary?.error_code ?? null;
 
         const attemptRoute = (() => {
           const sortedAttempts = (trace.attempts ?? [])
@@ -163,9 +162,14 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
         const hasSessionReuse = (trace.attempts ?? []).some(
           (attempt) => attempt.session_reuse === true
         );
-        const latestAttempt = (trace.attempts ?? [])
-          .slice()
-          .sort((a, b) => b.attempt_index - a.attempt_index)[0];
+        let latestAttempt: NonNullable<typeof trace.attempts>[number] | undefined;
+        let attemptCount = trace.attempts?.length ?? 0;
+        for (const attempt of trace.attempts ?? []) {
+          attemptCount = Math.max(attemptCount, attempt.attempt_index);
+          if (!latestAttempt || attempt.attempt_index > latestAttempt.attempt_index) {
+            latestAttempt = attempt;
+          }
+        }
 
         const providerText = attemptRoute.providerText;
         const sessionFolder = (() => {
@@ -187,13 +191,13 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
         const modelText = formatRequestLogModelText(
           trace.cli_key,
           trace.requested_model,
-          trace.special_settings_json ?? trace.summary?.special_settings_json ?? null,
+          trace.special_settings_json ?? summary?.special_settings_json ?? null,
           trace.claude_model_mapping
         );
         const cliLabel = cliShortLabel(trace.cli_key);
 
         const cacheWrite = (() => {
-          const s = trace.summary;
+          const s = summary;
           if (!s)
             return {
               tokens: null as number | null,
@@ -221,11 +225,11 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
           return { tokens: null as number | null, ttl: null as "5m" | "1h" | null };
         })();
 
-        const ttfbMetrics = trace.summary
+        const ttfbMetrics = summary
           ? resolveTtfbDisplayMetrics(
-              trace.summary.ttfb_ms ?? null,
-              trace.summary.visible_ttfb_ms ?? null,
-              trace.summary.duration_ms,
+              summary.ttfb_ms ?? null,
+              summary.visible_ttfb_ms ?? null,
+              summary.duration_ms,
               hasCodexReasoningGuardRetryAttempt(trace.attempts)
             )
           : {
@@ -235,16 +239,16 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
             };
         const ttfbMs = ttfbMetrics.providerTtfbMs;
 
-        const effectiveInputTokens = trace.summary?.effective_input_tokens ?? null;
+        const effectiveInputTokens = summary?.effective_input_tokens ?? null;
         const displayInputTokens = effectiveInputTokens ?? (isClientAbort ? 0 : null);
-        const displayOutputTokens = trace.summary?.output_tokens ?? (isClientAbort ? 0 : null);
+        const displayOutputTokens = summary?.output_tokens ?? (isClientAbort ? 0 : null);
         const displayCacheReadTokens =
-          trace.summary?.cache_read_input_tokens ?? (isClientAbort ? 0 : null);
+          summary?.cache_read_input_tokens ?? (isClientAbort ? 0 : null);
         const displayCacheWriteTokens = cacheWrite.tokens ?? (isClientAbort ? 0 : null);
-        const displayCostUsd = trace.summary?.cost_usd ?? (isClientAbort ? 0 : null);
+        const displayCostUsd = summary?.cost_usd ?? (isClientAbort ? 0 : null);
         const displayCostText = displayCostUsd == null ? "—" : formatUsd(displayCostUsd);
         const costMultiplier =
-          typeof trace.summary?.cost_multiplier === "number" ? trace.summary.cost_multiplier : null;
+          typeof summary?.cost_multiplier === "number" ? summary.cost_multiplier : null;
         const isFree = costMultiplier === 0;
         const showCostMultiplier =
           costMultiplier != null && costMultiplier >= 0 && Math.abs(costMultiplier - 1) > 0.0001;
@@ -254,8 +258,8 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
             ? `x${costMultiplier.toFixed(2)}`
             : null;
 
-        const outputTokensPerSecond = trace.summary
-          ? computeOutputTokensPerSecond(displayOutputTokens, trace.summary.duration_ms, ttfbMs)
+        const outputTokensPerSecond = summary
+          ? computeOutputTokensPerSecond(displayOutputTokens, summary.duration_ms, ttfbMs)
           : null;
         const displayOutputTokensPerSecond =
           outputTokensPerSecond ?? (isClientAbort && displayOutputTokens === 0 ? 0 : null);
@@ -272,8 +276,23 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
               ? attemptRoute.segments.map((seg) => seg.provider).join(" → ")
               : null;
         const providerTitle = providerText;
+        const idleMinutes = (() => {
+          if (card.kind !== "active") return null;
+          const activeRequest = card.activeRequest;
+          if (
+            requestLogActiveActivityState(activeRequest.last_activity_ms, nowMs) !==
+            "in_progress_idle"
+          ) {
+            return null;
+          }
+          return Math.max(
+            1,
+            Math.floor(Math.max(0, nowMs - activeRequest.last_activity_ms) / 60_000)
+          );
+        })();
         const liveStageText = (() => {
           if (!isInProgress) return null;
+          if (idleMinutes != null) return `已静默 ${idleMinutes} 分钟`;
           if (!latestAttempt) return "等待首个尝试";
           if (hasFailover) return "切换处理中";
           if (latestAttempt.outcome === "started") return "处理中";
@@ -412,7 +431,7 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                     >
                       <div className={LIVE_METRIC_LABEL}>尝试次数</div>
                       <div className={cn(LIVE_METRIC_VALUE, "font-mono tabular-nums")}>
-                        {formatInteger(trace.attempts.length)}
+                        {formatInteger(attemptCount)}
                       </div>
                     </div>
                     <div

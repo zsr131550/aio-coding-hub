@@ -26,6 +26,8 @@ type UseRequestLogsFeedOptions = {
   foregroundThrottleMs?: number;
 };
 
+const ACTIVE_REQUEST_SIGNAL_REFRESH_WINDOW_MS = 200;
+
 function resolveSignalRefreshWindowMs(input: number | false | undefined) {
   if (input === false) return 400;
   if (!Number.isFinite(input) || input == null) return 400;
@@ -57,6 +59,24 @@ export function useRequestLogsFeed({
   const traceReconciliationTimerRef = useRef<number | null>(null);
   const traceReconciliationInFlightRef = useRef(false);
   const scheduleTraceReconciliationRef = useRef<(delayMs?: number) => void>(() => {});
+  const refreshActiveRequests = useCallback(
+    () => activeRequestsQuery.refetch(),
+    [activeRequestsQuery]
+  );
+  const { schedule: scheduleActiveRequestsRefresh } = useCoalescedAsyncRefresh<
+    "start" | "complete",
+    unknown
+  >({
+    enabled: liveRefreshEnabled,
+    delayMs: ACTIVE_REQUEST_SIGNAL_REFRESH_WINDOW_MS,
+    task: async () => {
+      await refreshActiveRequests();
+    },
+    onError: (error) => {
+      logToConsole("warn", "刷新进行中请求快照失败", { limit, error: String(error) });
+      return null;
+    },
+  });
   const { schedule: scheduleLiveRefresh } = useCoalescedAsyncRefresh<void, unknown>({
     enabled: liveRefreshEnabled,
     delayMs: liveRefreshWindowMs,
@@ -179,6 +199,7 @@ export function useRequestLogsFeed({
         return;
       }
 
+      scheduleActiveRequestsRefresh(requestSignal.phase);
       if (!isRequestSignalComplete(requestSignal)) {
         return;
       }
@@ -214,6 +235,7 @@ export function useRequestLogsFeed({
     };
   }, [
     foregroundActive,
+    scheduleActiveRequestsRefresh,
     scheduleLiveRefresh,
     scheduleTraceReconciliation,
     signalSubscriptionEnabled,
@@ -254,6 +276,7 @@ export function useRequestLogsFeed({
     requestLogsLoading,
     requestLogsRefreshing,
     requestLogsAvailable,
+    refreshActiveRequests,
     refreshRequestLogs,
   };
 }

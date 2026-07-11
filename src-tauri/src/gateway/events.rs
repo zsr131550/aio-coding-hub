@@ -174,7 +174,7 @@ pub(crate) struct GatewayRequestSignalEvent {
     ts: i64,
 }
 
-#[derive(Debug, Serialize, Clone, specta::Type)]
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, specta::Type)]
 pub(crate) struct GatewayAttemptEvent {
     pub(super) trace_id: String,
     pub(super) cli_key: String,
@@ -383,7 +383,7 @@ fn bound_request_signal_event(mut payload: GatewayRequestSignalEvent) -> Gateway
     payload
 }
 
-fn bound_attempt_event(mut payload: GatewayAttemptEvent) -> GatewayAttemptEvent {
+pub(super) fn bound_attempt_event(mut payload: GatewayAttemptEvent) -> GatewayAttemptEvent {
     payload.method = truncate_chars(payload.method, EVENT_METHOD_MAX_CHARS);
     payload.path = truncate_chars(payload.path, EVENT_PATH_MAX_CHARS);
     truncate_optional_chars(&mut payload.query, EVENT_QUERY_MAX_CHARS);

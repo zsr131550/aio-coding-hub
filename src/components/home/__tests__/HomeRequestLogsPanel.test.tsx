@@ -44,6 +44,7 @@ function activeRequest(
     created_at_ms: Date.now(),
     last_activity_ms: Date.now(),
     ...overrides,
+    current_attempt: overrides.current_attempt ?? null,
   };
 }
 
@@ -158,6 +159,11 @@ describe("components/home/HomeRequestLogsPanel", () => {
           compactModeOverride={false}
           traces={traces}
           activeRequests={[
+            activeRequest({
+              trace_id: "t-live",
+              session_id: "claude-live-session",
+              requested_model: "claude-3-opus",
+            }),
             activeRequest({ trace_id: "t-log-claude", requested_model: "claude-3-opus" }),
             activeRequest({
               trace_id: "t-live-codex",
@@ -822,6 +828,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
   it("shows status-null logs without active registry entry as interrupted history rows", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-29T12:00:00.000Z"));
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
 
     useCliSessionsFolderLookupByIdsQueryMock.mockReturnValue({
       data: [
@@ -894,9 +901,76 @@ describe("components/home/HomeRequestLogsPanel", () => {
     // The log renders as a clickable card in the list.
     expect(screen.getByRole("button", { name: /claude-3-opus/ })).toBeInTheDocument();
     expect(screen.getAllByText("workspace-live-fallback")).toHaveLength(1);
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    setIntervalSpy.mockRestore();
+  });
+
+  it("uses wall-clock time when an already-expired terminal trace arrives while idle", () => {
+    vi.useFakeTimers();
+    const baseTime = new Date("2026-03-29T12:00:00.000Z").getTime();
+    vi.setSystemTime(baseTime);
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+    const commonProps = {
+      requestLogsLoading: false,
+      requestLogsRefreshing: false,
+      requestLogsAvailable: true,
+      onRefreshRequestLogs: vi.fn(),
+      selectedLogId: null,
+      onSelectLogId: vi.fn(),
+    };
+    const view = render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel traces={[]} activeRequests={[]} requestLogs={[]} {...commonProps} />
+      </MemoryRouter>
+    );
+
+    vi.setSystemTime(baseTime + 10_000);
+    const expiredTrace: TraceSession = {
+      trace_id: "expired-terminal",
+      cli_key: "claude",
+      session_id: null,
+      method: "POST",
+      path: "/v1/messages",
+      query: null,
+      requested_model: "expired-model",
+      first_seen_ms: baseTime - 500,
+      last_seen_ms: baseTime,
+      attempts: [],
+    };
+    const completedLog = makeRequestLogs([
+      {
+        id: 12,
+        trace_id: "expired-terminal",
+        cli_key: "claude",
+        method: "POST",
+        path: "/v1/messages",
+        requested_model: "expired-model",
+        status: 200,
+        error_code: null,
+        duration_ms: 500,
+        created_at_ms: baseTime,
+        created_at: Math.floor(baseTime / 1000),
+      },
+    ]);
+
+    view.rerender(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          traces={[expiredTrace]}
+          activeRequests={[]}
+          requestLogs={completedLog}
+          {...commonProps}
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole("button", { name: /expired-model/ })).toBeInTheDocument();
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    setIntervalSpy.mockRestore();
   });
 
   it("shows active registry requests before a persisted request log row exists", () => {
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
@@ -926,6 +1000,9 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(screen.getByText("当前阶段")).toBeInTheDocument();
     expect(screen.getByText("等待首个尝试")).toBeInTheDocument();
     expect(screen.getByTitle("Codex / gpt-5-unknown")).toBeInTheDocument();
+    expect(setIntervalSpy).toHaveBeenCalled();
+    setIntervalSpy.mockRestore();
+    expect(screen.queryByRole("button", { name: /gpt-5/ })).not.toBeInTheDocument();
     expect(screen.queryByText("当前没有最近使用记录")).not.toBeInTheDocument();
   });
 
@@ -1169,7 +1246,8 @@ describe("components/home/HomeRequestLogsPanel", () => {
 
     expect(screen.getByText("进行中")).toBeInTheDocument();
     expect(screen.getByText("当前阶段")).toBeInTheDocument();
-    expect(screen.getByText("等待首个尝试")).toBeInTheDocument();
+    expect(screen.getByText("已静默 12 分钟")).toBeInTheDocument();
+    expect(screen.queryByText("等待首个尝试")).not.toBeInTheDocument();
     expect(screen.getByText("20m0.0s")).toBeInTheDocument();
     expect(screen.queryByText("进行中 · 已静默 12 分钟")).not.toBeInTheDocument();
   });
