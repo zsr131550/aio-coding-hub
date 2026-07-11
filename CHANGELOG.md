@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.60.23](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.22...aio-coding-hub-v0.60.23) (2026-07-11)
+
+
+### Bug Fixes
+
+* **codex:** remove unsupported minimal reasoning effort ([236c656](https://github.com/FingerCaster/aio-coding-hub/commit/236c65658e4a9fc49fe8c04be3c8db0f820650fb))
+* **gateway:** 为后台请求保留尝试进度 ([57198a0](https://github.com/FingerCaster/aio-coding-hub/commit/57198a00937d1991923c832294d81e3d61b2221c))
+* **home:** 收敛请求日志生命周期投影 ([5860eda](https://github.com/FingerCaster/aio-coding-hub/commit/5860edad6950c49421c62aaac6da463c3a397aa1))
+
 ## [0.60.22](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.21...aio-coding-hub-v0.60.22) (2026-07-10)
 
 
