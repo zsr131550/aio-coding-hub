@@ -463,7 +463,7 @@ pub(super) fn validate_codex_config_toml_raw(input: &str) -> CodexConfigTomlVali
             if let Some(err) = validate_root_string_enum(
                 table,
                 "model_reasoning_effort",
-                &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+                &["low", "medium", "high", "xhigh", "max", "ultra"],
             ) {
                 return CodexConfigTomlValidationResult {
                     ok: false,

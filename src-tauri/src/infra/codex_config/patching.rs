@@ -640,7 +640,7 @@ pub(super) fn patch_config_toml(
     validate_enum_or_empty(
         "model_reasoning_effort",
         patch.model_reasoning_effort.as_deref().unwrap_or(""),
-        &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+        &["low", "medium", "high", "xhigh", "max", "ultra"],
     )?;
     validate_enum_or_empty(
         "plan_mode_reasoning_effort",

@@ -481,6 +481,15 @@ describe("services/gateway/requestLogSpecialSettings", () => {
     expect(
       resolveCodexReasoningEffort(
         "gpt-5.5",
+        JSON.stringify([{ type: "codex_reasoning_effort", source: "request", effort: "minimal" }])
+      )
+    ).toEqual({
+      effort: "minimal",
+      source: "request",
+    });
+    expect(
+      resolveCodexReasoningEffort(
+        "gpt-5.5",
         JSON.stringify([{ type: "codex_reasoning_effort", source: "request", effort: " MAX " }])
       )
     ).toEqual({

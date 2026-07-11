@@ -3860,7 +3860,6 @@ export function CliManagerCodexTab({
                     }}
                     options={[
                       { value: "", label: "默认" },
-                      { value: "minimal", label: "最低 (minimal)" },
                       { value: "low", label: "低 (low)" },
                       { value: "medium", label: "中 (medium)" },
                       { value: "high", label: "高 (high)" },

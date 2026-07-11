@@ -202,7 +202,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     } as any);
   });
 
-  it("renders max and ultra Codex model reasoning effort options", () => {
+  it("renders only supported Codex model reasoning effort options", () => {
     render(
       <CliManagerCodexTab
         codexAvailable="available"
@@ -221,6 +221,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
+    expect(screen.queryByRole("radio", { name: "最低 (minimal)" })).not.toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "最高 (max)" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "超高 (ultra)" })).toBeChecked();
   });

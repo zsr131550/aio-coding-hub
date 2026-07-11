@@ -474,6 +474,55 @@ fn patch_writes_ultra_model_reasoning_effort() {
 }
 
 #[test]
+fn patch_rejects_minimal_model_reasoning_effort_before_producing_write_bytes() {
+    let current = b"model_reasoning_effort = \"high\"\n".to_vec();
+    let err = codex_config_next_bytes(
+        Some(current),
+        CodexConfigPatch {
+            model_reasoning_effort: Some("minimal".to_string()),
+            ..empty_patch()
+        },
+    )
+    .expect_err("minimal must be rejected");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("model_reasoning_effort=minimal"),
+        "{message}"
+    );
+    assert!(
+        message.contains("allowed: low, medium, high, xhigh, max, ultra"),
+        "{message}"
+    );
+}
+
+#[test]
+fn raw_toml_rejects_minimal_model_reasoning_effort_before_producing_write_bytes() {
+    let input = "model_reasoning_effort = \"minimal\"";
+    let validation = validate_codex_config_toml_raw(input);
+    assert!(!validation.ok, "{validation:?}");
+    let validation_error = validation.error.expect("validation error");
+    assert!(
+        validation_error
+            .message
+            .contains("model_reasoning_effort=minimal"),
+        "{validation_error:?}"
+    );
+
+    let err = codex_config_normalize_raw_toml(input.to_string())
+        .expect_err("minimal must be rejected before raw TOML is written");
+    let message = err.to_string();
+    assert!(
+        message.contains("model_reasoning_effort=minimal"),
+        "{message}"
+    );
+    assert!(
+        message.contains("allowed: low, medium, high, xhigh, max, ultra"),
+        "{message}"
+    );
+}
+
+#[test]
 fn validate_raw_rejects_invalid_toml_with_location_when_available() {
     let out = validate_codex_config_toml_raw("approval_policy =");
     assert!(!out.ok, "{out:?}");
