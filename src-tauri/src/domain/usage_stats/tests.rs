@@ -40,6 +40,7 @@ fn setup_conn() -> Connection {
 	  cache_creation_input_tokens INTEGER,
 	  cache_creation_5m_input_tokens INTEGER,
 	  cache_creation_1h_input_tokens INTEGER,
+	  special_settings_json TEXT,
 	  cost_usd_femto INTEGER,
 	  usage_json TEXT,
 	  excluded_from_stats INTEGER NOT NULL DEFAULT 0,
@@ -665,6 +666,135 @@ fn cx2cc_gateway_bridge_filter_covers_overview_and_home_usage_queries() {
 }
 
 #[test]
+fn legacy_leaderboards_use_effective_input_for_persisted_cx2cc_semantics() {
+    let (_dir, db) = setup_temp_db();
+    let conn = db.open_connection().expect("open test db connection");
+    let created_at = compute_start_ts_last_n_days(&conn, 1)
+        .expect("today start ts")
+        .saturating_add(60);
+
+    insert_migrated_usage_log(
+        &conn,
+        "trace-legacy-leaderboard-cx2cc",
+        "claude",
+        901,
+        "Deleted CX2CC Provider",
+        1_000,
+        50,
+        created_at,
+        None,
+    );
+    conn.execute(
+        r#"
+UPDATE request_logs
+SET cache_read_input_tokens = 100,
+    cache_creation_input_tokens = 200,
+    special_settings_json = ?2
+WHERE trace_id = ?1
+        "#,
+        params![
+            "trace-legacy-leaderboard-cx2cc",
+            r#"[{"type":"cx2cc_cost_basis","source_cli_key":"codex"}]"#
+        ],
+    )
+    .expect("seed persisted CX2CC semantics");
+    drop(conn);
+
+    let provider_rows =
+        leaderboard_provider(&db, "all", None, 10).expect("legacy provider leaderboard");
+    assert_eq!(provider_rows.len(), 1);
+    let provider = &provider_rows[0];
+    assert_eq!(provider.input_tokens, 700);
+    assert_eq!(provider.output_tokens, 50);
+    assert_eq!(provider.total_tokens, 1_050);
+    assert_eq!(provider.cache_read_input_tokens, 100);
+    assert_eq!(provider.cache_creation_input_tokens, 200);
+
+    let day_rows = leaderboard_day(&db, "all", None, 10).expect("legacy day leaderboard");
+    assert_eq!(day_rows.len(), 1);
+    let day = &day_rows[0];
+    assert_eq!(day.input_tokens, 700);
+    assert_eq!(day.output_tokens, 50);
+    assert_eq!(day.total_tokens, 1_050);
+    assert_eq!(day.cache_read_input_tokens, 100);
+    assert_eq!(day.cache_creation_input_tokens, 200);
+}
+
+#[test]
+fn legacy_leaderboards_fallback_to_persisted_total_only_without_double_counting() {
+    let (_dir, db) = setup_temp_db();
+    let conn = db.open_connection().expect("open test db connection");
+    let created_at = compute_start_ts_last_n_days(&conn, 1)
+        .expect("today start ts")
+        .saturating_add(120);
+
+    insert_migrated_usage_log(
+        &conn,
+        "trace-legacy-total-only",
+        "codex",
+        902,
+        "Legacy Total Provider",
+        1,
+        1,
+        created_at,
+        None,
+    );
+    conn.execute(
+        r#"
+UPDATE request_logs
+SET input_tokens = NULL,
+    output_tokens = NULL,
+    total_tokens = 777,
+    cache_read_input_tokens = NULL,
+    cache_creation_input_tokens = NULL,
+    cache_creation_5m_input_tokens = NULL,
+    cache_creation_1h_input_tokens = NULL
+WHERE trace_id = ?1
+        "#,
+        params!["trace-legacy-total-only"],
+    )
+    .expect("seed total-only legacy row");
+
+    insert_migrated_usage_log(
+        &conn,
+        "trace-legacy-canonical-buckets",
+        "codex",
+        902,
+        "Legacy Total Provider",
+        100,
+        20,
+        created_at.saturating_add(1),
+        None,
+    );
+    conn.execute(
+        r#"
+UPDATE request_logs
+SET total_tokens = 9999,
+    cache_read_input_tokens = 10,
+    cache_creation_input_tokens = 5
+WHERE trace_id = ?1
+        "#,
+        params!["trace-legacy-canonical-buckets"],
+    )
+    .expect("seed canonical bucket row with stale persisted total");
+    drop(conn);
+
+    let provider_rows =
+        leaderboard_provider(&db, "all", None, 10).expect("legacy provider leaderboard");
+    assert_eq!(provider_rows.len(), 1);
+    let provider = &provider_rows[0];
+    assert_eq!(provider.input_tokens, 85);
+    assert_eq!(provider.output_tokens, 20);
+    assert_eq!(provider.total_tokens, 897);
+    assert_eq!(provider.cache_read_input_tokens, 10);
+    assert_eq!(provider.cache_creation_input_tokens, 5);
+
+    let day_rows = leaderboard_day(&db, "all", None, 10).expect("legacy day leaderboard");
+    assert_eq!(day_rows.len(), 1);
+    assert_eq!(day_rows[0].total_tokens, 897);
+}
+
+#[test]
 fn v2_cache_rate_denominator_aligns_across_clis() {
     let conn = setup_conn();
 
@@ -1132,11 +1262,11 @@ INSERT INTO request_logs (
     assert_eq!(rows_hour.len(), 2);
     assert_eq!(rows_hour[0].name, "codex/OpenAI");
     assert_eq!(rows_hour[0].hour, Some(1));
-    assert_eq!(rows_hour[0].denom_tokens, 520);
+    assert_eq!(rows_hour[0].denom_tokens, 500);
     assert_eq!(rows_hour[0].cache_read_input_tokens, 200);
 
     assert_eq!(rows_hour[1].hour, Some(2));
-    assert_eq!(rows_hour[1].denom_tokens, 110);
+    assert_eq!(rows_hour[1].denom_tokens, 100);
     assert_eq!(rows_hour[1].cache_read_input_tokens, 50);
 
     // Weekly bucket is day-based and aggregates both rows into a single point.
@@ -1156,7 +1286,7 @@ INSERT INTO request_logs (
 
     assert_eq!(rows_day.len(), 1);
     assert_eq!(rows_day[0].hour, None);
-    assert_eq!(rows_day[0].denom_tokens, 630);
+    assert_eq!(rows_day[0].denom_tokens, 600);
     assert_eq!(rows_day[0].cache_read_input_tokens, 250);
     assert_eq!(rows_day[0].requests_success, 2);
 }
@@ -1823,15 +1953,15 @@ fn day_detail_v1_filters_by_local_day_and_returns_hour_buckets() {
     assert_eq!(detail.hours[0].requests_total, 0);
     assert_eq!(detail.hours[0].total_tokens, 0);
     assert_eq!(detail.hours[2].requests_total, 2);
-    assert_eq!(detail.hours[2].total_tokens, 230);
-    assert_eq!(detail.hours[2].io_total_tokens, 190);
+    assert_eq!(detail.hours[2].total_tokens, 220);
+    assert_eq!(detail.hours[2].io_total_tokens, 180);
     assert_eq!(detail.hours[5].requests_total, 1);
     assert_eq!(detail.hours[5].total_tokens, 90);
     assert_eq!(detail.hours[23].hour, 23);
     assert_eq!(detail.folders.len(), 1);
     assert_eq!(detail.folders[0].name, "未知文件夹");
     assert_eq!(detail.folders[0].requests_total, 3);
-    assert_eq!(detail.folders[0].total_tokens, 320);
+    assert_eq!(detail.folders[0].total_tokens, 310);
 
     let provider_filtered = day_detail_v1_with_conn(
         &conn,
@@ -2011,8 +2141,8 @@ fn day_detail_v1_groups_resolved_folders_and_unknown_sessions() {
     assert_eq!(alpha.folder_path.as_deref(), Some("/work/alpha"));
     assert_eq!(alpha.requests_total, 2);
     assert_eq!(alpha.requests_success, 2);
-    assert_eq!(alpha.total_tokens, 260);
-    assert_eq!(alpha.io_total_tokens, 230);
+    assert_eq!(alpha.total_tokens, 250);
+    assert_eq!(alpha.io_total_tokens, 220);
 
     let beta = by_key.get("/work/beta").expect("beta folder row");
     assert_eq!(beta.name, "beta");

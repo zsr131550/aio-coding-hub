@@ -1,5 +1,4 @@
 import type { CliKey } from "../services/providers/providers";
-import type { CostPeriod } from "../services/usage/cost";
 import type { UsagePeriod, UsageRange, UsageScope } from "../services/usage/usage";
 import type { CliSessionsSource } from "../services/cli/cliSessions";
 
@@ -186,31 +185,6 @@ export const usageKeys = {
     ] as const,
 };
 
-const costAllKey = ["cost"] as const;
-export const costKeys = {
-  all: costAllKey,
-  analyticsV1: (
-    period: CostPeriod,
-    input: {
-      startTs: number | null;
-      endTs: number | null;
-      cliKey: CliKey | null;
-      providerId: number | null;
-      model: string | null;
-    }
-  ) =>
-    [
-      ...costAllKey,
-      "analyticsV1",
-      period,
-      input.startTs,
-      input.endTs,
-      input.cliKey,
-      input.providerId,
-      input.model,
-    ] as const,
-};
-
 const workspacesAllKey = ["workspaces"] as const;
 export const workspacesKeys = {
   all: workspacesAllKey,
@@ -295,6 +269,7 @@ export const settingsKeys = {
 };
 
 const cliManagerAllKey = ["cliManager"] as const;
+const codexModelCatalogAllKey = [...cliManagerAllKey, "codex", "modelCatalog"] as const;
 export const cliManagerKeys = {
   all: cliManagerAllKey,
   claudeInfo: () => [...cliManagerAllKey, "claude", "info"] as const,
@@ -303,6 +278,17 @@ export const cliManagerKeys = {
   codexInfo: () => [...cliManagerAllKey, "codex", "info"] as const,
   codexConfig: () => [...cliManagerAllKey, "codex", "config"] as const,
   codexConfigToml: () => [...cliManagerAllKey, "codex", "configToml"] as const,
+  codexModelCatalog: (snapshot?: {
+    configPath?: string | null;
+    executablePath?: string | null;
+    cliVersion?: string | null;
+  }) =>
+    [
+      ...codexModelCatalogAllKey,
+      snapshot?.configPath ?? null,
+      snapshot?.executablePath ?? null,
+      snapshot?.cliVersion ?? null,
+    ] as const,
   geminiInfo: () => [...cliManagerAllKey, "gemini", "info"] as const,
   geminiConfig: () => [...cliManagerAllKey, "gemini", "config"] as const,
 };

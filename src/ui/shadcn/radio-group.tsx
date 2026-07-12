@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { cn } from "@/ui/shadcn/utils";
 
 export interface RadioGroupProps {
@@ -7,20 +8,48 @@ export interface RadioGroupProps {
   options: Array<{
     value: string;
     label: string;
+    description?: string | null;
   }>;
+  ariaLabel: string;
   disabled?: boolean;
+  ariaDescription?: string | null;
 }
 
-export function RadioGroup({ name, value, onChange, options, disabled }: RadioGroupProps) {
+export function RadioGroup({
+  name,
+  value,
+  onChange,
+  options,
+  disabled,
+  ariaLabel,
+  ariaDescription,
+}: RadioGroupProps) {
+  const accessibilityId = useId();
+  const groupDescriptionId = ariaDescription ? `${accessibilityId}-group-description` : undefined;
+
   return (
-    <div className="flex flex-wrap items-center gap-3">
-      {options.map((option) => {
+    <div
+      role="radiogroup"
+      aria-label={ariaLabel}
+      aria-describedby={groupDescriptionId}
+      className="flex flex-wrap items-center gap-3"
+    >
+      {ariaDescription ? (
+        <span id={groupDescriptionId} className="sr-only">
+          {ariaDescription}
+        </span>
+      ) : null}
+      {options.map((option, index) => {
         const isSelected = value === option.value;
+        const optionLabelId = `${accessibilityId}-option-${index}-label`;
+        const optionDescriptionId = option.description
+          ? `${accessibilityId}-option-${index}-description`
+          : undefined;
         return (
           <label
             key={option.value}
             className={cn(
-              "flex items-center gap-2.5 px-3.5 py-2 rounded-lg border cursor-pointer transition-all duration-200 select-none",
+              "flex items-start gap-2.5 px-3.5 py-2 rounded-lg border cursor-pointer transition-all duration-200 select-none",
               isSelected
                 ? "bg-state-selected border-state-selected-border text-state-selected-foreground shadow-md shadow-primary/10"
                 : "bg-card border-line-subtle hover:bg-state-hover hover:border-line text-muted-foreground hover:text-foreground",
@@ -35,6 +64,8 @@ export function RadioGroup({ name, value, onChange, options, disabled }: RadioGr
                 checked={isSelected}
                 onChange={(e) => onChange(e.currentTarget.value)}
                 disabled={disabled}
+                aria-labelledby={optionLabelId}
+                aria-describedby={optionDescriptionId}
                 className="peer sr-only"
               />
               <div
@@ -54,7 +85,19 @@ export function RadioGroup({ name, value, onChange, options, disabled }: RadioGr
                 />
               </div>
             </div>
-            <span className="text-sm font-semibold tracking-wide">{option.label}</span>
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span id={optionLabelId} className="text-sm font-semibold tracking-wide">
+                {option.label}
+              </span>
+              {option.description ? (
+                <span
+                  id={optionDescriptionId}
+                  className="text-[11px] leading-tight text-muted-foreground"
+                >
+                  {option.description}
+                </span>
+              ) : null}
+            </span>
           </label>
         );
       })}

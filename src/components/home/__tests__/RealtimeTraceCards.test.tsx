@@ -133,6 +133,104 @@ describe("components/home/RealtimeTraceCards", () => {
     vi.useRealTimers();
   });
 
+  it("shows canonical cache buckets, preserves zero, and does not synthesize abort cache writes", () => {
+    const baseTime = 1_700_000_000_000;
+    const renderCards = (summary: Record<string, unknown>) => (
+      <RealtimeTraceCards
+        folderLookupBySessionKey={new Map()}
+        cards={cards([
+          traceBase({
+            trace_id: "trace-cache-write",
+            cli_key: "codex",
+            requested_model: "gpt-5.6-sol",
+            first_seen_ms: baseTime - 1000,
+            last_seen_ms: baseTime,
+            summary: {
+              trace_id: "trace-cache-write",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              query: null,
+              status: 200,
+              error_code: null,
+              duration_ms: 1000,
+              ttfb_ms: 100,
+              ...summary,
+            },
+          }),
+        ])}
+        nowMs={baseTime}
+        formatUnixSeconds={(ts) => String(ts)}
+        showCustomTooltip={false}
+      />
+    );
+    const view = render(
+      renderCards({
+        input_tokens: 1000,
+        effective_input_tokens: 700,
+        output_tokens: 50,
+        cache_read_input_tokens: 100,
+        cache_creation_input_tokens: 200,
+      })
+    );
+
+    const expectMetric = (label: string, value: string) => {
+      const metric = screen.getByText(label).parentElement;
+      expect(metric).not.toBeNull();
+      expect(within(metric as HTMLElement).getByText(value)).toBeInTheDocument();
+      return metric as HTMLElement;
+    };
+    expectMetric("输入", "700");
+    expectMetric("缓存创建", "200");
+    expectMetric("缓存读取", "100");
+
+    view.rerender(
+      renderCards({
+        effective_input_tokens: 700,
+        cache_read_input_tokens: 100,
+        cache_creation_input_tokens: 200,
+        cache_creation_5m_input_tokens: 25,
+        cache_creation_1h_input_tokens: 50,
+      })
+    );
+    expect(within(expectMetric("缓存创建", "25")).getByText("(5m)")).toBeInTheDocument();
+
+    view.rerender(
+      renderCards({
+        effective_input_tokens: 700,
+        cache_read_input_tokens: 100,
+        cache_creation_input_tokens: 0,
+        cache_creation_5m_input_tokens: null,
+        cache_creation_1h_input_tokens: null,
+      })
+    );
+    expectMetric("缓存创建", "0");
+
+    view.rerender(
+      renderCards({
+        effective_input_tokens: 700,
+        cache_read_input_tokens: 100,
+        cache_creation_input_tokens: null,
+        cache_creation_5m_input_tokens: 0,
+        cache_creation_1h_input_tokens: null,
+      })
+    );
+    expect(within(expectMetric("缓存创建", "0")).queryByText("(5m)")).not.toBeInTheDocument();
+
+    view.rerender(
+      renderCards({
+        status: 499,
+        error_code: "GW_STREAM_ABORTED",
+        effective_input_tokens: null,
+        cache_read_input_tokens: null,
+        cache_creation_input_tokens: null,
+        cache_creation_5m_input_tokens: null,
+        cache_creation_1h_input_tokens: null,
+      })
+    );
+    expect(screen.queryByText("缓存创建")).not.toBeInTheDocument();
+  });
+
   it("keeps in-progress traces visible after five minutes without new events", () => {
     vi.useFakeTimers();
     const baseTime = 1_700_000_000_000;

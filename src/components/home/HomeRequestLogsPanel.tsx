@@ -44,6 +44,7 @@ import {
   buildRequestLogAuditMeta,
   buildRequestRouteMeta,
   computeStatusBadge,
+  resolveCacheCreationDisplay,
 } from "./requestLogPresentation";
 import { FastModeBadge, FolderBadge, FreeBadge, SessionReuseBadge } from "./LogBadges";
 import {
@@ -165,28 +166,7 @@ const RequestLogCard = memo(function RequestLogCard({
   const isPriorityServiceTier =
     log.cli_key === "codex" && hasPriorityServiceTierSpecialSetting(log.special_settings_json);
 
-  const cacheWrite = (() => {
-    // 优先展示有值的 TTL 桶；若都为 0，则仍展示 0 而不是 "—"。
-    if (log.cache_creation_5m_input_tokens != null && log.cache_creation_5m_input_tokens > 0) {
-      return { tokens: log.cache_creation_5m_input_tokens, ttl: "5m" as const };
-    }
-    if (log.cache_creation_1h_input_tokens != null && log.cache_creation_1h_input_tokens > 0) {
-      return { tokens: log.cache_creation_1h_input_tokens, ttl: "1h" as const };
-    }
-    if (log.cache_creation_input_tokens != null && log.cache_creation_input_tokens > 0) {
-      return { tokens: log.cache_creation_input_tokens, ttl: null };
-    }
-    if (log.cache_creation_5m_input_tokens != null) {
-      return { tokens: log.cache_creation_5m_input_tokens, ttl: "5m" as const };
-    }
-    if (log.cache_creation_1h_input_tokens != null) {
-      return { tokens: log.cache_creation_1h_input_tokens, ttl: "1h" as const };
-    }
-    if (log.cache_creation_input_tokens != null) {
-      return { tokens: log.cache_creation_input_tokens, ttl: null };
-    }
-    return { tokens: null as number | null, ttl: null as "5m" | "1h" | null };
-  })();
+  const cacheWrite = resolveCacheCreationDisplay(log);
 
   const effectiveInputTokens = log.effective_input_tokens ?? null;
 
@@ -368,27 +348,21 @@ const RequestLogCard = memo(function RequestLogCard({
                     {formatInteger(effectiveInputTokens)}
                   </span>
                 </div>
-                <div className="flex items-center gap-1 h-4" title="Cache Write">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/75 select-none shrink-0">
-                    缓存创建
-                  </span>
-                  {cacheWrite.tokens != null ? (
-                    <>
-                      <span className="font-mono tabular-nums text-xs font-semibold text-foreground/90 truncate">
-                        {formatInteger(cacheWrite.tokens)}
-                      </span>
-                      {cacheWrite.ttl && cacheWrite.tokens > 0 && (
-                        <span className="text-[10px] font-medium text-muted-foreground/60">
-                          ({cacheWrite.ttl})
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground/40 text-xs font-mono select-none">
-                      —
+                {cacheWrite ? (
+                  <div className="flex items-center gap-1 h-4" title="Cache Write">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/75 select-none shrink-0">
+                      缓存创建
                     </span>
-                  )}
-                </div>
+                    <span className="font-mono tabular-nums text-xs font-semibold text-foreground/90 truncate">
+                      {formatInteger(cacheWrite.tokens)}
+                    </span>
+                    {cacheWrite.ttl && cacheWrite.tokens > 0 ? (
+                      <span className="text-[10px] font-medium text-muted-foreground/60">
+                        ({cacheWrite.ttl})
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="flex items-center gap-1 h-4" title="TTFB">
                   <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/75 select-none shrink-0">
                     首字

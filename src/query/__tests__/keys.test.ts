@@ -3,7 +3,6 @@ import {
   appAboutKeys,
   cliManagerKeys,
   cliProxyKeys,
-  costKeys,
   dataManagementKeys,
   gatewayKeys,
   mcpKeys,
@@ -105,19 +104,6 @@ describe("query/keys", () => {
     ).toEqual(["usage", "providerCacheRateTrendV1", "daily", 1, 2, "claude", 3, 20, true]);
   });
 
-  it("builds cost keys", () => {
-    expect(costKeys.all).toEqual(["cost"]);
-    expect(
-      costKeys.analyticsV1("daily", {
-        startTs: 1,
-        endTs: 2,
-        cliKey: "claude",
-        providerId: 3,
-        model: "gpt-4.1",
-      })
-    ).toEqual(["cost", "analyticsV1", "daily", 1, 2, "claude", 3, "gpt-4.1"]);
-  });
-
   it("builds workspaces keys", () => {
     expect(workspacesKeys.all).toEqual(["workspaces"]);
     expect(workspacesKeys.lists()).toEqual(["workspaces", "list"]);
@@ -156,6 +142,20 @@ describe("query/keys", () => {
     expect(cliManagerKeys.claudeSettings()).toEqual(["cliManager", "claude", "settings"]);
     expect(cliManagerKeys.codexInfo()).toEqual(["cliManager", "codex", "info"]);
     expect(cliManagerKeys.codexConfig()).toEqual(["cliManager", "codex", "config"]);
+    expect(
+      cliManagerKeys.codexModelCatalog({
+        configPath: "/tmp/.codex/config.toml",
+        executablePath: "/usr/bin/codex",
+        cliVersion: "0.0.0",
+      })
+    ).toEqual([
+      "cliManager",
+      "codex",
+      "modelCatalog",
+      "/tmp/.codex/config.toml",
+      "/usr/bin/codex",
+      "0.0.0",
+    ]);
     expect(cliManagerKeys.geminiInfo()).toEqual(["cliManager", "gemini", "info"]);
   });
 

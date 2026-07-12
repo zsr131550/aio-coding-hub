@@ -1,6 +1,6 @@
 use crate::db;
 use crate::shared::error::db_err;
-use rusqlite::{params_from_iter, Connection, OptionalExtension};
+use rusqlite::{params_from_iter, Connection, OptionalExtension, Row};
 use std::collections::HashMap;
 
 use super::filters::{
@@ -12,12 +12,22 @@ use super::folders::{
     UsageEventAgg,
 };
 use super::{
-    extract_final_provider, has_valid_provider_key, parse_scope_v2, resolve_query_params,
-    sql_effective_input_tokens_expr_with_alias, sql_effective_total_tokens_expr,
-    sql_effective_total_tokens_expr_with_alias, ProviderAgg, ProviderKey, UsageLeaderboardRow,
+    effective_total_from_buckets, extract_final_provider, has_valid_provider_key, parse_scope_v2,
+    resolve_query_params, sql_effective_input_tokens_expr,
+    sql_effective_input_tokens_expr_with_alias, ProviderAgg, ProviderKey, UsageLeaderboardRow,
     UsageQueryParams, UsageResolvedFolder, UsageScopeV2, UsageSessionLookupKey,
-    SQL_EFFECTIVE_INPUT_TOKENS_EXPR,
 };
+
+fn aggregated_total_tokens(row: &Row<'_>) -> rusqlite::Result<i64> {
+    Ok(effective_total_from_buckets(
+        row.get::<_, Option<i64>>("input_tokens")?.unwrap_or(0),
+        row.get::<_, Option<i64>>("output_tokens")?.unwrap_or(0),
+        row.get::<_, Option<i64>>("cache_creation_input_tokens")?
+            .unwrap_or(0),
+        row.get::<_, Option<i64>>("cache_read_input_tokens")?
+            .unwrap_or(0),
+    ))
+}
 
 fn local_day_bucket_sql(timestamp_expr: &str, day_start_hour: i64) -> String {
     if day_start_hour == 0 {
@@ -65,8 +75,7 @@ pub(super) fn leaderboard_v2_with_conn_day_start(
     exclude_cx2cc_gateway_bridge: bool,
     day_start_hour: i64,
 ) -> Result<Vec<UsageLeaderboardRow>, String> {
-    let effective_input_expr = SQL_EFFECTIVE_INPUT_TOKENS_EXPR;
-    let effective_total_expr = sql_effective_total_tokens_expr();
+    let effective_input_expr = sql_effective_input_tokens_expr();
     let day_bucket_sql = local_day_bucket_sql("created_at", day_start_hour);
     let (where_clause, where_params) = build_optional_range_cli_provider_filters(
         "created_at",
@@ -109,8 +118,7 @@ SELECT
       error_code IS NOT NULL
     ) THEN 1 ELSE 0 END
   ) AS requests_failed,
-  SUM({effective_total_expr}) AS total_tokens,
-	  SUM({effective_input_expr}) AS input_tokens,
+		  SUM({effective_input_expr}) AS input_tokens,
 	  SUM(COALESCE(output_tokens, 0)) AS output_tokens,
 	  SUM(COALESCE(cache_creation_input_tokens, 0)) AS cache_creation_input_tokens,
 	  SUM(COALESCE(cache_read_input_tokens, 0)) AS cache_read_input_tokens,
@@ -165,7 +173,6 @@ WHERE excluded_from_stats = 0
 GROUP BY cli_key
 "#,
                 effective_input_expr = effective_input_expr,
-                effective_total_expr = effective_total_expr.as_str(),
                 where_clause = where_clause,
                 cx2cc_filter_clause = cx2cc_filter_clause
             );
@@ -202,7 +209,7 @@ GROUP BY cli_key
                         success_output_tokens_for_rate_sum: row
                             .get::<_, Option<i64>>("success_output_tokens_for_rate_sum")?
                             .unwrap_or(0),
-                        total_tokens: row.get::<_, Option<i64>>("total_tokens")?.unwrap_or(0),
+                        total_tokens: aggregated_total_tokens(row)?,
                         input_tokens: row.get::<_, Option<i64>>("input_tokens")?.unwrap_or(0),
                         output_tokens: row.get::<_, Option<i64>>("output_tokens")?.unwrap_or(0),
                         cache_creation_input_tokens: row
@@ -246,8 +253,7 @@ SELECT
       error_code IS NOT NULL
     ) THEN 1 ELSE 0 END
   ) AS requests_failed,
-  SUM({effective_total_expr}) AS total_tokens,
-	  SUM({effective_input_expr}) AS input_tokens,
+		  SUM({effective_input_expr}) AS input_tokens,
 	  SUM(COALESCE(output_tokens, 0)) AS output_tokens,
 	  SUM(COALESCE(cache_creation_input_tokens, 0)) AS cache_creation_input_tokens,
 	  SUM(COALESCE(cache_read_input_tokens, 0)) AS cache_read_input_tokens,
@@ -302,7 +308,6 @@ WHERE excluded_from_stats = 0
 GROUP BY COALESCE(NULLIF(requested_model, ''), 'Unknown')
 "#,
                 effective_input_expr = effective_input_expr,
-                effective_total_expr = effective_total_expr.as_str(),
                 where_clause = where_clause,
                 cx2cc_filter_clause = cx2cc_filter_clause
             );
@@ -339,7 +344,7 @@ GROUP BY COALESCE(NULLIF(requested_model, ''), 'Unknown')
                         success_output_tokens_for_rate_sum: row
                             .get::<_, Option<i64>>("success_output_tokens_for_rate_sum")?
                             .unwrap_or(0),
-                        total_tokens: row.get::<_, Option<i64>>("total_tokens")?.unwrap_or(0),
+                        total_tokens: aggregated_total_tokens(row)?,
                         input_tokens: row.get::<_, Option<i64>>("input_tokens")?.unwrap_or(0),
                         output_tokens: row.get::<_, Option<i64>>("output_tokens")?.unwrap_or(0),
                         cache_creation_input_tokens: row
@@ -383,7 +388,6 @@ SELECT
       error_code IS NOT NULL
     ) THEN 1 ELSE 0 END
   ) AS requests_failed,
-  SUM({effective_total_expr}) AS total_tokens,
   SUM({effective_input_expr}) AS input_tokens,
   SUM(COALESCE(output_tokens, 0)) AS output_tokens,
   SUM(COALESCE(cache_creation_input_tokens, 0)) AS cache_creation_input_tokens,
@@ -441,7 +445,6 @@ WHERE excluded_from_stats = 0
 GROUP BY key
 "#,
                 effective_input_expr = effective_input_expr,
-                effective_total_expr = effective_total_expr.as_str(),
                 where_clause = where_clause,
                 cx2cc_filter_clause = cx2cc_filter_clause,
                 day_bucket_sql = day_bucket_sql
@@ -479,7 +482,7 @@ GROUP BY key
                         success_output_tokens_for_rate_sum: row
                             .get::<_, Option<i64>>("success_output_tokens_for_rate_sum")?
                             .unwrap_or(0),
-                        total_tokens: row.get::<_, Option<i64>>("total_tokens")?.unwrap_or(0),
+                        total_tokens: aggregated_total_tokens(row)?,
                         input_tokens: row.get::<_, Option<i64>>("input_tokens")?.unwrap_or(0),
                         output_tokens: row.get::<_, Option<i64>>("output_tokens")?.unwrap_or(0),
                         cache_creation_input_tokens: row
@@ -510,8 +513,6 @@ GROUP BY key
         }
         UsageScopeV2::Provider => {
             let effective_input_expr = sql_effective_input_tokens_expr_with_alias("r");
-            let effective_total_expr = sql_effective_total_tokens_expr_with_alias("r");
-
             let sql = format!(
                 r#"
 SELECT
@@ -528,7 +529,6 @@ SELECT
       r.error_code IS NOT NULL
     ) THEN 1 ELSE 0 END
   ) AS requests_failed,
-  SUM({effective_total_expr}) AS total_tokens,
   SUM({effective_input_expr}) AS input_tokens,
   SUM(COALESCE(r.output_tokens, 0)) AS output_tokens,
   SUM(COALESCE(r.cache_creation_input_tokens, 0)) AS cache_creation_input_tokens,
@@ -589,7 +589,6 @@ AND r.final_provider_id > 0
 GROUP BY r.cli_key, r.final_provider_id
 "#,
                 effective_input_expr = effective_input_expr,
-                effective_total_expr = effective_total_expr,
                 provider_where_clause = provider_where_clause,
                 provider_cx2cc_filter_clause = provider_cx2cc_filter_clause
             );
@@ -630,7 +629,7 @@ GROUP BY r.cli_key, r.final_provider_id
                         success_output_tokens_for_rate_sum: row
                             .get::<_, Option<i64>>("success_output_tokens_for_rate_sum")?
                             .unwrap_or(0),
-                        total_tokens: row.get::<_, Option<i64>>("total_tokens")?.unwrap_or(0),
+                        total_tokens: aggregated_total_tokens(row)?,
                         input_tokens: row.get::<_, Option<i64>>("input_tokens")?.unwrap_or(0),
                         output_tokens: row.get::<_, Option<i64>>("output_tokens")?.unwrap_or(0),
                         cache_creation_input_tokens: row
