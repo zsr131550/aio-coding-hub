@@ -839,16 +839,14 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     const maxOption = within(reasoningGroup).getByRole("radio", {
       name: "最大深度 (max)",
     });
-    expect(maxOption).toHaveAccessibleDescription(
-      "Maximum reasoning depth 最大单任务推理深度，可能增加延迟和用量。"
-    );
+    expect(maxOption).toHaveAccessibleDescription("最大单任务推理深度，可能增加延迟和用量。");
 
     const ultraOption = within(reasoningGroup).getByRole("radio", {
       name: "自动委派 (ultra)",
     });
     expect(ultraOption).toHaveAccessibleName("自动委派 (ultra)");
     expect(ultraOption).toHaveAccessibleDescription(
-      "Automatic task delegation 会自动委派子智能体并行处理任务，增加并发和额外用量。"
+      "会自动委派子智能体并行处理任务，增加并发和额外用量。"
     );
     expect(screen.getByText(/当前未设置，使用 Codex 默认行为/)).toBeInTheDocument();
     fireEvent.click(ultraOption);

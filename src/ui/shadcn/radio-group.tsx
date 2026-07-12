@@ -32,7 +32,7 @@ export function RadioGroup({
       role="radiogroup"
       aria-label={ariaLabel}
       aria-describedby={groupDescriptionId}
-      className="flex flex-wrap items-center gap-3"
+      className="flex flex-wrap items-center gap-2"
     >
       {ariaDescription ? (
         <span id={groupDescriptionId} className="sr-only">
@@ -48,8 +48,9 @@ export function RadioGroup({
         return (
           <label
             key={option.value}
+            title={option.description ?? undefined}
             className={cn(
-              "flex items-start gap-2.5 px-3.5 py-2 rounded-lg border cursor-pointer transition-all duration-200 select-none",
+              "flex items-center gap-2 px-2.5 py-1.5 rounded-md border cursor-pointer transition-all duration-200 select-none",
               isSelected
                 ? "bg-state-selected border-state-selected-border text-state-selected-foreground shadow-md shadow-primary/10"
                 : "bg-card border-line-subtle hover:bg-state-hover hover:border-line text-muted-foreground hover:text-foreground",
@@ -70,7 +71,7 @@ export function RadioGroup({
               />
               <div
                 className={cn(
-                  "h-4 w-4 rounded-full border flex items-center justify-center transition-all duration-200",
+                  "h-3.5 w-3.5 rounded-full border flex items-center justify-center transition-all duration-200",
                   "peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-ring/30 peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background",
                   isSelected
                     ? "border-primary bg-primary scale-100"
@@ -85,19 +86,14 @@ export function RadioGroup({
                 />
               </div>
             </div>
-            <span className="flex min-w-0 flex-col gap-0.5">
-              <span id={optionLabelId} className="text-sm font-semibold tracking-wide">
-                {option.label}
-              </span>
-              {option.description ? (
-                <span
-                  id={optionDescriptionId}
-                  className="text-[11px] leading-tight text-muted-foreground"
-                >
-                  {option.description}
-                </span>
-              ) : null}
+            <span id={optionLabelId} className="whitespace-nowrap text-xs font-medium">
+              {option.label}
             </span>
+            {option.description ? (
+              <span id={optionDescriptionId} className="sr-only">
+                {option.description}
+              </span>
+            ) : null}
           </label>
         );
       })}

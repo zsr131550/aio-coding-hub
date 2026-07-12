@@ -39,9 +39,7 @@ function enrichReasoningEffortDescription(
 
   return {
     ...option,
-    description: [option.description, REASONING_EFFORT_RISK_DESCRIPTIONS[effort]]
-      .filter((description): description is string => Boolean(description))
-      .join(" "),
+    description: REASONING_EFFORT_RISK_DESCRIPTIONS[effort],
   };
 }
 

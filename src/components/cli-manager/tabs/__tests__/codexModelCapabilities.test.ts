@@ -53,7 +53,7 @@ describe("codexModelCapabilities", () => {
     expect(matchCodexModel(catalog(entries), "").reason).toBe("default_model");
   });
 
-  it("preserves catalog descriptions and appends stable max and ultra risk guidance", () => {
+  it("replaces max and ultra descriptions with stable risk guidance", () => {
     const result = resolveReasoningOptions(catalog([model({})]), "gpt-5.6-sol", "medium");
     expect(result.source).toBe("catalog");
     expect(result.options.map((option) => option.reasoning_effort)).toEqual([
@@ -66,10 +66,10 @@ describe("codexModelCapabilities", () => {
       "ultra",
     ]);
     expect(result.options.find((option) => option.reasoning_effort === "max")?.description).toBe(
-      "deep 最大单任务推理深度，可能增加延迟和用量。"
+      "最大单任务推理深度，可能增加延迟和用量。"
     );
     expect(result.options.find((option) => option.reasoning_effort === "ultra")?.description).toBe(
-      "delegation 会自动委派子智能体并行处理任务，增加并发和额外用量。"
+      "会自动委派子智能体并行处理任务，增加并发和额外用量。"
     );
   });
 
