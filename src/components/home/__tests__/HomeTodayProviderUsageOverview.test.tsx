@@ -56,16 +56,38 @@ function createRunningTrace(
         path: "/v1/messages",
         query: null,
         requested_model: null,
+        special_settings_json: null,
         attempt_index: 1,
         provider_id: providerId,
+        session_reuse: null,
         provider_name: providerName,
         base_url: "https://example.com",
         outcome: "started",
         status: null,
         attempt_started_ms: now - 3_000,
         attempt_duration_ms: 3_000,
+        circuit_state_before: null,
+        circuit_state_after: null,
+        circuit_failure_count: null,
+        circuit_failure_threshold: null,
+        claude_model_mapping: null,
       },
     ],
+  };
+}
+
+function createActiveRequestFromTrace(trace: TraceSession) {
+  return {
+    trace_id: trace.trace_id,
+    cli_key: trace.cli_key,
+    session_id: trace.session_id ?? null,
+    method: trace.method,
+    path: trace.path,
+    query: trace.query,
+    requested_model: trace.requested_model ?? null,
+    created_at_ms: trace.first_seen_ms,
+    last_activity_ms: trace.last_seen_ms,
+    current_attempt: null,
   };
 }
 
@@ -86,6 +108,9 @@ function createLeaderboardRow(
     output_tokens: 300,
     cache_creation_input_tokens: 100,
     cache_read_input_tokens: 100,
+    total_duration_ms: 900,
+    first_request_created_at_ms: null,
+    last_request_created_at_ms: null,
     avg_duration_ms: 900,
     avg_ttfb_ms: 200,
     avg_output_tokens_per_second: 90,
@@ -137,6 +162,7 @@ function mockDataModel(overrides: Partial<ReturnType<typeof useHomeTokenCostData
       requests_success: 18,
       requests_failed: 2,
       cost_covered_success: 18,
+      total_duration_ms: 425_800,
       avg_duration_ms: 1100,
       avg_ttfb_ms: 260,
       avg_output_tokens_per_second: 95.2,
@@ -162,6 +188,9 @@ function mockDataModel(overrides: Partial<ReturnType<typeof useHomeTokenCostData
         output_tokens: 2_000,
         cache_creation_input_tokens: 500,
         cache_read_input_tokens: 700,
+        total_duration_ms: 62_000,
+        first_request_created_at_ms: null,
+        last_request_created_at_ms: null,
         avg_duration_ms: 900,
         avg_ttfb_ms: 220,
         avg_output_tokens_per_second: 90,
@@ -179,6 +208,9 @@ function mockDataModel(overrides: Partial<ReturnType<typeof useHomeTokenCostData
         output_tokens: 3_500,
         cache_creation_input_tokens: 800,
         cache_read_input_tokens: 1_400,
+        total_duration_ms: 308_000,
+        first_request_created_at_ms: null,
+        last_request_created_at_ms: null,
         avg_duration_ms: 1200,
         avg_ttfb_ms: 320,
         avg_output_tokens_per_second: 86,
@@ -196,6 +228,9 @@ function mockDataModel(overrides: Partial<ReturnType<typeof useHomeTokenCostData
         output_tokens: 2_000,
         cache_creation_input_tokens: 600,
         cache_read_input_tokens: 1_200,
+        total_duration_ms: 42_000,
+        first_request_created_at_ms: null,
+        last_request_created_at_ms: null,
         avg_duration_ms: 880,
         avg_ttfb_ms: 210,
         avg_output_tokens_per_second: 110,
@@ -213,6 +248,9 @@ function mockDataModel(overrides: Partial<ReturnType<typeof useHomeTokenCostData
         output_tokens: 600,
         cache_creation_input_tokens: 700,
         cache_read_input_tokens: 800,
+        total_duration_ms: 12_000,
+        first_request_created_at_ms: null,
+        last_request_created_at_ms: null,
         avg_duration_ms: 760,
         avg_ttfb_ms: 180,
         avg_output_tokens_per_second: 120,
@@ -230,6 +268,9 @@ function mockDataModel(overrides: Partial<ReturnType<typeof useHomeTokenCostData
         output_tokens: 300,
         cache_creation_input_tokens: 200,
         cache_read_input_tokens: 600,
+        total_duration_ms: 1_200,
+        first_request_created_at_ms: null,
+        last_request_created_at_ms: null,
         avg_duration_ms: 1500,
         avg_ttfb_ms: 400,
         avg_output_tokens_per_second: 40,
@@ -247,6 +288,9 @@ function mockDataModel(overrides: Partial<ReturnType<typeof useHomeTokenCostData
         output_tokens: 80,
         cache_creation_input_tokens: 20,
         cache_read_input_tokens: 80,
+        total_duration_ms: 600,
+        first_request_created_at_ms: null,
+        last_request_created_at_ms: null,
         avg_duration_ms: 600,
         avg_ttfb_ms: 150,
         avg_output_tokens_per_second: 60,
@@ -272,6 +316,7 @@ function rowCellTexts(row: HTMLElement) {
 describe("components/home/HomeTodayProviderUsageOverview", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.removeItem("homeUsageDayStartHour");
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
   });
 
@@ -289,6 +334,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           endTs: null,
           cliKey: null,
           providerId: null,
+          dayStartHour: 0,
           excludeCx2CcGatewayBridge: true,
         },
         previewFactor: 1,
@@ -309,15 +355,18 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
     const totalWithCacheCard = screen.getByText("含缓存总 Token").parentElement;
     const inputOutputTokenCard = screen.getAllByText("输入+输出 Token")[0]?.parentElement;
     const cacheHitRateCard = screen.getAllByText("缓存命中率")[0]?.parentElement;
+    const totalDurationCard = screen.getByText("请求总耗时").parentElement;
     expect(totalWithCacheCard).toBeTruthy();
     expect(inputOutputTokenCard).toBeTruthy();
     expect(cacheHitRateCard).toBeTruthy();
+    expect(totalDurationCard).toBeTruthy();
     expect(within(totalWithCacheCard as HTMLElement).getByText("25.0K")).toBeInTheDocument();
     expect(within(inputOutputTokenCard as HTMLElement).getByText("20.0K")).toBeInTheDocument();
     expect(within(cacheHitRateCard as HTMLElement).getByText("18.8%")).toBeInTheDocument();
-    expect(screen.getByText("今日请求数")).toBeInTheDocument();
+    expect(within(totalDurationCard as HTMLElement).getByText("7m6s")).toBeInTheDocument();
+    expect(screen.getByText("总请求数")).toBeInTheDocument();
     expect(screen.getByText("20")).toBeInTheDocument();
-    expect(screen.getByText("今日花费")).toBeInTheDocument();
+    expect(screen.getAllByText("总花费").length).toBeGreaterThan(0);
     expect(screen.getByText("$2.21")).toBeInTheDocument();
     const providerHeader = screen.getByText("供应商").closest("th");
     const usageTable = screen.getByRole("table", { name: "今日供应商用量" });
@@ -336,6 +385,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       "输入+输出Token",
       "缓存命中率",
       "成功率",
+      "总耗时",
       "总花费",
     ]);
     expect(totalTokenHeader).toBeTruthy();
@@ -362,6 +412,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       "8.0K",
       "20.9%",
       "85.7%",
+      "5m8s",
       "$0.90",
     ]);
     expect(within(geminiRow as HTMLElement).getByText("$0.90")).toBeInTheDocument();
@@ -373,6 +424,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       "5.0K",
       "16.7%",
       "100.0%",
+      "1m2s",
       "$0.50",
     ]);
     expect(rowCellTexts(openaiRow as HTMLElement)).toEqual([
@@ -381,8 +433,32 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       "4.0K",
       "31.6%",
       "100.0%",
+      "42s",
       "$0.70",
     ]);
+  });
+
+  it("uses the shared stored statistics day start hour for today overview queries", () => {
+    window.localStorage.setItem("homeUsageDayStartHour", "7");
+    mockDataModel();
+
+    render(<HomeTodayProviderUsageOverview activeSessions={[]} />);
+
+    expect(vi.mocked(useHomeTokenCostDataModel)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queryConfig: expect.objectContaining({
+          period: "daily",
+          input: expect.objectContaining({
+            startTs: null,
+            endTs: null,
+            cliKey: null,
+            providerId: null,
+            dayStartHour: 7,
+            excludeCx2CcGatewayBridge: true,
+          }),
+        }),
+      })
+    );
   });
 
   it("disables polling while the page is hidden", () => {
@@ -400,6 +476,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           endTs: null,
           cliKey: null,
           providerId: null,
+          dayStartHour: 0,
           excludeCx2CcGatewayBridge: true,
         },
         previewFactor: 1,
@@ -461,6 +538,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       "2.0K",
       "27.6%",
       "100.0%",
+      "12s",
       "—",
     ]);
   });
@@ -518,6 +596,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
     expect(within(runtimeRow as HTMLElement).getByLabelText("进行中")).toBeInTheDocument();
     expect(rowCellTexts(runtimeRow as HTMLElement)).toEqual([
       "claude/Runtime Fresh",
+      "—",
       "—",
       "—",
       "—",
@@ -639,7 +718,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
     expect(screen.getAllByLabelText("进行中")).toHaveLength(3);
   });
 
-  it("keeps quiet no-summary traces while ignoring completed, unnamed, unknown, and duplicate traces", () => {
+  it("keeps registry-backed traces while ignoring completed, unnamed, unknown, and duplicates", () => {
     mockDataModel({ rows: [] });
     const now = Date.now();
     const completedTrace = {
@@ -683,20 +762,21 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       providerId: 28,
       traceId: "duplicate",
     });
+    const activeTraces = [
+      oldTrace,
+      staleTrace,
+      unnamedTrace,
+      missingAttemptsTrace,
+      unknownTrace,
+      emptyScopedNameTrace,
+      liveTrace,
+      duplicateTrace,
+    ];
 
     render(
       <HomeTodayProviderUsageOverview
-        traces={[
-          completedTrace,
-          oldTrace,
-          staleTrace,
-          unnamedTrace,
-          missingAttemptsTrace,
-          unknownTrace,
-          emptyScopedNameTrace,
-          liveTrace,
-          duplicateTrace,
-        ]}
+        traces={[completedTrace, ...activeTraces]}
+        activeRequests={activeTraces.map(createActiveRequestFromTrace)}
       />
     );
 
@@ -744,6 +824,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       "8.0K",
       "1.9%",
       "100.0%",
+      "<1s",
       "$0.10",
     ]);
   });
@@ -763,6 +844,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           output_tokens: 1_000,
           cache_creation_input_tokens: 0,
           cache_read_input_tokens: 0,
+          total_duration_ms: 0,
           cost_usd: null,
         }),
       ],
@@ -778,6 +860,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       "1.0K",
       "—",
       "—",
+      "0s",
       "—",
     ]);
   });
@@ -797,6 +880,9 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           output_tokens: 4_000,
           cache_creation_input_tokens: 700,
           cache_read_input_tokens: 1_300,
+          total_duration_ms: 7_380,
+          first_request_created_at_ms: null,
+          last_request_created_at_ms: null,
           avg_duration_ms: 820,
           avg_ttfb_ms: 210,
           avg_output_tokens_per_second: 108,
@@ -847,9 +933,11 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       ],
     });
 
+    const runningTrace = createRunningTrace("Shared Relay", { providerId: 0, cliKey: "codex" });
     render(
       <HomeTodayProviderUsageOverview
-        traces={[createRunningTrace("Shared Relay", { providerId: 0, cliKey: "codex" })]}
+        traces={[runningTrace]}
+        activeRequests={[createActiveRequestFromTrace(runningTrace)]}
       />
     );
 
@@ -876,6 +964,9 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           output_tokens: 2_000,
           cache_creation_input_tokens: 500,
           cache_read_input_tokens: 700,
+          total_duration_ms: 4_500,
+          first_request_created_at_ms: null,
+          last_request_created_at_ms: null,
           avg_duration_ms: 900,
           avg_ttfb_ms: 220,
           avg_output_tokens_per_second: 90,
@@ -906,6 +997,9 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           output_tokens: 2_000,
           cache_creation_input_tokens: 500,
           cache_read_input_tokens: 700,
+          total_duration_ms: 4_500,
+          first_request_created_at_ms: null,
+          last_request_created_at_ms: null,
           avg_duration_ms: 900,
           avg_ttfb_ms: 220,
           avg_output_tokens_per_second: 90,
@@ -914,14 +1008,37 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       ],
     });
 
-    render(<HomeTodayProviderUsageOverview traces={[createRunningTrace("Claude Main")]} />);
+    const runningTrace = createRunningTrace("Claude Main");
+    render(
+      <HomeTodayProviderUsageOverview
+        traces={[runningTrace]}
+        activeRequests={[createActiveRequestFromTrace(runningTrace)]}
+      />
+    );
 
     const providerRow = screen.getByText("Claude Main").closest("tr");
     expect(providerRow).toBeTruthy();
     expect(within(providerRow as HTMLElement).getByLabelText("进行中")).toBeInTheDocument();
   });
 
-  it("keeps running provider hints for long pending traces backed by request logs", () => {
+  it("does not start a periodic clock for registry-backed provider hints", () => {
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+    mockDataModel({ rows: [] });
+    const runningTrace = createRunningTrace("Clockless Provider");
+
+    render(
+      <HomeTodayProviderUsageOverview
+        traces={[runningTrace]}
+        activeRequests={[createActiveRequestFromTrace(runningTrace)]}
+      />
+    );
+
+    expect(screen.getByText("claude/Clockless Provider")).toBeInTheDocument();
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    setIntervalSpy.mockRestore();
+  });
+
+  it("keeps running provider hints for long pending traces backed by the active registry", () => {
     vi.useFakeTimers();
     const baseTime = 1_700_000_000_000;
     vi.setSystemTime(baseTime);
@@ -948,6 +1065,20 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
             created_at: Math.floor((baseTime - 11 * 60 * 1000) / 1000),
           }),
         ]}
+        activeRequests={[
+          {
+            trace_id: longTrace.trace_id,
+            cli_key: "claude",
+            session_id: null,
+            method: "POST",
+            path: "/v1/messages",
+            query: null,
+            requested_model: "claude-3-opus",
+            created_at_ms: baseTime - 11 * 60 * 1000,
+            last_activity_ms: baseTime - 6 * 60 * 1000,
+            current_attempt: null,
+          },
+        ]}
       />
     );
 
@@ -966,6 +1097,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
         requests_success: 0,
         requests_failed: 0,
         cost_covered_success: 0,
+        total_duration_ms: 0,
         avg_duration_ms: null,
         avg_ttfb_ms: null,
         avg_output_tokens_per_second: null,
@@ -985,7 +1117,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
 
     expect(screen.getByText("缓存命中率")).toBeInTheDocument();
     expect(screen.getByText("—")).toBeInTheDocument();
-    expect(screen.getByText("今日花费")).toBeInTheDocument();
+    expect(screen.getByText("总花费")).toBeInTheDocument();
   });
 
   it("renders the error card and retries refresh when loading failed", () => {

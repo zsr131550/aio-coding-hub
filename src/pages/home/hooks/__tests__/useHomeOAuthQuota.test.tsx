@@ -68,6 +68,7 @@ function makeProvider(
     availability_test_model: partial.availability_test_model ?? null,
     model_mapping: partial.model_mapping ?? { default_model: null, exact: {} },
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
+    extension_values: partial.extension_values ?? [],
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
     api_key_configured: partial.api_key_configured ?? false,
   };
@@ -88,6 +89,7 @@ function makeRequestLog(
     requested_model: partial.requested_model ?? null,
     status: partial.status ?? 200,
     error_code: partial.error_code ?? null,
+    is_interrupted: partial.is_interrupted ?? false,
     duration_ms: partial.duration_ms ?? 1000,
     ttfb_ms: partial.ttfb_ms ?? null,
     visible_ttfb_ms: partial.visible_ttfb_ms ?? null,
@@ -108,11 +110,14 @@ function makeRequestLog(
     cache_creation_input_tokens: partial.cache_creation_input_tokens ?? null,
     cache_creation_5m_input_tokens: partial.cache_creation_5m_input_tokens ?? null,
     cache_creation_1h_input_tokens: partial.cache_creation_1h_input_tokens ?? null,
+    effective_input_tokens: partial.effective_input_tokens ?? null,
     cost_usd: partial.cost_usd ?? null,
     provider_chain_json: partial.provider_chain_json ?? null,
     error_details_json: partial.error_details_json ?? null,
     cost_multiplier: partial.cost_multiplier ?? 1,
     created_at_ms: partial.created_at_ms ?? (partial.created_at ?? 0) * 1000,
+    last_activity_ms: partial.last_activity_ms ?? null,
+    activity_details_json: partial.activity_details_json ?? null,
     created_at: partial.created_at ?? 0,
   };
 }

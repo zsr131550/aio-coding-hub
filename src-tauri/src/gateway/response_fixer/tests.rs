@@ -3,9 +3,9 @@ use super::json::JsonFixer;
 use super::sse::SseFixer;
 use super::{
     process_non_stream, push_model_route_mapping_special_setting, push_special_setting,
-    special_settings_json, ResponseFixerConfig, ResponseFixerStream, DEFAULT_MAX_FIX_SIZE,
-    DEFAULT_MAX_JSON_DEPTH, SPECIAL_SETTINGS_JSON_MAX_BYTES, SPECIAL_SETTINGS_MAX_ENTRIES,
-    SPECIAL_SETTINGS_STRING_PREVIEW_BYTES,
+    special_settings_json, upsert_cx2cc_cost_basis, ResponseFixerConfig, ResponseFixerStream,
+    DEFAULT_MAX_FIX_SIZE, DEFAULT_MAX_JSON_DEPTH, SPECIAL_SETTINGS_JSON_MAX_BYTES,
+    SPECIAL_SETTINGS_MAX_ENTRIES, SPECIAL_SETTINGS_STRING_PREVIEW_BYTES,
 };
 use axum::body::Bytes;
 use futures_core::Stream;
@@ -139,6 +139,63 @@ fn model_route_mapping_special_setting_stays_first_under_entry_cap() {
 }
 
 #[test]
+fn cx2cc_cost_basis_survives_entry_cap_and_replaces_stale_attempt() {
+    let special_settings = Arc::new(Mutex::new(Vec::new()));
+    for index in 0..SPECIAL_SETTINGS_MAX_ENTRIES {
+        push_special_setting(
+            &special_settings,
+            serde_json::json!({"type": "diagnostic", "index": index}),
+        );
+    }
+
+    upsert_cx2cc_cost_basis(
+        &special_settings,
+        serde_json::json!({
+            "type": "cx2cc_cost_basis",
+            "bridge_provider_id": 7,
+            "source_cli_key": "codex",
+            "priced_model": "gpt-stale",
+        }),
+    );
+    upsert_cx2cc_cost_basis(
+        &special_settings,
+        serde_json::json!({
+            "type": "cx2cc_cost_basis",
+            "bridge_provider_id": 8,
+            "source_cli_key": "codex",
+            "priced_model": "gpt-final",
+        }),
+    );
+
+    let encoded = special_settings_json(&special_settings).expect("special settings json");
+    let decoded: Vec<serde_json::Value> = serde_json::from_str(&encoded).expect("valid json");
+    assert_eq!(decoded.len(), SPECIAL_SETTINGS_MAX_ENTRIES);
+    assert_eq!(
+        decoded[0]
+            .get("bridge_provider_id")
+            .and_then(serde_json::Value::as_i64),
+        Some(8)
+    );
+    assert_eq!(
+        decoded
+            .iter()
+            .filter(
+                |value| value.get("type").and_then(serde_json::Value::as_str)
+                    == Some("cx2cc_cost_basis")
+            )
+            .count(),
+        1
+    );
+    assert_eq!(
+        decoded
+            .last()
+            .and_then(|value| value.get("type"))
+            .and_then(serde_json::Value::as_str),
+        Some("special_settings_truncated")
+    );
+}
+
+#[test]
 fn model_route_mapping_special_setting_survives_encoded_json_cap() {
     let special_settings = Arc::new(Mutex::new(Vec::new()));
 
@@ -177,6 +234,44 @@ fn model_route_mapping_special_setting_survives_encoded_json_cap() {
         Some("model_route_mapping")
     );
     assert!(encoded.contains("special_settings_truncated"));
+}
+
+#[test]
+fn cx2cc_cost_basis_survives_encoded_json_cap() {
+    let special_settings = Arc::new(Mutex::new(Vec::new()));
+    for index in 0..SPECIAL_SETTINGS_MAX_ENTRIES {
+        push_special_setting(
+            &special_settings,
+            serde_json::json!({
+                "type": "large_entry",
+                "index": index,
+                "parts": vec!["x".repeat(SPECIAL_SETTINGS_STRING_PREVIEW_BYTES + 2048); 5],
+            }),
+        );
+    }
+    upsert_cx2cc_cost_basis(
+        &special_settings,
+        serde_json::json!({
+            "type": "cx2cc_cost_basis",
+            "bridge_provider_id": 8,
+            "source_cli_key": "codex",
+            "priced_model": "gpt-5.6",
+        }),
+    );
+
+    let encoded = special_settings_json(&special_settings).expect("special settings json");
+    let decoded: Vec<serde_json::Value> = serde_json::from_str(&encoded).expect("valid json");
+    assert!(encoded.len() <= SPECIAL_SETTINGS_JSON_MAX_BYTES);
+    assert!(decoded.iter().any(|value| {
+        value.get("type").and_then(serde_json::Value::as_str) == Some("cx2cc_cost_basis")
+            && value
+                .get("bridge_provider_id")
+                .and_then(serde_json::Value::as_i64)
+                == Some(8)
+    }));
+    assert!(decoded.iter().any(|value| {
+        value.get("type").and_then(serde_json::Value::as_str) == Some("special_settings_truncated")
+    }));
 }
 
 #[test]

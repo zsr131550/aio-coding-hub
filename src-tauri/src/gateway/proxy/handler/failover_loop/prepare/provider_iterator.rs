@@ -18,6 +18,7 @@ pub(super) struct PreparedProvider {
     pub(super) provider_base_url_display: String,
     pub(super) auth_mode: String,
     pub(super) provider_index: u32,
+    pub(super) provider_bridged: bool,
     pub(super) session_reuse: Option<bool>,
     pub(super) effective_credential: String,
     pub(super) provider_max_attempts: u32,
@@ -26,13 +27,17 @@ pub(super) struct PreparedProvider {
     pub(super) upstream_forwarded_path: String,
     pub(super) upstream_query: Option<String>,
     pub(super) upstream_body_bytes: Bytes,
+    pub(super) active_requested_model: Option<String>,
     pub(super) strip_request_content_encoding: bool,
     pub(super) request_body_mutated_before_attempt: bool,
     pub(super) gemini_oauth_response_mode: Option<GeminiOAuthResponseMode>,
     pub(super) use_codex_chatgpt_backend: bool,
+    pub(super) codex_reasoning_continuation_request_eligible: bool,
     pub(super) codex_chatgpt_account_id: Option<String>,
     pub(super) cx2cc_active: bool,
     pub(super) active_bridge_type: Option<String>,
+    pub(super) responses_cache_namespace: Option<String>,
+    pub(super) responses_cache_input: Option<Vec<serde_json::Value>>,
     pub(super) bridge_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_codex_session_id: Option<String>,
@@ -116,6 +121,8 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
 
     let bridge_type = provider.bridge_type.as_deref();
     let is_cx2cc_bridge = provider.is_cx2cc_bridge();
+    let provider_bridged =
+        crate::providers::has_bridged_input_semantics(provider.source_provider_id, bridge_type);
     let is_non_cx2cc_bridge = bridge_type.is_some() && !is_cx2cc_bridge;
 
     let mut effective_credential = if is_cx2cc_bridge || is_non_cx2cc_bridge {
@@ -231,6 +238,8 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     // --- CX2CC translation ---
     let mut cx2cc_active = false;
     let mut active_bridge_type: Option<String> = None;
+    let mut responses_cache_namespace: Option<String> = None;
+    let mut responses_cache_input: Option<Vec<serde_json::Value>> = None;
     let mut bridge_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_codex_session_id: Option<String> = None;
@@ -298,6 +307,8 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
                 upstream_query = result.upstream_query;
                 upstream_body_bytes = result.upstream_body_bytes;
                 strip_request_content_encoding = result.strip_request_content_encoding;
+                responses_cache_namespace = result.responses_cache_namespace;
+                responses_cache_input = result.responses_cache_input;
             }
             bridge_preparation::BridgePreparationOutcome::Terminal(reason) => {
                 provider_checks::skip_with_reason(
@@ -328,8 +339,10 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         provider_id,
         provider_name_base: &provider_name_base,
         provider_base_url_base: &provider_base_url_base,
+        active_requested_model: input.requested_model.as_deref(),
         auth_mode: provider.auth_mode.as_str(),
         provider_index,
+        provider_bridged,
         session_reuse,
         provider_max_attempts,
         stream_idle_timeout_seconds: provider.stream_idle_timeout_seconds,
@@ -375,6 +388,30 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         );
     }
 
+    let continuation_replay_policy =
+        codex_reasoning_continuation::ContinuationReplayPolicy::from_post_match_strategy(
+            input.codex_reasoning_guard_post_match_strategy,
+        );
+    let continuation_repair_enabled =
+        input.codex_reasoning_guard_enabled && continuation_replay_policy.is_some();
+    let include_outcome = codex_reasoning_continuation::ensure_encrypted_reasoning_include(
+        codex_reasoning_continuation::IncludeMergeInput {
+            repair_enabled: continuation_repair_enabled,
+            cli_key: &input.cli_key,
+            upstream_forwarded_path: &upstream_forwarded_path,
+            body: upstream_body_bytes.as_ref(),
+            active_bridge_type: active_bridge_type.as_deref(),
+            oauth_adapter_present: oauth_adapter.is_some(),
+            gemini_oauth_response_mode_present: gemini_oauth_response_mode.is_some(),
+            use_codex_chatgpt_backend,
+        },
+    );
+    let codex_reasoning_continuation_request_eligible = include_outcome.eligible;
+    if include_outcome.changed {
+        upstream_body_bytes = include_outcome.body;
+        strip_request_content_encoding = true;
+    }
+
     let request_body_mutated_before_attempt = input.request_body_state.is_mutated()
         || upstream_body_bytes != input.request_body_state.decoded_clone()
         || strip_request_content_encoding;
@@ -386,6 +423,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         provider_base_url_display,
         auth_mode: provider.auth_mode.clone(),
         provider_index,
+        provider_bridged,
         session_reuse,
         effective_credential,
         provider_max_attempts,
@@ -393,13 +431,17 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         upstream_forwarded_path,
         upstream_query,
         upstream_body_bytes,
+        active_requested_model: input.requested_model.clone(),
         strip_request_content_encoding,
         request_body_mutated_before_attempt,
         gemini_oauth_response_mode,
         use_codex_chatgpt_backend,
+        codex_reasoning_continuation_request_eligible,
         codex_chatgpt_account_id,
         cx2cc_active,
         active_bridge_type,
+        responses_cache_namespace,
+        responses_cache_input,
         bridge_source,
         cx2cc_source,
         cx2cc_codex_session_id,

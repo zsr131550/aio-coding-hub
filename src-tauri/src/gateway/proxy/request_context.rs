@@ -40,10 +40,16 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) verbose_provider_error: bool,
     pub(super) enable_codex_session_id_completion: bool,
     pub(super) codex_reasoning_guard_enabled: bool,
+    pub(super) codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
     pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub(super) codex_reasoning_guard_model_rules:
         Vec<crate::settings::CodexReasoningGuardModelRule>,
+    pub(super) codex_reasoning_guard_active_template_id: String,
+    pub(super) codex_reasoning_guard_custom_templates:
+        Vec<crate::settings::CodexReasoningGuardRuleTemplate>,
+    pub(super) codex_reasoning_guard_post_match_strategy:
+        crate::settings::CodexReasoningGuardPostMatchStrategy,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -54,6 +60,7 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
+    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
     pub(super) upstream_retry_policy: crate::settings::UpstreamRetryPolicy,
@@ -84,6 +91,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             self.state.db.clone(),
             self.state.log_tx.clone(),
             self.state.plugin_pipeline.clone(),
+            self.state.active_requests.clone(),
             self.trace_id.clone(),
             self.cli_key.clone(),
             self.method_hint.clone(),
@@ -126,11 +134,20 @@ impl<R: tauri::Runtime> RequestContext<R> {
             verbose_provider_error: self.verbose_provider_error,
             enable_codex_session_id_completion: self.enable_codex_session_id_completion,
             codex_reasoning_guard_enabled: self.codex_reasoning_guard_enabled,
+            codex_reasoning_guard_rule_mode: self.codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode: self.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: self
                 .codex_reasoning_guard_reasoning_equals
                 .clone(),
             codex_reasoning_guard_model_rules: self.codex_reasoning_guard_model_rules.clone(),
+            codex_reasoning_guard_active_template_id: self
+                .codex_reasoning_guard_active_template_id
+                .clone(),
+            codex_reasoning_guard_custom_templates: self
+                .codex_reasoning_guard_custom_templates
+                .clone(),
+            codex_reasoning_guard_post_match_strategy: self
+                .codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget: self
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: self
@@ -146,6 +163,8 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_model_fallbacks: self
                 .codex_reasoning_guard_model_fallbacks
                 .clone(),
+            codex_reasoning_guard_continuation_max_output_tokens: self
+                .codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider: self.max_attempts_per_provider,
             max_providers_to_try: self.max_providers_to_try,
             upstream_retry_policy: self.upstream_retry_policy.clone(),
@@ -169,7 +188,13 @@ impl<R: tauri::Runtime> RequestContext<R> {
         }
     }
 
-    pub(super) fn from_handler_parts(parts: RequestContextParts<R>) -> Self {
+    // abort_guard 由调用方在任何 await 之前构造并武装（见 handler/mod.rs
+    // post-chain 注释）：登记到活跃注册表的请求必须已有武装的 guard 兜底，
+    // 否则 handler future 在中间的 await 点被取消时注册表条目会永久泄漏。
+    pub(super) fn from_handler_parts(
+        parts: RequestContextParts<R>,
+        abort_guard: RequestAbortGuard<R>,
+    ) -> Self {
         let RequestContextParts {
             state,
             cli_key,
@@ -198,9 +223,13 @@ impl<R: tauri::Runtime> RequestContext<R> {
             verbose_provider_error,
             enable_codex_session_id_completion,
             codex_reasoning_guard_enabled,
+            codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals,
             codex_reasoning_guard_model_rules,
+            codex_reasoning_guard_active_template_id,
+            codex_reasoning_guard_custom_templates,
+            codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms,
@@ -210,6 +239,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_concurrent_interval_ms,
             codex_reasoning_guard_concurrent_max_attempts,
             codex_reasoning_guard_model_fallbacks,
+            codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider,
             max_providers_to_try,
             upstream_retry_policy,
@@ -246,24 +276,6 @@ impl<R: tauri::Runtime> RequestContext<R> {
             upstream_request_timeout_non_streaming_secs,
         );
 
-        let abort_guard = RequestAbortGuard::new(
-            state.app.clone(),
-            state.db.clone(),
-            state.log_tx.clone(),
-            state.plugin_pipeline.clone(),
-            trace_id.clone(),
-            cli_key.clone(),
-            method_hint.clone(),
-            forwarded_path.clone(),
-            observe_request,
-            query.clone(),
-            session_id.clone(),
-            requested_model.clone(),
-            created_at_ms,
-            created_at,
-            started,
-        );
-
         let base_headers = build_base_headers(headers);
 
         Self {
@@ -294,9 +306,13 @@ impl<R: tauri::Runtime> RequestContext<R> {
             verbose_provider_error,
             enable_codex_session_id_completion,
             codex_reasoning_guard_enabled,
+            codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals,
             codex_reasoning_guard_model_rules,
+            codex_reasoning_guard_active_template_id,
+            codex_reasoning_guard_custom_templates,
+            codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms,
@@ -306,6 +322,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_concurrent_interval_ms,
             codex_reasoning_guard_concurrent_max_attempts,
             codex_reasoning_guard_model_fallbacks,
+            codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider,
             max_providers_to_try,
             upstream_retry_policy,
@@ -382,6 +399,28 @@ fn duration_from_secs(secs: u32) -> Option<Duration> {
     }
 }
 
+/// Claude Code `/compact` requests invalidate the whole prompt cache upstream,
+/// so the provider must re-process a near-megabyte prompt before the first
+/// byte arrives. The global default (30s) times out far too early, and the
+/// resulting same-provider retries can trip the circuit breaker (2026-07-04
+/// incident). Fixed floor for now; promote to a user-facing setting if one
+/// size turns out not to fit all providers.
+pub(super) const COMPACT_FIRST_BYTE_TIMEOUT_SECS: u32 = 300;
+
+/// Effective first-byte timeout in seconds for a request. Compact requests are
+/// widened to at least `COMPACT_FIRST_BYTE_TIMEOUT_SECS`; `0` (timeout
+/// disabled) is preserved as-is.
+pub(super) fn effective_first_byte_timeout_secs(
+    configured_secs: u32,
+    is_compact_request: bool,
+) -> u32 {
+    if is_compact_request && configured_secs > 0 {
+        configured_secs.max(COMPACT_FIRST_BYTE_TIMEOUT_SECS)
+    } else {
+        configured_secs
+    }
+}
+
 pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) state: GatewayAppState<R>,
     pub(super) cli_key: String,
@@ -410,10 +449,16 @@ pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) verbose_provider_error: bool,
     pub(super) enable_codex_session_id_completion: bool,
     pub(super) codex_reasoning_guard_enabled: bool,
+    pub(super) codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
     pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub(super) codex_reasoning_guard_model_rules:
         Vec<crate::settings::CodexReasoningGuardModelRule>,
+    pub(super) codex_reasoning_guard_active_template_id: String,
+    pub(super) codex_reasoning_guard_custom_templates:
+        Vec<crate::settings::CodexReasoningGuardRuleTemplate>,
+    pub(super) codex_reasoning_guard_post_match_strategy:
+        crate::settings::CodexReasoningGuardPostMatchStrategy,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -424,6 +469,7 @@ pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
+    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
     pub(super) upstream_retry_policy: crate::settings::UpstreamRetryPolicy,
@@ -442,4 +488,34 @@ pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_request_widens_first_byte_timeout_to_floor() {
+        assert_eq!(effective_first_byte_timeout_secs(30, true), 300);
+        assert_eq!(
+            effective_first_byte_timeout_secs(COMPACT_FIRST_BYTE_TIMEOUT_SECS - 1, true),
+            COMPACT_FIRST_BYTE_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn compact_request_keeps_configured_timeout_above_floor() {
+        assert_eq!(effective_first_byte_timeout_secs(400, true), 400);
+    }
+
+    #[test]
+    fn non_compact_request_keeps_configured_timeout() {
+        assert_eq!(effective_first_byte_timeout_secs(30, false), 30);
+        assert_eq!(effective_first_byte_timeout_secs(400, false), 400);
+    }
+
+    #[test]
+    fn disabled_timeout_stays_disabled_for_compact_request() {
+        assert_eq!(effective_first_byte_timeout_secs(0, true), 0);
+    }
 }

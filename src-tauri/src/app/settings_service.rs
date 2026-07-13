@@ -49,6 +49,8 @@ pub(crate) struct SettingsUpdate {
     pub tray_enabled: Option<bool>,
     pub enable_cli_proxy_startup_recovery: Option<bool>,
     pub log_retention_days: u32,
+    // Option keeps older frontend payloads valid (0 = keep forever).
+    pub request_log_retention_days: Option<u32>,
     pub provider_cooldown_seconds: Option<u32>,
     pub provider_base_url_ping_cache_ttl_seconds: Option<u32>,
     pub upstream_first_byte_timeout_seconds: Option<u32>,
@@ -83,10 +85,17 @@ pub(crate) struct SettingsUpdate {
     pub codex_home_override: Option<String>,
     pub codex_oauth_compatible_proxy_mode: Option<bool>,
     pub codex_provider_test_model: Option<String>,
+    pub codex_reasoning_guard_hit_label: Option<String>,
     pub codex_reasoning_guard_enabled: Option<bool>,
+    pub codex_reasoning_guard_rule_mode: Option<settings::CodexReasoningGuardRuleMode>,
     pub codex_reasoning_guard_compare_mode: Option<settings::CodexReasoningGuardCompareMode>,
     pub codex_reasoning_guard_reasoning_equals: Option<Vec<i64>>,
     pub codex_reasoning_guard_model_rules: Option<Vec<settings::CodexReasoningGuardModelRule>>,
+    pub codex_reasoning_guard_active_template_id: Option<String>,
+    pub codex_reasoning_guard_custom_templates:
+        Option<Vec<settings::CodexReasoningGuardRuleTemplate>>,
+    pub codex_reasoning_guard_post_match_strategy:
+        Option<settings::CodexReasoningGuardPostMatchStrategy>,
     pub codex_reasoning_guard_immediate_retry_budget: Option<u32>,
     pub codex_reasoning_guard_delayed_retry_budget: Option<u32>,
     pub codex_reasoning_guard_delayed_retry_ms: Option<u32>,
@@ -97,6 +106,9 @@ pub(crate) struct SettingsUpdate {
     pub codex_reasoning_guard_concurrent_interval_ms: Option<u32>,
     pub codex_reasoning_guard_concurrent_max_attempts: Option<u32>,
     pub codex_reasoning_guard_model_fallbacks: Option<Vec<String>>,
+    pub codex_reasoning_guard_continuation_repair_enabled: Option<bool>,
+    pub codex_reasoning_guard_continuation_max_rounds: Option<u32>,
+    pub codex_reasoning_guard_continuation_max_output_tokens: Option<u32>,
     pub codex_reasoning_guard_backoff_after_hits: Option<u32>,
     pub codex_reasoning_guard_backoff_ms: Option<u32>,
     #[serde(rename = "cx2CcFallbackModelOpus")]
@@ -164,10 +176,15 @@ pub(crate) struct SettingsView {
     pub codex_home_override: String,
     pub codex_oauth_compatible_proxy_mode: bool,
     pub codex_provider_test_model: String,
+    pub codex_reasoning_guard_hit_label: String,
     pub codex_reasoning_guard_enabled: bool,
+    pub codex_reasoning_guard_rule_mode: settings::CodexReasoningGuardRuleMode,
     pub codex_reasoning_guard_compare_mode: settings::CodexReasoningGuardCompareMode,
     pub codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub codex_reasoning_guard_model_rules: Vec<settings::CodexReasoningGuardModelRule>,
+    pub codex_reasoning_guard_active_template_id: String,
+    pub codex_reasoning_guard_custom_templates: Vec<settings::CodexReasoningGuardRuleTemplate>,
+    pub codex_reasoning_guard_post_match_strategy: settings::CodexReasoningGuardPostMatchStrategy,
     pub codex_reasoning_guard_immediate_retry_budget: u32,
     pub codex_reasoning_guard_delayed_retry_budget: u32,
     pub codex_reasoning_guard_delayed_retry_ms: u32,
@@ -177,6 +194,9 @@ pub(crate) struct SettingsView {
     pub codex_reasoning_guard_concurrent_interval_ms: u32,
     pub codex_reasoning_guard_concurrent_max_attempts: u32,
     pub codex_reasoning_guard_model_fallbacks: Vec<String>,
+    pub codex_reasoning_guard_continuation_repair_enabled: bool,
+    pub codex_reasoning_guard_continuation_max_rounds: u32,
+    pub codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub codex_reasoning_guard_backoff_after_hits: u32,
     pub codex_reasoning_guard_backoff_ms: u32,
     pub auto_start: bool,
@@ -184,6 +204,7 @@ pub(crate) struct SettingsView {
     pub tray_enabled: bool,
     pub enable_cli_proxy_startup_recovery: bool,
     pub log_retention_days: u32,
+    pub request_log_retention_days: u32,
     pub provider_cooldown_seconds: u32,
     pub provider_base_url_ping_cache_ttl_seconds: u32,
     pub upstream_first_byte_timeout_seconds: u32,
@@ -300,12 +321,22 @@ impl From<&settings::AppSettings> for SettingsView {
             codex_home_override: value.codex_home_override.clone(),
             codex_oauth_compatible_proxy_mode: value.codex_oauth_compatible_proxy_mode,
             codex_provider_test_model: value.codex_provider_test_model.clone(),
+            codex_reasoning_guard_hit_label: value.codex_reasoning_guard_hit_label.clone(),
             codex_reasoning_guard_enabled: value.codex_reasoning_guard_enabled,
+            codex_reasoning_guard_rule_mode: value.codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode: value.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: value
                 .codex_reasoning_guard_reasoning_equals
                 .clone(),
             codex_reasoning_guard_model_rules: value.codex_reasoning_guard_model_rules.clone(),
+            codex_reasoning_guard_active_template_id: value
+                .codex_reasoning_guard_active_template_id
+                .clone(),
+            codex_reasoning_guard_custom_templates: value
+                .codex_reasoning_guard_custom_templates
+                .clone(),
+            codex_reasoning_guard_post_match_strategy: value
+                .codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget: value
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: value
@@ -321,6 +352,12 @@ impl From<&settings::AppSettings> for SettingsView {
             codex_reasoning_guard_model_fallbacks: value
                 .codex_reasoning_guard_model_fallbacks
                 .clone(),
+            codex_reasoning_guard_continuation_repair_enabled: value
+                .codex_reasoning_guard_continuation_repair_enabled,
+            codex_reasoning_guard_continuation_max_rounds: value
+                .codex_reasoning_guard_continuation_max_rounds,
+            codex_reasoning_guard_continuation_max_output_tokens: value
+                .codex_reasoning_guard_continuation_max_output_tokens,
             codex_reasoning_guard_backoff_after_hits: value
                 .codex_reasoning_guard_backoff_after_hits,
             codex_reasoning_guard_backoff_ms: value.codex_reasoning_guard_backoff_ms,
@@ -329,6 +366,7 @@ impl From<&settings::AppSettings> for SettingsView {
             tray_enabled: value.tray_enabled,
             enable_cli_proxy_startup_recovery: value.enable_cli_proxy_startup_recovery,
             log_retention_days: value.log_retention_days,
+            request_log_retention_days: value.request_log_retention_days,
             provider_cooldown_seconds: value.provider_cooldown_seconds,
             provider_base_url_ping_cache_ttl_seconds: value
                 .provider_base_url_ping_cache_ttl_seconds,
@@ -606,6 +644,7 @@ pub(crate) async fn settings_set_impl(
         tray_enabled,
         enable_cli_proxy_startup_recovery,
         log_retention_days,
+        request_log_retention_days,
         provider_cooldown_seconds,
         provider_base_url_ping_cache_ttl_seconds,
         upstream_first_byte_timeout_seconds,
@@ -640,10 +679,15 @@ pub(crate) async fn settings_set_impl(
         codex_home_override,
         codex_oauth_compatible_proxy_mode,
         codex_provider_test_model,
+        codex_reasoning_guard_hit_label,
         codex_reasoning_guard_enabled,
+        codex_reasoning_guard_rule_mode,
         codex_reasoning_guard_compare_mode,
         codex_reasoning_guard_reasoning_equals,
         codex_reasoning_guard_model_rules,
+        codex_reasoning_guard_active_template_id,
+        codex_reasoning_guard_custom_templates,
+        codex_reasoning_guard_post_match_strategy,
         codex_reasoning_guard_immediate_retry_budget,
         codex_reasoning_guard_delayed_retry_budget,
         codex_reasoning_guard_delayed_retry_ms,
@@ -653,6 +697,9 @@ pub(crate) async fn settings_set_impl(
         codex_reasoning_guard_concurrent_interval_ms,
         codex_reasoning_guard_concurrent_max_attempts,
         codex_reasoning_guard_model_fallbacks,
+        codex_reasoning_guard_continuation_repair_enabled,
+        codex_reasoning_guard_continuation_max_rounds,
+        codex_reasoning_guard_continuation_max_output_tokens,
         codex_reasoning_guard_backoff_after_hits,
         codex_reasoning_guard_backoff_ms,
         cx2cc_fallback_model_opus,
@@ -688,6 +735,8 @@ pub(crate) async fn settings_set_impl(
             let start_minimized = start_minimized.unwrap_or(previous.start_minimized);
             let enable_cli_proxy_startup_recovery = enable_cli_proxy_startup_recovery
                 .unwrap_or(previous.enable_cli_proxy_startup_recovery);
+            let request_log_retention_days =
+                request_log_retention_days.unwrap_or(previous.request_log_retention_days);
             let provider_cooldown_seconds =
                 provider_cooldown_seconds.unwrap_or(previous.provider_cooldown_seconds);
             let gateway_listen_mode = gateway_listen_mode.unwrap_or(previous.gateway_listen_mode);
@@ -724,14 +773,34 @@ pub(crate) async fn settings_set_impl(
             } else {
                 codex_provider_test_model
             };
+            let codex_reasoning_guard_hit_label = codex_reasoning_guard_hit_label
+                .unwrap_or(previous.codex_reasoning_guard_hit_label.clone())
+                .trim()
+                .to_string();
+            let codex_reasoning_guard_hit_label = if codex_reasoning_guard_hit_label.is_empty() {
+                settings::DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string()
+            } else {
+                codex_reasoning_guard_hit_label
+            };
             let codex_reasoning_guard_enabled = codex_reasoning_guard_enabled
                 .unwrap_or(previous.codex_reasoning_guard_enabled);
+            let codex_reasoning_guard_rule_mode = codex_reasoning_guard_rule_mode
+                .unwrap_or(previous.codex_reasoning_guard_rule_mode);
             let codex_reasoning_guard_compare_mode = codex_reasoning_guard_compare_mode
                 .unwrap_or(previous.codex_reasoning_guard_compare_mode);
             let codex_reasoning_guard_reasoning_equals = codex_reasoning_guard_reasoning_equals
                 .unwrap_or(previous.codex_reasoning_guard_reasoning_equals.clone());
             let codex_reasoning_guard_model_rules = codex_reasoning_guard_model_rules
                 .unwrap_or(previous.codex_reasoning_guard_model_rules.clone());
+            let codex_reasoning_guard_active_template_id = codex_reasoning_guard_active_template_id
+                .unwrap_or(previous.codex_reasoning_guard_active_template_id.clone())
+                .trim()
+                .to_string();
+            let codex_reasoning_guard_custom_templates = codex_reasoning_guard_custom_templates
+                .unwrap_or(previous.codex_reasoning_guard_custom_templates.clone());
+            let codex_reasoning_guard_post_match_strategy =
+                codex_reasoning_guard_post_match_strategy
+                    .unwrap_or(previous.codex_reasoning_guard_post_match_strategy);
             let codex_reasoning_guard_immediate_retry_budget =
                 codex_reasoning_guard_immediate_retry_budget
                     .unwrap_or(previous.codex_reasoning_guard_immediate_retry_budget);
@@ -760,6 +829,15 @@ pub(crate) async fn settings_set_impl(
                     .into_iter()
                     .map(|model| model.trim().to_string())
                     .collect();
+            let codex_reasoning_guard_continuation_repair_enabled =
+                codex_reasoning_guard_continuation_repair_enabled
+                    .unwrap_or(previous.codex_reasoning_guard_continuation_repair_enabled);
+            let codex_reasoning_guard_continuation_max_rounds =
+                codex_reasoning_guard_continuation_max_rounds
+                    .unwrap_or(previous.codex_reasoning_guard_continuation_max_rounds);
+            let codex_reasoning_guard_continuation_max_output_tokens =
+                codex_reasoning_guard_continuation_max_output_tokens
+                    .unwrap_or(previous.codex_reasoning_guard_continuation_max_output_tokens);
             let codex_reasoning_guard_backoff_after_hits =
                 codex_reasoning_guard_backoff_after_hits
                     .unwrap_or(previous.codex_reasoning_guard_backoff_after_hits);
@@ -891,10 +969,15 @@ pub(crate) async fn settings_set_impl(
                 codex_home_override,
                 codex_oauth_compatible_proxy_mode,
                 codex_provider_test_model,
+                codex_reasoning_guard_hit_label,
                 codex_reasoning_guard_enabled,
+                codex_reasoning_guard_rule_mode,
                 codex_reasoning_guard_compare_mode,
                 codex_reasoning_guard_reasoning_equals,
                 codex_reasoning_guard_model_rules,
+                codex_reasoning_guard_active_template_id,
+                codex_reasoning_guard_custom_templates,
+                codex_reasoning_guard_post_match_strategy,
                 codex_reasoning_guard_immediate_retry_budget,
                 codex_reasoning_guard_delayed_retry_budget,
                 codex_reasoning_guard_delayed_retry_ms,
@@ -904,6 +987,9 @@ pub(crate) async fn settings_set_impl(
                 codex_reasoning_guard_concurrent_interval_ms,
                 codex_reasoning_guard_concurrent_max_attempts,
                 codex_reasoning_guard_model_fallbacks,
+                codex_reasoning_guard_continuation_repair_enabled,
+                codex_reasoning_guard_continuation_max_rounds,
+                codex_reasoning_guard_continuation_max_output_tokens,
                 codex_reasoning_guard_backoff_after_hits,
                 codex_reasoning_guard_backoff_ms,
                 auto_start: next_auto_start,
@@ -911,6 +997,7 @@ pub(crate) async fn settings_set_impl(
                 tray_enabled,
                 enable_cli_proxy_startup_recovery,
                 log_retention_days,
+                request_log_retention_days,
                 provider_cooldown_seconds,
                 provider_base_url_ping_cache_ttl_seconds,
                 upstream_first_byte_timeout_seconds,

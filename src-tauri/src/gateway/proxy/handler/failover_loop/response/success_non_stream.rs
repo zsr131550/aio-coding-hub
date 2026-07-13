@@ -6,12 +6,31 @@ use super::upstream_retry_policy::{
 };
 use super::*;
 use crate::domain::provider_oauth_limits;
+use crate::domain::providers::CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE;
 use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayResponseHookInput};
 use crate::gateway::proxy::request_context::RequestContext;
 use crate::gateway::proxy::{
     gemini_oauth, is_fake_200_non_stream_body, protocol_bridge, provider_router,
     upstream_client_error_rules, GatewayErrorCode,
 };
+
+fn resolve_requested_model_for_log(
+    requested_model: Option<String>,
+    fallback_model: Option<&str>,
+    cli_key: &str,
+    body_bytes: &[u8],
+) -> Option<String> {
+    fallback_model
+        .map(str::to_string)
+        .or(requested_model)
+        .or_else(|| {
+            if body_bytes.is_empty() {
+                None
+            } else {
+                usage::parse_model_from_json_or_sse_bytes(cli_key, body_bytes)
+            }
+        })
+}
 
 fn buffer_cx2cc_event_stream_as_json(
     cx2cc_active: bool,
@@ -24,7 +43,8 @@ fn buffer_cx2cc_event_stream_as_json(
         return Ok(body_bytes);
     }
 
-    let response = protocol_bridge::stream::aggregate_responses_event_stream(body_bytes.as_ref())?;
+    let response =
+        crate::gateway::proxy::sse::aggregate_responses_event_stream(body_bytes.as_ref())?;
     let encoded = serde_json::to_vec(&response)
         .map_err(|err| format!("failed to serialize aggregated response: {err}"))?;
 
@@ -76,6 +96,45 @@ fn classify_cx2cc_success_payload(
         },
         body_bytes,
     })
+}
+
+async fn emit_response_hook_failure_request_end<R: tauri::Runtime>(
+    common: &CommonCtxOwned<'_, R>,
+    attempts: &[FailoverAttempt],
+) {
+    let state = common.state;
+    let duration_ms = common.started.elapsed().as_millis();
+    emit_request_event_and_enqueue_request_log(
+        RequestEndArgs::from_context(RequestEndContextArgs {
+            deps: RequestEndDeps::new(
+                &state.app,
+                &state.db,
+                &state.log_tx,
+                &state.plugin_pipeline,
+                &state.active_requests,
+            ),
+            trace_id: common.trace_id.as_str(),
+            cli_key: common.cli_key.as_str(),
+            method: common.method_hint.as_str(),
+            path: common.forwarded_path.as_str(),
+            observe: common.observe,
+            query: common.query.as_deref(),
+            excluded_from_stats: false,
+            duration_ms,
+            attempts,
+            special_settings_json: response_fixer::special_settings_json(&common.special_settings),
+            session_id: common.session_id.clone(),
+            requested_model: common.requested_model.clone(),
+            created_at_ms: common.created_at_ms,
+            created_at: common.created_at,
+        })
+        .with_completion(RequestCompletion::failure(
+            StatusCode::BAD_GATEWAY.as_u16(),
+            Some(ErrorCategory::SystemError.as_str()),
+            GatewayErrorCode::InternalError.as_str(),
+        )),
+    )
+    .await;
 }
 
 fn summarize_openai_response_json(body: &serde_json::Value) -> String {
@@ -341,6 +400,8 @@ fn translate_bridge_non_stream_body(
         mapped_model: None,
         stream_requested: anthropic_stream_requested,
         is_chatgpt_backend: false,
+        responses_cache_namespace: None,
+        responses_cache_input: None,
     };
 
     if anthropic_stream_requested {
@@ -368,6 +429,24 @@ fn translate_bridge_non_stream_body(
     );
 
     Ok(Bytes::from(encoded))
+}
+
+fn cache_bridge_non_stream_response(
+    active_bridge_type: Option<&str>,
+    responses_cache_namespace: Option<&str>,
+    responses_cache_input: Option<&[serde_json::Value]>,
+    body_bytes: &[u8],
+) {
+    if active_bridge_type != Some(CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE) {
+        return;
+    }
+    let (Some(namespace), Some(input)) = (responses_cache_namespace, responses_cache_input) else {
+        return;
+    };
+    let Ok(response) = serde_json::from_slice::<serde_json::Value>(body_bytes) else {
+        return;
+    };
+    protocol_bridge::response_cache::cache_completed_response(namespace, input, &response);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -418,7 +497,10 @@ where
         gemini_oauth_response_mode,
         cx2cc_active,
         active_bridge_type,
+        responses_cache_namespace,
+        responses_cache_input,
         anthropic_stream_requested,
+        ..
     } = attempt_ctx;
     let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
     let reason_code = dc::success_reason_code(provider_index, retry_index);
@@ -427,19 +509,22 @@ where
         attempts,
         failed_provider_ids,
         last_outcome,
+        active_requested_model,
         circuit_snapshot,
         abort_guard,
     } = loop_state;
 
     strip_hop_headers(&mut response_headers);
     let cx2cc_buffered_event_stream = cx2cc_active && is_event_stream(&response_headers);
-    let should_inspect_codex_reasoning_guard =
-        common.codex_reasoning_guard_enabled && common.cli_key == "codex";
+    let should_collect_passive_codex_reasoning_features = common.cli_key == "codex";
+    let should_run_active_codex_reasoning_guard = common.codex_reasoning_guard_enabled
+        && should_collect_passive_codex_reasoning_features
+        && active_bridge_type.is_none();
     if should_passthrough_non_stream_success(
         gemini_oauth_response_mode,
         cx2cc_buffered_event_stream,
         active_bridge_type.is_some(),
-    ) && !should_inspect_codex_reasoning_guard
+    ) && !should_collect_passive_codex_reasoning_features
     {
         let should_gunzip = has_gzip_content_encoding(&response_headers);
 
@@ -456,6 +541,7 @@ where
                     provider_index: Some(provider_index),
                     retry_index: Some(retry_index),
                     session_reuse,
+                    provider_bridged: Some(provider_ctx_owned.provider_bridged),
                     error_category: None,
                     error_code: None,
                     decision: Some("success"),
@@ -468,6 +554,9 @@ where
                     circuit_state_after: None,
                     circuit_failure_count: Some(circuit_before.failure_count),
                     circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                    circuit_recover_at_unix: None,
+                    circuit_trigger_error_code: None,
+                    timeout_secs: None,
                 });
 
                 emit_attempt_event_and_log_with_circuit_before(
@@ -545,6 +634,7 @@ where
                     provider_index: Some(provider_index),
                     retry_index: Some(retry_index),
                     session_reuse,
+                    provider_bridged: Some(provider_ctx_owned.provider_bridged),
                     error_category: None,
                     error_code: None,
                     decision: Some("success"),
@@ -557,6 +647,9 @@ where
                     circuit_state_after: None,
                     circuit_failure_count: Some(circuit_before.failure_count),
                     circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                    circuit_recover_at_unix: None,
+                    circuit_trigger_error_code: None,
+                    timeout_secs: None,
                 });
 
                 emit_attempt_event_and_log_with_circuit_before(
@@ -683,6 +776,7 @@ where
                     attempts,
                     failed_provider_ids,
                     last_outcome,
+                    active_requested_model,
                     circuit_snapshot,
                     abort_guard,
                 },
@@ -695,6 +789,7 @@ where
                     provider_ctx.upstream_retry_policy,
                     configured_retry,
                 ),
+                timeout_secs: None,
             })
             .await;
         }
@@ -735,6 +830,7 @@ where
                         attempts,
                         failed_provider_ids,
                         last_outcome,
+                        active_requested_model,
                         circuit_snapshot,
                         abort_guard,
                     },
@@ -744,6 +840,7 @@ where
                     outcome,
                     reason: format!("cx2cc event-stream aggregation failed: {err}"),
                     record_circuit_failure: true,
+                    timeout_secs: None,
                 })
                 .await;
             }
@@ -850,6 +947,7 @@ where
             provider_index: Some(provider_index),
             retry_index: Some(retry_index),
             session_reuse,
+            provider_bridged: Some(provider_ctx_owned.provider_bridged),
             error_category: Some(ErrorCategory::ProviderError.as_str()),
             error_code: Some(error_code),
             decision: Some(decision.as_str()),
@@ -866,6 +964,9 @@ where
             circuit_state_after: None,
             circuit_failure_count: Some(circuit_before.failure_count),
             circuit_failure_threshold: Some(circuit_before.failure_threshold),
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
+            timeout_secs: None,
         });
 
         emit_attempt_event_and_log_with_circuit_before(
@@ -897,6 +998,10 @@ where
                     provider_ctx_owned.provider_name_base.as_str(),
                     provider_ctx_owned.provider_base_url_base.as_str(),
                     now_unix,
+                )
+                .with_trigger(
+                    Some(error_code),
+                    Some(common.upstream_first_byte_timeout_secs),
                 ),
             );
             if let Some(last) = attempts.last_mut() {
@@ -925,6 +1030,10 @@ where
             return LoopControl::BreakRetry;
         }
 
+        let requested_model_for_log = provider_ctx_owned
+            .active_requested_model
+            .clone()
+            .or_else(|| common.requested_model.clone());
         emit_request_event_and_enqueue_request_log(
             RequestEndArgs::from_context(RequestEndContextArgs {
                 deps: RequestEndDeps::new(
@@ -932,6 +1041,7 @@ where
                     &state.db,
                     &state.log_tx,
                     &state.plugin_pipeline,
+                    &state.active_requests,
                 ),
                 trace_id: common.trace_id.as_str(),
                 cli_key: common.cli_key.as_str(),
@@ -946,7 +1056,7 @@ where
                     &common.special_settings,
                 ),
                 session_id: common.session_id.clone(),
-                requested_model: common.requested_model.clone(),
+                requested_model: requested_model_for_log,
                 created_at_ms,
                 created_at,
             })
@@ -973,15 +1083,26 @@ where
         usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
 
     // Bridge providers translate upstream protocol responses back to client protocol.
+    let bridge_response_cache_body = body_bytes.clone();
+    let active_requested_model_for_bridge = provider_ctx_owned
+        .active_requested_model
+        .clone()
+        .or_else(|| common.requested_model.clone());
     match translate_bridge_non_stream_body(
         active_bridge_type,
         anthropic_stream_requested,
-        common.requested_model.as_deref(),
+        active_requested_model_for_bridge.as_deref(),
         &common.cx2cc_settings,
         &mut response_headers,
         body_bytes,
     ) {
         Ok(translated_body) => {
+            cache_bridge_non_stream_response(
+                active_bridge_type,
+                responses_cache_namespace,
+                responses_cache_input,
+                bridge_response_cache_body.as_ref(),
+            );
             body_bytes = translated_body;
             if active_bridge_type.is_some() {
                 tracing::debug!(
@@ -1031,6 +1152,7 @@ where
                 provider_index: Some(provider_index),
                 retry_index: Some(retry_index),
                 session_reuse,
+                provider_bridged: Some(provider_ctx_owned.provider_bridged),
                 error_category: Some(ErrorCategory::NonRetryableClientError.as_str()),
                 error_code: Some(GatewayErrorCode::BridgeUnsupportedFeature.as_str()),
                 decision: Some(FailoverDecision::Abort.as_str()),
@@ -1043,6 +1165,9 @@ where
                 circuit_state_after: None,
                 circuit_failure_count: Some(circuit_before.failure_count),
                 circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                circuit_recover_at_unix: None,
+                circuit_trigger_error_code: None,
+                timeout_secs: None,
             });
 
             let verbose_provider_error = ctx.verbose_provider_error;
@@ -1060,7 +1185,7 @@ where
                 created_at_ms,
                 created_at,
                 session_id: common.session_id,
-                requested_model: common.requested_model,
+                requested_model: active_requested_model_for_bridge,
                 special_settings: common.special_settings,
                 verbose_provider_error,
                 error_category: ErrorCategory::NonRetryableClientError.as_str(),
@@ -1089,55 +1214,297 @@ where
         body_bytes = outcome.body;
     }
 
-    if should_inspect_codex_reasoning_guard {
+    if should_collect_passive_codex_reasoning_features {
         if let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-            if let Some(matched) = codex_reasoning_guard::detect_from_json(
+            let special_settings_snapshot =
+                codex_reasoning_features::special_settings_snapshot(&common.special_settings);
+            let feature_sample = codex_reasoning_features::build_complete_sample(
                 common.cli_key.as_str(),
-                current_codex_reasoning_guard_model(input, retry_state),
+                common.codex_reasoning_guard_rule_mode,
+                Some(&input.base_headers),
+                input.introspection_json.as_ref(),
+                special_settings_snapshot.as_slice(),
                 &body_json,
-                common.codex_reasoning_guard_compare_mode,
-                common.codex_reasoning_guard_reasoning_equals.as_slice(),
-                common.codex_reasoning_guard_model_rules.as_slice(),
-            ) {
-                let budget_decision = codex_reasoning_guard::budget_decision(
-                    retry_state.codex_reasoning_guard_hits,
-                    codex_reasoning_guard::CodexReasoningGuardBudgetConfig {
-                        immediate_budget: common.codex_reasoning_guard_immediate_retry_budget,
-                        delayed_budget: common.codex_reasoning_guard_delayed_retry_budget,
-                        delayed_retry_ms: common.codex_reasoning_guard_delayed_retry_ms,
-                        exhausted_action: common.codex_reasoning_guard_exhausted_action,
-                        retry_policy: common.codex_reasoning_guard_retry_policy,
-                        concurrent_max: common.codex_reasoning_guard_concurrent_max,
-                        concurrent_interval_ms: common.codex_reasoning_guard_concurrent_interval_ms,
-                        concurrent_max_attempts: common
-                            .codex_reasoning_guard_concurrent_max_attempts,
+            );
+            if let Some(sample) = feature_sample.as_ref() {
+                codex_reasoning_features::push_special_setting(&common.special_settings, sample);
+            }
+
+            let active_guard_model =
+                provider_ctx_owned
+                    .active_requested_model
+                    .clone()
+                    .or_else(|| {
+                        current_codex_reasoning_guard_model(input, retry_state)
+                            .map(ToOwned::to_owned)
+                    });
+            if let Some(decision) = if should_run_active_codex_reasoning_guard {
+                codex_reasoning_guard::evaluate_decision(
+                    codex_reasoning_guard::CodexReasoningGuardDecisionEvaluationInput {
+                        base: codex_reasoning_guard::CodexReasoningGuardEvaluationInput {
+                            cli_key: common.cli_key.as_str(),
+                            requested_model: active_guard_model.as_deref(),
+                            value: &body_json,
+                            rule_mode: common.codex_reasoning_guard_rule_mode,
+                            feature_sample: feature_sample.as_ref(),
+                        },
+                        active_template_id: common
+                            .codex_reasoning_guard_active_template_id
+                            .as_str(),
+                        custom_templates: common.codex_reasoning_guard_custom_templates.as_slice(),
+                        duration_ms: Some(started.elapsed().as_millis()),
+                        ttfb_ms: provider_ttfb_ms,
                     },
-                );
-                codex_reasoning_guard::push_special_setting(
-                    &common.special_settings,
-                    provider_id,
-                    provider_ctx_owned.provider_name_base.as_str(),
-                    retry_index,
-                    &matched,
-                    budget_decision,
-                );
-                codex_reasoning_guard::record_guard_retry_attempt(
-                    attempts,
-                    provider_id,
-                    provider_ctx_owned.provider_name_base.as_str(),
-                    provider_ctx_owned.provider_base_url_base.as_str(),
-                    provider_index,
-                    retry_index,
-                    session_reuse,
-                    attempt_started_ms,
-                    attempt_started.elapsed().as_millis(),
-                    circuit_before.state.as_str(),
-                    circuit_before.failure_count,
-                    circuit_before.failure_threshold,
-                    &matched,
-                    budget_decision,
-                );
-                let outcome = match budget_decision.action {
+                )
+            } else {
+                None
+            } {
+                let matched = &decision.matched;
+                if decision.action
+                    == crate::settings::CodexReasoningGuardTemplateRuleAction::NoIntercept
+                {
+                    codex_reasoning_guard::push_decision_special_setting(
+                        &common.special_settings,
+                        provider_id,
+                        provider_ctx_owned.provider_name_base.as_str(),
+                        retry_index,
+                        matched,
+                    );
+                } else if common
+                    .codex_reasoning_guard_post_match_strategy
+                    .is_continuation_repair()
+                {
+                    let budget_decision = codex_reasoning_guard::continuation_exhausted_decision(
+                        retry_state.codex_reasoning_guard_hits,
+                        common.codex_reasoning_guard_immediate_retry_budget,
+                        common.codex_reasoning_guard_exhausted_action,
+                    );
+                    codex_reasoning_guard::push_special_setting_with_strategy(
+                        &common.special_settings,
+                        provider_id,
+                        provider_ctx_owned.provider_name_base.as_str(),
+                        retry_index,
+                        matched,
+                        budget_decision,
+                        common.codex_reasoning_guard_post_match_strategy,
+                        Some("unsupported"),
+                        Some(0),
+                        Some("unsupported"),
+                        Some("continuation repair is only supported for native Codex Responses event-stream responses"),
+                        StatusCode::BAD_GATEWAY.as_u16(),
+                    );
+                    codex_reasoning_guard::record_guard_retry_attempt(
+                        attempts,
+                        provider_id,
+                        provider_ctx_owned.provider_name_base.as_str(),
+                        provider_ctx_owned.provider_base_url_base.as_str(),
+                        provider_index,
+                        retry_index,
+                        session_reuse,
+                        attempt_started_ms,
+                        attempt_started.elapsed().as_millis(),
+                        circuit_before.state.as_str(),
+                        circuit_before.failure_count,
+                        circuit_before.failure_threshold,
+                        provider_ctx_owned.provider_bridged,
+                        matched,
+                        budget_decision,
+                    );
+                    let outcome = match budget_decision.action {
+                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
+                            "codex_reasoning_guard_retry"
+                        }
+                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::ReturnError => {
+                            "codex_reasoning_guard_exhausted"
+                        }
+                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
+                            "codex_reasoning_guard_switch_provider"
+                        }
+                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
+                            "codex_reasoning_guard_switch_model"
+                        }
+                    };
+                    emit_attempt_event_and_log(
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        outcome.to_string(),
+                        Some(StatusCode::BAD_GATEWAY.as_u16()),
+                        AttemptCircuitFields {
+                            state_before: Some(circuit_before.state.as_str()),
+                            state_after: Some(circuit_before.state.as_str()),
+                            failure_count: Some(circuit_before.failure_count),
+                            failure_threshold: Some(circuit_before.failure_threshold),
+                        },
+                    )
+                    .await;
+                    match budget_decision.action {
+                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
+                            return LoopControl::ContinueRetry;
+                        }
+                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::ReturnError => {
+                            *last_outcome = Some(AttemptOutcome::new(
+                                ErrorCategory::SystemError.as_str(),
+                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                            ));
+                            let duration_ms = started.elapsed().as_millis();
+                            let requested_model_for_log =
+                                active_guard_model.clone().or_else(|| common.requested_model.clone());
+                            emit_request_event_and_enqueue_request_log(
+                                RequestEndArgs::from_context(RequestEndContextArgs {
+                                    deps: RequestEndDeps::new(
+                                        &common.state.app,
+                                        &common.state.db,
+                                        &common.state.log_tx,
+                                        &common.state.plugin_pipeline,
+                                        &common.state.active_requests,
+                                    ),
+                                    trace_id: common.trace_id.as_str(),
+                                    cli_key: common.cli_key.as_str(),
+                                    method: common.method_hint.as_str(),
+                                    path: common.forwarded_path.as_str(),
+                                    observe: common.observe,
+                                    query: common.query.as_deref(),
+                                    excluded_from_stats: false,
+                                    duration_ms,
+                                    attempts: attempts.as_slice(),
+                                    special_settings_json: response_fixer::special_settings_json(
+                                        &common.special_settings,
+                                    ),
+                                    session_id: common.session_id.clone(),
+                                    requested_model: requested_model_for_log,
+                                    created_at_ms,
+                                    created_at,
+                                })
+                                .with_completion(RequestCompletion::failure_with_visible_ttfb(
+                                    StatusCode::BAD_GATEWAY.as_u16(),
+                                    Some(ErrorCategory::SystemError.as_str()),
+                                    codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                    provider_ttfb_ms,
+                                    Some(duration_ms),
+                                )),
+                            )
+                            .await;
+                            abort_guard.disarm();
+                            return LoopControl::Return(error_response(
+                                StatusCode::BAD_GATEWAY,
+                                common.trace_id.clone(),
+                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                "Codex reasoning guard continuation repair is unsupported for this response".to_string(),
+                                attempts.clone(),
+                            ));
+                        }
+                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
+                            failed_provider_ids.insert(provider_id);
+                            *last_outcome = Some(AttemptOutcome::new(
+                                ErrorCategory::SystemError.as_str(),
+                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                            ));
+                            return LoopControl::BreakRetry;
+                        }
+                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
+                            retry_state.codex_reasoning_guard_next_retry_wave = None;
+                            if let Some(next_model) = codex_reasoning_guard::select_next_model_fallback(
+                                active_guard_model.as_deref(),
+                                common.codex_reasoning_guard_model_fallbacks.as_slice(),
+                            ) {
+                                return LoopControl::SwitchModel(next_model.to_string());
+                            }
+
+                            *last_outcome = Some(AttemptOutcome::new(
+                                ErrorCategory::SystemError.as_str(),
+                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                            ));
+                            let duration_ms = started.elapsed().as_millis();
+                            let requested_model_for_log =
+                                active_guard_model.clone().or_else(|| common.requested_model.clone());
+                            emit_request_event_and_enqueue_request_log(
+                                RequestEndArgs::from_context(RequestEndContextArgs {
+                                    deps: RequestEndDeps::new(
+                                        &common.state.app,
+                                        &common.state.db,
+                                        &common.state.log_tx,
+                                        &common.state.plugin_pipeline,
+                                        &common.state.active_requests,
+                                    ),
+                                    trace_id: common.trace_id.as_str(),
+                                    cli_key: common.cli_key.as_str(),
+                                    method: common.method_hint.as_str(),
+                                    path: common.forwarded_path.as_str(),
+                                    observe: common.observe,
+                                    query: common.query.as_deref(),
+                                    excluded_from_stats: false,
+                                    duration_ms,
+                                    attempts: attempts.as_slice(),
+                                    special_settings_json: response_fixer::special_settings_json(
+                                        &common.special_settings,
+                                    ),
+                                    session_id: common.session_id.clone(),
+                                    requested_model: requested_model_for_log,
+                                    created_at_ms,
+                                    created_at,
+                                })
+                                .with_completion(RequestCompletion::failure_with_visible_ttfb(
+                                    StatusCode::BAD_GATEWAY.as_u16(),
+                                    Some(ErrorCategory::SystemError.as_str()),
+                                    codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                    provider_ttfb_ms,
+                                    Some(duration_ms),
+                                )),
+                            )
+                            .await;
+                            abort_guard.disarm();
+                            return LoopControl::Return(error_response(
+                                StatusCode::BAD_GATEWAY,
+                                common.trace_id.clone(),
+                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
+                                "Codex reasoning guard model fallback exhausted".to_string(),
+                                attempts.clone(),
+                            ));
+                        }
+                    }
+                } else {
+                    let budget_decision = codex_reasoning_guard::budget_decision(
+                        retry_state.codex_reasoning_guard_hits,
+                        codex_reasoning_guard::CodexReasoningGuardBudgetConfig {
+                            immediate_budget: common.codex_reasoning_guard_immediate_retry_budget,
+                            delayed_budget: common.codex_reasoning_guard_delayed_retry_budget,
+                            delayed_retry_ms: common.codex_reasoning_guard_delayed_retry_ms,
+                            exhausted_action: common.codex_reasoning_guard_exhausted_action,
+                            retry_policy: common.codex_reasoning_guard_retry_policy,
+                            concurrent_max: common.codex_reasoning_guard_concurrent_max,
+                            concurrent_interval_ms: common
+                                .codex_reasoning_guard_concurrent_interval_ms,
+                            concurrent_max_attempts: common
+                                .codex_reasoning_guard_concurrent_max_attempts,
+                        },
+                    );
+                    codex_reasoning_guard::push_special_setting(
+                        &common.special_settings,
+                        provider_id,
+                        provider_ctx_owned.provider_name_base.as_str(),
+                        retry_index,
+                        matched,
+                        budget_decision,
+                    );
+                    codex_reasoning_guard::record_guard_retry_attempt(
+                        attempts,
+                        provider_id,
+                        provider_ctx_owned.provider_name_base.as_str(),
+                        provider_ctx_owned.provider_base_url_base.as_str(),
+                        provider_index,
+                        retry_index,
+                        session_reuse,
+                        attempt_started_ms,
+                        attempt_started.elapsed().as_millis(),
+                        circuit_before.state.as_str(),
+                        circuit_before.failure_count,
+                        circuit_before.failure_threshold,
+                        provider_ctx_owned.provider_bridged,
+                        matched,
+                        budget_decision,
+                    );
+                    let outcome = match budget_decision.action {
                     codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
                         "codex_reasoning_guard_retry"
                     }
@@ -1151,21 +1518,21 @@ where
                         "codex_reasoning_guard_switch_model"
                     }
                 };
-                emit_attempt_event_and_log(
-                    ctx,
-                    provider_ctx,
-                    attempt_ctx,
-                    outcome.to_string(),
-                    Some(StatusCode::BAD_GATEWAY.as_u16()),
-                    AttemptCircuitFields {
-                        state_before: Some(circuit_before.state.as_str()),
-                        state_after: Some(circuit_before.state.as_str()),
-                        failure_count: Some(circuit_before.failure_count),
-                        failure_threshold: Some(circuit_before.failure_threshold),
-                    },
-                )
-                .await;
-                match budget_decision.action {
+                    emit_attempt_event_and_log(
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        outcome.to_string(),
+                        Some(StatusCode::BAD_GATEWAY.as_u16()),
+                        AttemptCircuitFields {
+                            state_before: Some(circuit_before.state.as_str()),
+                            state_after: Some(circuit_before.state.as_str()),
+                            failure_count: Some(circuit_before.failure_count),
+                            failure_threshold: Some(circuit_before.failure_threshold),
+                        },
+                    )
+                    .await;
+                    match budget_decision.action {
                     codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
                         retry_state.codex_reasoning_guard_hits =
                             retry_state.codex_reasoning_guard_hits.saturating_add(1);
@@ -1181,6 +1548,9 @@ where
                             codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
                         ));
                         let duration_ms = started.elapsed().as_millis();
+                        let requested_model_for_log = active_guard_model
+                            .clone()
+                            .or_else(|| common.requested_model.clone());
                         emit_request_event_and_enqueue_request_log(
                             RequestEndArgs::from_context(RequestEndContextArgs {
                                 deps: RequestEndDeps::new(
@@ -1188,6 +1558,7 @@ where
                                     &common.state.db,
                                     &common.state.log_tx,
                                     &common.state.plugin_pipeline,
+                                    &common.state.active_requests,
                                 ),
                                 trace_id: common.trace_id.as_str(),
                                 cli_key: common.cli_key.as_str(),
@@ -1202,7 +1573,7 @@ where
                                     &common.special_settings,
                                 ),
                                 session_id: common.session_id.clone(),
-                                requested_model: common.requested_model.clone(),
+                                requested_model: requested_model_for_log,
                                 created_at_ms,
                                 created_at,
                             })
@@ -1236,9 +1607,8 @@ where
                     }
                     codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
                         retry_state.codex_reasoning_guard_next_retry_wave = None;
-                        let current_model = current_codex_reasoning_guard_model(input, retry_state);
                         if let Some(next_model) = codex_reasoning_guard::select_next_model_fallback(
-                            current_model,
+                            active_guard_model.as_deref(),
                             common.codex_reasoning_guard_model_fallbacks.as_slice(),
                         ) {
                             return LoopControl::SwitchModel(next_model.to_string());
@@ -1249,6 +1619,9 @@ where
                             codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
                         ));
                         let duration_ms = started.elapsed().as_millis();
+                        let requested_model_for_log = active_guard_model
+                            .clone()
+                            .or_else(|| common.requested_model.clone());
                         emit_request_event_and_enqueue_request_log(
                             RequestEndArgs::from_context(RequestEndContextArgs {
                                 deps: RequestEndDeps::new(
@@ -1256,6 +1629,7 @@ where
                                     &common.state.db,
                                     &common.state.log_tx,
                                     &common.state.plugin_pipeline,
+                                    &common.state.active_requests,
                                 ),
                                 trace_id: common.trace_id.as_str(),
                                 cli_key: common.cli_key.as_str(),
@@ -1270,7 +1644,7 @@ where
                                     &common.special_settings,
                                 ),
                                 session_id: common.session_id.clone(),
-                                requested_model: common.requested_model.clone(),
+                                requested_model: requested_model_for_log,
                                 created_at_ms,
                                 created_at,
                             })
@@ -1295,6 +1669,7 @@ where
                         ));
                     }
                 }
+                }
             }
         }
     }
@@ -1310,6 +1685,7 @@ where
         provider_index: Some(provider_index),
         retry_index: Some(retry_index),
         session_reuse,
+        provider_bridged: Some(provider_ctx_owned.provider_bridged),
         error_category: None,
         error_code: None,
         decision: Some("success"),
@@ -1322,6 +1698,9 @@ where
         circuit_state_after: None,
         circuit_failure_count: Some(circuit_before.failure_count),
         circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        timeout_secs: None,
     });
 
     emit_attempt_event_and_log_with_circuit_before(
@@ -1349,10 +1728,11 @@ where
     };
     match state.plugin_pipeline.run_response_hook(hook_input).await {
         Ok(output) => {
-            crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+            crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
                 &state.db,
                 &common.trace_id,
                 output.audit_events.clone(),
+                output.execution_reports.clone(),
             );
             if let Some(blocked) = output.blocked {
                 tracing::warn!(
@@ -1362,6 +1742,7 @@ where
                     reason = %blocked.reason,
                     "plugin blocked gateway response after upstream success"
                 );
+                emit_response_hook_failure_request_end(&common, attempts.as_slice()).await;
                 abort_guard.disarm();
                 return LoopControl::Return(error_response(
                     StatusCode::BAD_GATEWAY,
@@ -1387,6 +1768,7 @@ where
                 "plugin response.after hook failed: {}",
                 err
             );
+            emit_response_hook_failure_request_end(&common, attempts.as_slice()).await;
             abort_guard.disarm();
             return LoopControl::Return(error_response(
                 StatusCode::BAD_GATEWAY,
@@ -1410,7 +1792,11 @@ where
     if let Some(setting) =
         crate::gateway::model_route_mapping::build_model_route_mapping_setting_from_shared(
             common.cli_key.as_str(),
-            common.requested_model.as_deref(),
+            provider_ctx_owned
+                .active_requested_model
+                .as_deref()
+                .or(retry_state.codex_reasoning_guard_current_model.as_deref())
+                .or(common.requested_model.as_deref()),
             actual_model.as_deref(),
             &common.special_settings,
             provider_id,
@@ -1419,10 +1805,15 @@ where
     {
         response_fixer::push_model_route_mapping_special_setting(&common.special_settings, setting);
     }
-    let requested_model_for_log = common
-        .requested_model
-        .clone()
-        .or_else(|| actual_model.clone());
+    let requested_model_for_log = resolve_requested_model_for_log(
+        common.requested_model.clone(),
+        provider_ctx_owned
+            .active_requested_model
+            .as_deref()
+            .or(retry_state.codex_reasoning_guard_current_model.as_deref()),
+        common.cli_key.as_str(),
+        &body_bytes,
+    );
 
     let body = Body::from(body_bytes);
     let mut builder = Response::builder().status(status);
@@ -1482,7 +1873,13 @@ where
     let duration_ms = started.elapsed().as_millis();
     emit_request_event_and_enqueue_request_log(
         RequestEndArgs::from_context(RequestEndContextArgs {
-            deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx, &state.plugin_pipeline),
+            deps: RequestEndDeps::new(
+                &state.app,
+                &state.db,
+                &state.log_tx,
+                &state.plugin_pipeline,
+                &state.active_requests,
+            ),
             trace_id: common.trace_id.as_str(),
             cli_key: common.cli_key.as_str(),
             method: common.method_hint.as_str(),
@@ -1543,6 +1940,9 @@ where
         attempt_started_ms,
         attempt_started,
         circuit_before,
+        active_bridge_type,
+        responses_cache_namespace,
+        responses_cache_input,
         ..
     } = attempt_ctx;
     let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
@@ -1551,6 +1951,7 @@ where
         attempts,
         failed_provider_ids: _,
         last_outcome: _,
+        active_requested_model: _,
         circuit_snapshot: _,
         abort_guard,
     } = loop_state;
@@ -1568,6 +1969,7 @@ where
         provider_index: Some(provider_index),
         retry_index: Some(retry_index),
         session_reuse,
+        provider_bridged: Some(provider_ctx_owned.provider_bridged),
         error_category: None,
         error_code: None,
         decision: Some("success"),
@@ -1580,6 +1982,9 @@ where
         circuit_state_after: None,
         circuit_failure_count: Some(circuit_before.failure_count),
         circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        timeout_secs: None,
     });
 
     emit_attempt_event_and_log_with_circuit_before(
@@ -1598,6 +2003,7 @@ where
         &common.special_settings,
     );
 
+    let bridge_response_cache_body = body_bytes.clone();
     let hook_input = GatewayResponseHookInput {
         hook_name: GatewayPluginHookName::ResponseAfter,
         trace_id: common.trace_id.clone(),
@@ -1607,12 +2013,14 @@ where
     };
     match state.plugin_pipeline.run_response_hook(hook_input).await {
         Ok(output) => {
-            crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+            crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
                 &state.db,
                 &common.trace_id,
                 output.audit_events.clone(),
+                output.execution_reports.clone(),
             );
             if let Some(blocked) = output.blocked {
+                emit_response_hook_failure_request_end(&common, attempts.as_slice()).await;
                 abort_guard.disarm();
                 return LoopControl::Return(error_response(
                     StatusCode::BAD_GATEWAY,
@@ -1625,6 +2033,12 @@ where
             response_headers = output.headers;
             body_bytes = output.body;
             response_headers.remove(header::CONTENT_LENGTH);
+            cache_bridge_non_stream_response(
+                active_bridge_type,
+                responses_cache_namespace,
+                responses_cache_input,
+                bridge_response_cache_body.as_ref(),
+            );
         }
         Err(mut err) => {
             crate::gateway::plugins::audit::persist_gateway_plugin_error_audit_events(
@@ -1632,6 +2046,7 @@ where
                 &common.trace_id,
                 &mut err,
             );
+            emit_response_hook_failure_request_end(&common, attempts.as_slice()).await;
             abort_guard.disarm();
             return LoopControl::Return(error_response(
                 StatusCode::BAD_GATEWAY,
@@ -1645,15 +2060,22 @@ where
 
     let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-    let actual_model = if body_bytes.is_empty() {
+    let actual_model = if bridge_response_cache_body.is_empty() {
         None
     } else {
-        usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes)
+        usage::parse_model_from_json_or_sse_bytes(
+            common.cli_key.as_str(),
+            &bridge_response_cache_body,
+        )
     };
     if let Some(setting) =
         crate::gateway::model_route_mapping::build_model_route_mapping_setting_from_shared(
             common.cli_key.as_str(),
-            common.requested_model.as_deref(),
+            provider_ctx_owned
+                .active_requested_model
+                .as_deref()
+                .or(_retry_state.codex_reasoning_guard_current_model.as_deref())
+                .or(common.requested_model.as_deref()),
             actual_model.as_deref(),
             &common.special_settings,
             provider_id,
@@ -1662,13 +2084,15 @@ where
     {
         response_fixer::push_model_route_mapping_special_setting(&common.special_settings, setting);
     }
-    let requested_model_for_log = common.requested_model.clone().or_else(|| {
-        if body_bytes.is_empty() {
-            None
-        } else {
-            actual_model.clone()
-        }
-    });
+    let requested_model_for_log = resolve_requested_model_for_log(
+        common.requested_model.clone(),
+        provider_ctx_owned
+            .active_requested_model
+            .as_deref()
+            .or(_retry_state.codex_reasoning_guard_current_model.as_deref()),
+        common.cli_key.as_str(),
+        &body_bytes,
+    );
 
     let now_unix = now_unix_seconds() as i64;
     let change = provider_router::record_success_and_emit_transition(
@@ -1700,7 +2124,13 @@ where
     let duration_ms = started.elapsed().as_millis();
     emit_request_event_and_enqueue_request_log(
         RequestEndArgs::from_context(RequestEndContextArgs {
-            deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx, &state.plugin_pipeline),
+            deps: RequestEndDeps::new(
+                &state.app,
+                &state.db,
+                &state.log_tx,
+                &state.plugin_pipeline,
+                &state.active_requests,
+            ),
             trace_id: common.trace_id.as_str(),
             cli_key: common.cli_key.as_str(),
             method: common.method_hint.as_str(),
@@ -1739,8 +2169,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        buffer_cx2cc_event_stream_as_json, classify_cx2cc_success_payload,
-        read_non_stream_body_with_limit, should_passthrough_non_stream_success,
+        buffer_cx2cc_event_stream_as_json, cache_bridge_non_stream_response,
+        classify_cx2cc_success_payload, read_non_stream_body_with_limit,
+        resolve_requested_model_for_log, should_passthrough_non_stream_success,
         translate_bridge_non_stream_body, Cx2ccSuccessPayloadKind, NonStreamBodyReadError,
     };
     use crate::domain::usage;
@@ -1923,6 +2354,29 @@ mod tests {
     }
 
     #[test]
+    fn resolve_requested_model_for_log_prefers_reasoning_guard_fallback_model() {
+        let body = br#"{"model":"gpt-5.4-mini","output":[]}"#;
+
+        let requested_model = resolve_requested_model_for_log(
+            Some("gpt-5.5".to_string()),
+            Some("gpt-5.4"),
+            "codex",
+            body,
+        );
+
+        assert_eq!(requested_model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn resolve_requested_model_for_log_falls_back_to_response_payload_model() {
+        let body = br#"{"model":"gpt-5.4-mini","output":[]}"#;
+
+        let requested_model = resolve_requested_model_for_log(None, None, "codex", body);
+
+        assert_eq!(requested_model.as_deref(), Some("gpt-5.4-mini"));
+    }
+
+    #[test]
     fn plain_non_stream_success_can_still_use_passthrough_shortcut() {
         assert!(should_passthrough_non_stream_success(None, false, false));
         assert!(!should_passthrough_non_stream_success(
@@ -1975,6 +2429,55 @@ mod tests {
             headers.get(header::CONTENT_TYPE).unwrap(),
             "application/json"
         );
+    }
+
+    #[test]
+    fn caches_only_responses_bridge_non_stream_tool_context() {
+        let _guard = crate::gateway::proxy::protocol_bridge::response_cache::test_guard();
+        crate::gateway::proxy::protocol_bridge::response_cache::clear_for_tests();
+        let namespace = "codex_to_openai_responses:source=1:session=s1";
+        let input = vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "call a tool"}]
+        })];
+        let body = json!({
+            "id": "resp_json",
+            "output": [{
+                "id": "fc_1",
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": "{}"
+            }]
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+
+        cache_bridge_non_stream_response(
+            Some(crate::domain::providers::CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE),
+            Some(namespace),
+            Some(input.as_slice()),
+            &bytes,
+        );
+        assert_eq!(
+            crate::gateway::proxy::protocol_bridge::response_cache::len_for_tests(),
+            0
+        );
+
+        cache_bridge_non_stream_response(
+            Some(crate::domain::providers::CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE),
+            Some(namespace),
+            Some(input.as_slice()),
+            &bytes,
+        );
+        let key = crate::gateway::proxy::protocol_bridge::response_cache::ResponsesCacheKey::new(
+            namespace,
+            "resp_json",
+        )
+        .unwrap();
+        let cached =
+            crate::gateway::proxy::protocol_bridge::response_cache::get(&key).expect("cache hit");
+        assert_eq!(cached[1]["type"], "function_call");
     }
 
     #[test]

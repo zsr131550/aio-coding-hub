@@ -26,6 +26,8 @@ import {
   useCliManagerCodexConfigTomlQuery,
   useCliManagerCodexConfigTomlSetMutation,
   useCliManagerCodexInfoQuery,
+  useCliManagerCodexModelCatalogQuery,
+  useCliManagerCodexModelCatalogRefresh,
   useCliManagerCodexProviderSyncMutation,
   useCliManagerCodexReasoningGuardStatsQuery,
   useCliManagerGeminiConfigQuery,
@@ -103,6 +105,7 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
     refreshCodex,
     openCodexConfigDir,
     persistCodexConfig,
+    persistCodexConfigToml,
     persistCodexHomeSettings,
     pickCodexHomeDirectory,
     syncCodexProvider,
@@ -120,6 +123,9 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
       </button>
       <button type="button" onClick={() => persistCodexConfig({ foo: "bar" })}>
         save-codex
+      </button>
+      <button type="button" onClick={() => void persistCodexConfigToml?.('model = "gpt-5"')}>
+        save-codex-toml
       </button>
       <button type="button" onClick={() => syncCodexProvider?.()}>
         手动 Provider Sync
@@ -174,6 +180,8 @@ vi.mock("../../query/cliManager", async () => {
     useCliManagerCodexConfigSetMutation: vi.fn(),
     useCliManagerCodexConfigTomlQuery: vi.fn(),
     useCliManagerCodexConfigTomlSetMutation: vi.fn(),
+    useCliManagerCodexModelCatalogQuery: vi.fn(),
+    useCliManagerCodexModelCatalogRefresh: vi.fn(),
     useCliManagerCodexProviderSyncMutation: vi.fn(),
     useCliManagerCodexReasoningGuardStatsQuery: vi.fn(),
     useCliManagerGeminiConfigQuery: vi.fn(),
@@ -242,6 +250,13 @@ beforeEach(() => {
     isPending: false,
     mutateAsync: vi.fn(),
   } as any);
+
+  vi.mocked(useCliManagerCodexModelCatalogQuery).mockReturnValue({
+    data: null,
+    isFetching: false,
+    isError: false,
+  } as any);
+  vi.mocked(useCliManagerCodexModelCatalogRefresh).mockReturnValue(vi.fn() as any);
 
   vi.mocked(useProvidersListQuery).mockReturnValue({
     data: null,
@@ -532,10 +547,14 @@ describe("pages/CliManagerPage", () => {
       isFetching: false,
       refetch: codexConfigTomlRefetch,
     } as any);
-    vi.mocked(useCliManagerCodexConfigTomlSetMutation).mockReturnValue({
-      isPending: false,
-      mutateAsync: vi.fn(),
-    } as any);
+    const codexConfigTomlSetMutation = { isPending: false, mutateAsync: vi.fn() };
+    codexConfigTomlSetMutation.mutateAsync
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(new Error("TOML_BAD: nope"));
+    vi.mocked(useCliManagerCodexConfigTomlSetMutation).mockReturnValue(
+      codexConfigTomlSetMutation as any
+    );
     const codexProviderSyncMutation = {
       isPending: false,
       mutateAsync: vi.fn(),
@@ -626,12 +645,26 @@ describe("pages/CliManagerPage", () => {
     // persist codex config: null -> toast; ok -> toast; error -> toast formatted
     fireEvent.click(screen.getByRole("button", { name: "save-codex" }));
     await waitFor(() => expect(codexSetMutation.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(toast).toHaveBeenCalledWith("更新 Codex 配置失败：未返回更新后的配置");
     fireEvent.click(screen.getByRole("button", { name: "save-codex" }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith("已更新 Codex 配置"));
     fireEvent.click(screen.getByRole("button", { name: "save-codex" }));
     await waitFor(() =>
       expect(toast).toHaveBeenCalledWith("更新 Codex 配置失败（code CODEX_NO_PERM）：denied")
     );
+
+    // persist raw config.toml: null -> toast; ok -> toast; error -> toast formatted
+    fireEvent.click(screen.getByRole("button", { name: "save-codex-toml" }));
+    await waitFor(() => expect(codexConfigTomlSetMutation.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(toast).toHaveBeenCalledWith("保存 config.toml 失败：未返回更新后的配置");
+    fireEvent.click(screen.getByRole("button", { name: "save-codex-toml" }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("已保存 config.toml"));
+    fireEvent.click(screen.getByRole("button", { name: "save-codex-toml" }));
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("保存 Codex TOML 配置失败（code TOML_BAD）：nope")
+    );
+    expect(codexProviderSyncMutation.mutateAsync).not.toHaveBeenCalled();
+
     fireEvent.click(screen.getByRole("button", { name: "手动 Provider Sync" }));
     await waitFor(() => expect(codexProviderSyncMutation.mutateAsync).toHaveBeenCalledWith());
     expect(toast).toHaveBeenCalledWith("已同步 Codex Provider 到 aio");
@@ -980,8 +1013,18 @@ describe("pages/CliManagerPage", () => {
       mutateAsync: vi.fn(),
     } as any);
 
-    const codexInfoRefetch = vi.fn().mockResolvedValue({ data: {} });
-    const codexConfigRefetch = vi.fn().mockResolvedValue({ data: {} });
+    const codexModelCatalogRefresh = vi.fn().mockResolvedValue(null);
+    vi.mocked(useCliManagerCodexModelCatalogRefresh).mockReturnValue(codexModelCatalogRefresh);
+    const codexInfoRefetch = vi.fn().mockResolvedValue({
+      data: {
+        found: true,
+        executable_path: "D:\\Tools\\codex.exe",
+        version: "1.2.3",
+      },
+    });
+    const codexConfigRefetch = vi.fn().mockResolvedValue({
+      data: { config_path: "D:\\Work\\CodexHome\\config.toml" },
+    });
     const codexTomlRefetch = vi.fn().mockResolvedValue({ data: {} });
     vi.mocked(useCliManagerCodexInfoQuery).mockReturnValue({
       data: { found: true },
@@ -1030,6 +1073,11 @@ describe("pages/CliManagerPage", () => {
     await waitFor(() => expect(codexConfigRefetch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(codexTomlRefetch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(codexInfoRefetch).toHaveBeenCalledTimes(1));
+    expect(codexModelCatalogRefresh).toHaveBeenCalledWith({
+      configPath: "D:\\Work\\CodexHome\\config.toml",
+      executablePath: "D:\\Tools\\codex.exe",
+      cliVersion: "1.2.3",
+    });
     expect(toast).toHaveBeenCalledWith("Codex 目录已切换");
   });
 

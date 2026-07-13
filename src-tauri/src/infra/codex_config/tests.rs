@@ -250,6 +250,21 @@ model_auto_compact_token_limit = 900000
 }
 
 #[test]
+fn patch_accepts_future_model_reasoning_effort_values() {
+    let out = patch_config_toml(
+        None,
+        CodexConfigPatch {
+            model_reasoning_effort: Some("future-max".to_string()),
+            ..empty_patch()
+        },
+    )
+    .expect("patch_config_toml");
+
+    let s = String::from_utf8(out).expect("utf8");
+    assert!(s.contains("model_reasoning_effort = \"future-max\""), "{s}");
+}
+
+#[test]
 fn patch_deletes_fast_mode_and_service_tier_when_disabled() {
     let input = r#"service_tier = "fast"
 
@@ -450,6 +465,65 @@ fn validate_raw_allows_empty() {
 }
 
 #[test]
+fn validate_raw_allows_max_and_ultra_model_reasoning_effort() {
+    for effort in ["max", "ultra"] {
+        let out = validate_codex_config_toml_raw(&format!("model_reasoning_effort = \"{effort}\""));
+        assert!(out.ok, "{effort}: {out:?}");
+        assert!(out.error.is_none(), "{effort}: {out:?}");
+    }
+}
+
+#[test]
+fn patch_writes_ultra_model_reasoning_effort() {
+    let out = patch_config_toml(
+        None,
+        CodexConfigPatch {
+            model_reasoning_effort: Some("ultra".to_string()),
+            ..empty_patch()
+        },
+    )
+    .expect("patch_config_toml");
+
+    let s = String::from_utf8(out).expect("utf8");
+    assert!(s.contains("model_reasoning_effort = \"ultra\""), "{s}");
+}
+
+#[test]
+fn patch_accepts_catalog_declared_minimal_model_reasoning_effort() {
+    let current = b"model_reasoning_effort = \"high\"\n".to_vec();
+    let out = codex_config_next_bytes(
+        Some(current),
+        CodexConfigPatch {
+            model_reasoning_effort: Some("minimal".to_string()),
+            ..empty_patch()
+        },
+    )
+    .expect("catalog-declared efforts must be writable");
+
+    let text = String::from_utf8(out).expect("utf8");
+    assert!(
+        text.contains("model_reasoning_effort = \"minimal\""),
+        "{text}"
+    );
+}
+
+#[test]
+fn raw_toml_accepts_catalog_declared_minimal_model_reasoning_effort() {
+    let input = "model_reasoning_effort = \"minimal\"";
+    let validation = validate_codex_config_toml_raw(input);
+    assert!(validation.ok, "{validation:?}");
+    assert!(validation.error.is_none(), "{validation:?}");
+
+    let out = codex_config_normalize_raw_toml(input.to_string())
+        .expect("catalog-declared efforts must survive raw TOML normalization");
+    let text = String::from_utf8(out).expect("utf8");
+    assert!(
+        text.contains("model_reasoning_effort = \"minimal\""),
+        "{text}"
+    );
+}
+
+#[test]
 fn validate_raw_rejects_invalid_toml_with_location_when_available() {
     let out = validate_codex_config_toml_raw("approval_policy =");
     assert!(!out.ok, "{out:?}");
@@ -468,6 +542,29 @@ fn validate_raw_rejects_invalid_enum_values() {
     let err = out.error.expect("error");
     assert!(err.message.contains("approval_policy"), "{err:?}");
     assert!(err.message.contains("allowed:"), "{err:?}");
+}
+
+#[test]
+fn validate_raw_accepts_future_model_reasoning_effort_values() {
+    let out = validate_codex_config_toml_raw("model_reasoning_effort = \"future-max\"");
+    assert!(out.ok, "{out:?}");
+}
+
+#[test]
+fn validate_raw_rejects_empty_or_non_string_model_reasoning_effort() {
+    for input in [
+        "model_reasoning_effort = \"\"",
+        "model_reasoning_effort = 123",
+    ] {
+        let out = validate_codex_config_toml_raw(input);
+        assert!(!out.ok, "{input}: {out:?}");
+        assert!(
+            out.error
+                .as_ref()
+                .is_some_and(|error| error.message.contains("model_reasoning_effort")),
+            "{input}: {out:?}"
+        );
+    }
 }
 
 #[test]

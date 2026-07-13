@@ -290,6 +290,7 @@ fn ensure_plugin_tables_is_idempotent() {
         "plugin_audit_logs",
         "plugin_market_sources",
         "plugin_runtime_failures",
+        "plugin_hook_execution_reports",
     ] {
         assert!(
             test_has_table(&conn, table),
@@ -307,6 +308,38 @@ fn ensure_plugin_tables_is_idempotent() {
         &conn,
         "plugin_permissions",
         "permissions_json"
+    ));
+    assert!(test_has_index(
+        &conn,
+        "idx_plugin_hook_execution_reports_created_at"
+    ));
+}
+
+#[test]
+fn migrations_create_provider_extension_values_table() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    apply_migrations(&mut conn).expect("apply migrations");
+
+    assert!(test_has_table(&conn, "provider_extension_values"));
+    assert!(test_has_column(
+        &conn,
+        "provider_extension_values",
+        "provider_id"
+    ));
+    assert!(test_has_column(
+        &conn,
+        "provider_extension_values",
+        "plugin_id"
+    ));
+    assert!(test_has_column(
+        &conn,
+        "provider_extension_values",
+        "namespace"
+    ));
+    assert!(test_has_column(
+        &conn,
+        "provider_extension_values",
+        "values_json"
     ));
 }
 
@@ -841,7 +874,7 @@ INSERT INTO providers(
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 33);
+    assert_eq!(user_version, LATEST_SCHEMA_VERSION);
 
     for column in [
         "auth_mode",
@@ -1097,7 +1130,7 @@ INSERT INTO skills(
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 33);
+    assert_eq!(user_version, LATEST_SCHEMA_VERSION);
 
     assert!(test_has_column(&conn, "workspaces", "cli_key"));
     assert!(test_has_column(&conn, "workspace_active", "workspace_id"));
@@ -1207,6 +1240,58 @@ WHERE p.id = 2
 }
 
 #[test]
+fn ensure_patch_backfills_request_log_activity_columns_for_existing_request_logs_table() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("request-log-activity-drift.db");
+
+    {
+        let mut conn = Connection::open(&db_path).expect("open sqlite file");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign_keys");
+
+        apply_migrations(&mut conn).expect("create current schema");
+        conn.execute_batch(
+            r#"
+ALTER TABLE request_logs DROP COLUMN last_activity_ms;
+ALTER TABLE request_logs DROP COLUMN activity_details_json;
+"#,
+        )
+        .expect("remove request log activity columns");
+
+        assert!(!test_has_column(&conn, "request_logs", "last_activity_ms"));
+        assert!(!test_has_column(
+            &conn,
+            "request_logs",
+            "activity_details_json"
+        ));
+    }
+
+    let db = crate::db::init_for_tests(&db_path).expect("repair drifted db");
+
+    {
+        let conn = db.open_connection().expect("open repaired db");
+        assert!(test_has_column(&conn, "request_logs", "last_activity_ms"));
+        assert!(test_has_column(
+            &conn,
+            "request_logs",
+            "activity_details_json"
+        ));
+
+        conn.prepare("SELECT last_activity_ms, activity_details_json FROM request_logs LIMIT 1")
+            .expect("prepare request log activity column select");
+    }
+
+    let summaries =
+        crate::request_logs::list_recent_all(&db, 10).expect("list recent all after repair");
+    assert!(summaries.is_empty());
+
+    {
+        let mut conn = db.open_connection().expect("open repaired db twice");
+        apply_migrations(&mut conn).expect("apply migrations twice");
+    }
+}
+
+#[test]
 fn baseline_v25_creates_complete_schema_for_fresh_install() {
     let mut conn = Connection::open_in_memory().expect("open in-memory sqlite");
     conn.execute_batch("PRAGMA foreign_keys = ON;")
@@ -1218,7 +1303,7 @@ fn baseline_v25_creates_complete_schema_for_fresh_install() {
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 33);
+    assert_eq!(user_version, LATEST_SCHEMA_VERSION);
 
     // Verify all tables exist
     let tables: Vec<String> = {
@@ -1243,6 +1328,7 @@ fn baseline_v25_creates_complete_schema_for_fresh_install() {
     assert!(tables.contains(&"sort_mode_providers".to_string()));
     assert!(tables.contains(&"sort_mode_active".to_string()));
     assert!(tables.contains(&"claude_model_validation_runs".to_string()));
+    assert!(tables.contains(&"plugin_hook_execution_reports".to_string()));
     assert!(tables.contains(&"schema_migrations".to_string()));
 
     // Tables from ensure patches
@@ -1278,6 +1364,12 @@ fn baseline_v25_creates_complete_schema_for_fresh_install() {
         "idx_request_logs_visible_created_at_ms_id"
     ));
     assert!(test_has_index(&conn, "idx_request_logs_cli_id"));
+    assert!(test_has_column(&conn, "request_logs", "last_activity_ms"));
+    assert!(test_has_column(
+        &conn,
+        "request_logs",
+        "activity_details_json"
+    ));
 
     // Verify prompts was migrated to workspace_id
     assert!(test_has_column(&conn, "prompts", "workspace_id"));
@@ -1453,7 +1545,7 @@ PRAGMA user_version = 33;
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 33);
+    assert_eq!(user_version, LATEST_SCHEMA_VERSION);
 
     assert!(test_has_column(&conn, "providers", "limit_5h_usd"));
     assert!(test_has_column(&conn, "providers", "limit_daily_usd"));
@@ -1463,6 +1555,7 @@ PRAGMA user_version = 33;
     assert!(test_has_column(&conn, "providers", "limit_monthly_usd"));
     assert!(test_has_column(&conn, "providers", "limit_total_usd"));
     assert!(test_has_column(&conn, "skills", "installed_content_hash"));
+    assert!(test_has_table(&conn, "plugin_hook_execution_reports"));
 
     let active_id: i64 = conn
         .query_row(

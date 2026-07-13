@@ -11,6 +11,7 @@ pub(in crate::gateway) fn status_override_for_error_code(error_code: Option<&str
         GatewayErrorCode::StreamError
         | GatewayErrorCode::Fake200
         | GatewayErrorCode::EmptyResponse
+        | GatewayErrorCode::ResponsesDeltaFinalMismatch
         | GatewayErrorCode::UpstreamReadError
         | GatewayErrorCode::UpstreamConnectFailed
         | GatewayErrorCode::UpstreamBodyReadError
@@ -34,6 +35,15 @@ pub(in crate::gateway) fn effective_status(
     status: Option<u16>,
     error_code: Option<&str>,
 ) -> Option<u16> {
+    if status == Some(502)
+        && matches!(
+            error_code.and_then(GatewayErrorCode::from_str),
+            Some(GatewayErrorCode::InternalError)
+        )
+    {
+        return status;
+    }
+
     status_override_for_error_code(error_code).or(status)
 }
 
@@ -97,6 +107,12 @@ mod tests {
         );
         assert_eq!(
             status_override_for_error_code(Some(
+                GatewayErrorCode::ResponsesDeltaFinalMismatch.as_str()
+            )),
+            Some(502)
+        );
+        assert_eq!(
+            status_override_for_error_code(Some(
                 GatewayErrorCode::AllProvidersUnavailable.as_str()
             )),
             Some(503)
@@ -133,6 +149,18 @@ mod tests {
         assert_eq!(
             effective_status(Some(404), Some(GatewayErrorCode::Upstream4xx.as_str())),
             Some(404)
+        );
+    }
+
+    #[test]
+    fn effective_status_preserves_explicit_bad_gateway_internal_error() {
+        assert_eq!(
+            effective_status(Some(502), Some(GatewayErrorCode::InternalError.as_str())),
+            Some(502)
+        );
+        assert_eq!(
+            effective_status(Some(500), Some(GatewayErrorCode::InternalError.as_str())),
+            Some(500)
         );
     }
 

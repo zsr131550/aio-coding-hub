@@ -17,16 +17,19 @@ mod http_util;
 mod logging;
 mod model_rewrite;
 pub(in crate::gateway) mod protocol_bridge;
+pub(crate) mod provider_adapters;
 pub(in crate::gateway) mod provider_router;
 mod request_body;
 mod request_context;
 mod request_end;
+mod sse;
 pub(in crate::gateway) mod status_override;
 mod types;
 pub(in crate::gateway) mod upstream_client_error_rules;
 
 pub(super) use caches::{ProviderBaseUrlPingCache, RecentErrorCache};
 pub(super) use error_code::GatewayErrorCode;
+pub(crate) use failover::resolve_transport_base_url;
 pub(in crate::gateway) use fake_200::is_fake_200_non_stream_body;
 pub(in crate::gateway) use logging::spawn_enqueue_request_log_with_backpressure;
 pub(super) use types::ErrorCategory;
@@ -150,6 +153,8 @@ pub(super) struct RequestLogEnqueueArgs {
     pub(super) attempts_json: String,
     pub(super) requested_model: Option<String>,
     pub(super) created_at_ms: i64,
+    pub(super) last_activity_ms: Option<i64>,
+    pub(super) activity_details_json: Option<String>,
     pub(super) created_at: i64,
     pub(super) usage_metrics: Option<crate::usage::UsageMetrics>,
     pub(super) usage: Option<crate::usage::UsageExtract>,

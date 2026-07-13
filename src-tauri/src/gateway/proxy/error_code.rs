@@ -42,6 +42,7 @@ pub(in crate::gateway) enum GatewayErrorCode {
     RequestLogDropped,
     Fake200,
     EmptyResponse,
+    ResponsesDeltaFinalMismatch,
 }
 
 impl GatewayErrorCode {
@@ -87,6 +88,7 @@ impl GatewayErrorCode {
             Self::RequestLogDropped => "GW_REQUEST_LOG_DROPPED",
             Self::Fake200 => "GW_FAKE_200",
             Self::EmptyResponse => "GW_EMPTY_RESPONSE",
+            Self::ResponsesDeltaFinalMismatch => "GW_RESPONSES_DELTA_FINAL_MISMATCH",
         }
     }
 
@@ -132,6 +134,7 @@ impl GatewayErrorCode {
             "GW_REQUEST_LOG_DROPPED" => Self::RequestLogDropped,
             "GW_FAKE_200" => Self::Fake200,
             "GW_EMPTY_RESPONSE" => Self::EmptyResponse,
+            "GW_RESPONSES_DELTA_FINAL_MISMATCH" => Self::ResponsesDeltaFinalMismatch,
             _ => return None,
         })
     }
@@ -184,6 +187,7 @@ mod tests {
         GatewayErrorCode::RequestLogDropped,
         GatewayErrorCode::Fake200,
         GatewayErrorCode::EmptyResponse,
+        GatewayErrorCode::ResponsesDeltaFinalMismatch,
     ];
 
     #[test]

@@ -1,4 +1,4 @@
-use super::queries::pool_order_set;
+use super::queries::{get_source_provider_for_gateway, pool_order_set};
 use super::*;
 use rusqlite::OptionalExtension;
 
@@ -126,6 +126,87 @@ fn normalize_model_slot_truncates_multibyte_without_panic() {
     let long_name = "模".repeat(MAX_MODEL_NAME_LEN + 1);
     let result = normalize_model_slot(Some(long_name)).expect("normalized model");
     assert_eq!(result.chars().count(), MAX_MODEL_NAME_LEN);
+}
+
+#[test]
+fn get_source_provider_for_gateway_allows_cross_cli_codex_bridge_sources() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("providers.sqlite3");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut claude_params = default_provider_params("Claude source");
+    claude_params.base_urls = vec!["https://api.anthropic.com/v1".to_string()];
+    let claude_source = upsert(&db, claude_params).expect("insert claude source");
+
+    let mut codex_params = default_provider_params("Codex source");
+    codex_params.cli_key = "codex".to_string();
+    codex_params.base_urls = vec!["https://codex.example.com/v1".to_string()];
+    let codex_source = upsert(&db, codex_params).expect("insert codex source");
+
+    let (chat_source, chat_cli_key) =
+        get_source_provider_for_gateway(&db, claude_source.id, CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE)
+            .expect("chat bridge source");
+    assert_eq!(chat_source.id, claude_source.id);
+    assert_eq!(chat_cli_key, "claude");
+
+    let (anthropic_source, anthropic_cli_key) = get_source_provider_for_gateway(
+        &db,
+        codex_source.id,
+        CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
+    )
+    .expect("anthropic bridge source");
+    assert_eq!(anthropic_source.id, codex_source.id);
+    assert_eq!(anthropic_cli_key, "codex");
+}
+
+#[test]
+fn get_source_provider_for_gateway_allows_disabled_source_for_codex_bridge() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("providers-disabled-source.sqlite3");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut source_params = default_provider_params("Disabled Codex source");
+    source_params.cli_key = "codex".to_string();
+    source_params.enabled = false;
+    let source = upsert(&db, source_params).expect("insert codex source");
+
+    let (resolved, cli_key) =
+        get_source_provider_for_gateway(&db, source.id, CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE)
+            .expect("codex responses bridge source");
+
+    assert_eq!(resolved.id, source.id);
+    assert_eq!(cli_key, "codex");
+}
+
+#[test]
+fn get_source_provider_for_gateway_keeps_cx2cc_codex_source_requirement() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("providers.sqlite3");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut claude_params = default_provider_params("Claude source");
+    claude_params.base_urls = vec!["https://api.anthropic.com/v1".to_string()];
+    let claude_source = upsert(&db, claude_params).expect("insert claude source");
+
+    let err = get_source_provider_for_gateway(&db, claude_source.id, CX2CC_BRIDGE_TYPE)
+        .expect_err("cx2cc should still reject non-codex source");
+    assert!(err.to_string().contains("source provider not found"));
+}
+
+#[test]
+fn get_source_provider_for_gateway_keeps_cx2cc_source_enabled_requirement() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("providers-cx2cc-disabled-source.sqlite3");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut source_params = default_provider_params("Disabled Codex source");
+    source_params.cli_key = "codex".to_string();
+    source_params.enabled = false;
+    let source = upsert(&db, source_params).expect("insert codex source");
+
+    let err = get_source_provider_for_gateway(&db, source.id, CX2CC_BRIDGE_TYPE)
+        .expect_err("cx2cc should still reject disabled source");
+    assert!(err.to_string().contains("source provider not found"));
 }
 
 // -- ModelMapping JSON compatibility --
@@ -467,9 +548,44 @@ fn default_provider_params(name: &str) -> ProviderUpsertParams {
         source_provider_id: None,
         bridge_type: None,
         stream_idle_timeout_seconds: None,
+        extension_values: None,
         upstream_retry_policy_override: None,
         upstream_retry_policy_override_specified: false,
     }
+}
+
+#[test]
+fn upsert_seeds_provider_account_usage_extension_owner_without_visible_plugin() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("providers_account_usage_extension.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut params = default_provider_params("account-usage-extension-owner");
+    params.extension_values = Some(vec![ProviderExtensionValuesInput {
+        plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+        namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+        values: serde_json::json!({ "adapterKind": "sub2api" }),
+    }]);
+
+    let saved = upsert(&db, params).expect("save provider with account usage config");
+
+    assert_eq!(saved.extension_values.len(), 1);
+    assert_eq!(
+        saved.extension_values[0].plugin_id,
+        crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+    );
+    assert_eq!(
+        saved.extension_values[0].namespace,
+        crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+    );
+    assert_eq!(saved.extension_values[0].values["adapterKind"], "sub2api");
+
+    let plugins = crate::infra::plugins::repository::list_plugins(&db).expect("list plugins");
+    assert!(
+        plugins.iter().all(|plugin| plugin.plugin_id
+            != crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID),
+        "internal owner must remain hidden from the visible plugin list"
+    );
 }
 
 #[test]
@@ -721,6 +837,7 @@ fn create_oauth_provider_for_cas_test(db: &crate::db::Db, name: &str) -> i64 {
             bridge_type: None,
             stream_idle_timeout_seconds: None,
             model_mapping: None,
+            extension_values: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,
         },

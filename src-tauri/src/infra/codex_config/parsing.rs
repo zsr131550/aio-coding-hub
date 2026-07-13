@@ -313,10 +313,8 @@ pub(super) fn make_state_from_bytes(
             ("", "model") => state.model = parse_string(&raw_value),
             ("", "approval_policy") => state.approval_policy = parse_string(&raw_value),
             ("", "sandbox_mode") => state.sandbox_mode = parse_string(&raw_value),
-            ("sandbox", "mode") => {
-                if state.sandbox_mode.is_none() {
-                    state.sandbox_mode = parse_string(&raw_value);
-                }
+            ("sandbox", "mode") if state.sandbox_mode.is_none() => {
+                state.sandbox_mode = parse_string(&raw_value);
             }
             ("", "model_reasoning_effort") => {
                 state.model_reasoning_effort = parse_string(&raw_value)
@@ -416,6 +414,33 @@ pub(super) fn validate_root_string_enum(
     })
 }
 
+pub(super) fn validate_root_non_empty_string(
+    table: &toml::value::Table,
+    key: &str,
+) -> Option<CodexConfigTomlValidationError> {
+    let value = table.get(key)?;
+    let raw = match value.as_str() {
+        Some(v) => v,
+        None => {
+            return Some(CodexConfigTomlValidationError {
+                message: format!("invalid {key}: expected string"),
+                line: None,
+                column: None,
+            });
+        }
+    };
+
+    if raw.trim().is_empty() {
+        return Some(CodexConfigTomlValidationError {
+            message: format!("invalid {key}: expected non-empty string"),
+            line: None,
+            column: None,
+        });
+    }
+
+    None
+}
+
 pub(super) fn validate_codex_config_toml_raw(input: &str) -> CodexConfigTomlValidationResult {
     if input.trim().is_empty() {
         return CodexConfigTomlValidationResult {
@@ -462,11 +487,7 @@ pub(super) fn validate_codex_config_toml_raw(input: &str) -> CodexConfigTomlVali
                 };
             }
 
-            if let Some(err) = validate_root_string_enum(
-                table,
-                "model_reasoning_effort",
-                &["minimal", "low", "medium", "high", "xhigh"],
-            ) {
+            if let Some(err) = validate_root_non_empty_string(table, "model_reasoning_effort") {
                 return CodexConfigTomlValidationResult {
                     ok: false,
                     error: Some(err),

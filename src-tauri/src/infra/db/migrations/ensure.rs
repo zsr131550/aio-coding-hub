@@ -1025,7 +1025,8 @@ fn ensure_provider_upstream_retry_policy(conn: &mut Connection) -> Result<(), St
 }
 
 // ---------------------------------------------------------------------------
-// ensure_request_logs_extended_columns (provider_chain_json, error_details_json, visible_ttfb_ms)
+// ensure_request_logs_extended_columns
+// (provider_chain_json, error_details_json, visible_ttfb_ms, last_activity_ms, activity_details_json)
 // ---------------------------------------------------------------------------
 
 fn ensure_request_logs_extended_columns(conn: &mut Connection) -> Result<(), String> {
@@ -1056,6 +1057,16 @@ fn ensure_request_logs_extended_columns(conn: &mut Connection) -> Result<(), Str
     if !column_exists(conn, "request_logs", "visible_ttfb_ms")? {
         conn.execute_batch("ALTER TABLE request_logs ADD COLUMN visible_ttfb_ms INTEGER;")
             .map_err(|e| format!("failed to ensure request_logs.visible_ttfb_ms: {e}"))?;
+    }
+
+    if !column_exists(conn, "request_logs", "last_activity_ms")? {
+        conn.execute_batch("ALTER TABLE request_logs ADD COLUMN last_activity_ms INTEGER;")
+            .map_err(|e| format!("failed to ensure request_logs.last_activity_ms: {e}"))?;
+    }
+
+    if !column_exists(conn, "request_logs", "activity_details_json")? {
+        conn.execute_batch("ALTER TABLE request_logs ADD COLUMN activity_details_json TEXT;")
+            .map_err(|e| format!("failed to ensure request_logs.activity_details_json: {e}"))?;
     }
 
     Ok(())
@@ -1166,6 +1177,36 @@ CREATE TABLE IF NOT EXISTS plugin_runtime_failures (
 
 CREATE INDEX IF NOT EXISTS idx_plugin_runtime_failures_plugin_created_at
   ON plugin_runtime_failures(plugin_id, created_at);
+
+CREATE TABLE IF NOT EXISTS plugin_hook_execution_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plugin_id TEXT NOT NULL,
+  trace_id TEXT,
+  hook_name TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at_ms INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  failure_kind TEXT,
+  error_code TEXT,
+  failure_policy TEXT,
+  circuit_state TEXT,
+  context_budget_json TEXT NOT NULL DEFAULT '{}',
+  output_budget_json TEXT NOT NULL DEFAULT '{}',
+  mutation_summary_json TEXT NOT NULL DEFAULT '{}',
+  replayable INTEGER NOT NULL DEFAULT 0,
+  replay_export_reason TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_plugin_created_at
+  ON plugin_hook_execution_reports(plugin_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_created_at
+  ON plugin_hook_execution_reports(created_at);
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_trace_id
+  ON plugin_hook_execution_reports(trace_id);
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_plugin_hook_created_at
+  ON plugin_hook_execution_reports(plugin_id, hook_name, created_at);
 "#,
     )
     .map_err(|e| format!("failed to ensure plugin tables: {e}"))?;

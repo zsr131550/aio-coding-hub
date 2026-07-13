@@ -3,7 +3,9 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useId,
   useMemo,
+  useReducer,
   useRef,
   useState,
   type ReactNode,
@@ -12,6 +14,8 @@ import {
   cliManagerCodexConfigTomlValidate,
   type CodexConfigPatch,
   type CodexConfigState,
+  type CodexModelCapability,
+  type CodexModelCatalogState,
   type CodexConfigTomlState,
   type CodexConfigTomlValidationResult,
   type SimpleCliInfo,
@@ -19,32 +23,46 @@ import {
 import type {
   AppSettings,
   CodexHomeMode,
-  CodexReasoningGuardCompareMode,
   CodexReasoningGuardExhaustedAction,
-  CodexReasoningGuardModelRule,
+  CodexReasoningGuardPostMatchStrategy,
   CodexReasoningGuardRetryPolicy,
+  CodexReasoningGuardTemplateFilter,
+  CodexReasoningGuardTemplateFilterField,
+  CodexReasoningGuardTemplateFilterOperator,
+  CodexReasoningGuardTemplateRule,
+  CodexReasoningGuardRuleTemplate,
+  CodexReasoningGuardRuleMode,
 } from "../../../services/settings/settings";
 import {
+  CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID,
+  CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
+  CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID,
   DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
   DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX,
   DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
+  DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS,
   DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
   DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
   DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION,
   DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
+  DEFAULT_CODEX_REASONING_GUARD_POST_MATCH_STRATEGY,
   DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS,
   DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY,
+  DEFAULT_CODEX_REASONING_GUARD_RULE_MODE,
+  MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES,
+  MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE,
+  MAX_CODEX_REASONING_GUARD_TEMPLATE_RULE_FILTERS,
+  MAX_CODEX_REASONING_GUARD_TEMPLATE_RULES,
   MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
   MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX,
   MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
+  MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS,
   MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
   MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
   MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
   MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN,
   MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN,
-  MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN,
-  MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN,
-  MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE,
+  validateSettingsSetInput,
 } from "../../../services/settings/settingsValidation";
 import { normalizeCustomCodexHome, buildConfigTomlPath } from "../../../utils/codexPaths";
 import {
@@ -53,6 +71,7 @@ import {
 } from "../../../utils/localDate";
 import { isWindowsRuntime } from "../../../utils/platform";
 import { cn } from "../../../utils/cn";
+import { confirmDesktopDialog } from "../../../services/desktop/confirm";
 import { useCliManagerCodexReasoningGuardStatsQuery } from "../../../query/cliManager";
 import { CliVersionBadge } from "../CliVersionBadge";
 import { Button } from "../../../ui/Button";
@@ -64,6 +83,12 @@ import { Switch } from "../../../ui/Switch";
 import { RadioGroup } from "../../../ui/RadioGroup";
 import { Textarea } from "../../../ui/Textarea";
 import { Popover } from "../../../ui/Popover";
+import {
+  resolveReasoningOptions,
+  ultraConflictText,
+  type ReasoningOptionView,
+} from "./codexModelCapabilities";
+import { useCodexModelMigration } from "./useCodexModelMigration";
 import {
   AlertTriangle,
   BarChart3,
@@ -84,11 +109,15 @@ const LazyCodeEditor = lazy(() =>
   import("../../../ui/CodeEditor").then((m) => ({ default: m.CodeEditor }))
 );
 
-const GPT_54_MODEL = "gpt-5.4";
 const DEFAULT_CODEX_PROVIDER_TEST_MODEL = "gpt-5.4-mini";
-const GPT_54_CONTEXT_WINDOW = 1_000_000;
-const GPT_54_AUTO_COMPACT_TOKEN_LIMIT = 900_000;
 const FAST_SERVICE_TIER = "fast";
+const CODEX_CONFIG_LOCATION_MODE_LABEL = "目录来源";
+const MODEL_REASONING_EFFORT_LABEL = "推理强度 (model_reasoning_effort)";
+const MODEL_REASONING_EFFORT_DESCRIPTION =
+  "调整推理强度（仅对支持的模型/Responses API 生效）。值越高通常越稳健但更慢。";
+const PLAN_MODE_REASONING_EFFORT_LABEL = "计划模式推理强度 (plan_mode_reasoning_effort)";
+const WEB_SEARCH_MODE_LABEL = "网络搜索模式 (web_search)";
+const PERSONALITY_LABEL = "输出风格 (personality)";
 type PersistConfigLocationResult = "saved" | "validation_failed" | "persist_failed";
 type CodexReasoningGuardDetailsTab = "rules" | "stats";
 type CodexReasoningGuardStatsPreset =
@@ -100,44 +129,177 @@ type CodexReasoningGuardStatsPreset =
   | "last30"
   | "thisMonth"
   | "lastMonth";
-type CodexReasoningGuardModelRuleDraft = {
-  requestedModel: string;
-  compareMode: CodexReasoningGuardCompareMode;
-  valuesText: string;
-};
 type CodexReasoningGuardStatsDateRange = {
   startDate: string;
   endDate: string;
 };
+type CodexReasoningGuardStatsRangePopoverScope = "overview" | "details";
+type CodexReasoningGuardTemplateOption = CodexReasoningGuardRuleTemplate & {
+  source: "builtin" | "custom";
+  readOnly: boolean;
+};
+
+const CODEX_REASONING_GUARD_BUILTIN_TEMPLATES: CodexReasoningGuardTemplateOption[] = [
+  {
+    id: CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID,
+    name: "Reasoning tokens 518*N-2",
+    description: "拦截 reasoning_tokens 满足 518*N-2 的 Codex 截断续写特征。",
+    source: "builtin",
+    readOnly: true,
+    rules: [
+      {
+        id: "builtin-518n-minus-2",
+        name: "reasoning_tokens == 518*N-2",
+        reasoning_tokens: null,
+        reasoning_tokens_formula: "reasoning_tokens_518n_minus_2",
+        action: "intercept",
+        logic: "and",
+        filters: [],
+      },
+    ],
+  },
+  {
+    id: CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
+    name: "Legacy reasoning tokens",
+    description: "拦截 reasoning_tokens 等于 516、1034、1552 的旧默认规则。",
+    source: "builtin",
+    readOnly: true,
+    rules: DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.map((value) => ({
+      id: `builtin-token-${value}`,
+      name: `reasoning_tokens == ${value}`,
+      reasoning_tokens: value,
+      reasoning_tokens_formula: null,
+      action: "intercept",
+      logic: "and",
+      filters: [],
+    })),
+  },
+  {
+    id: CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID,
+    name: "Final answer only high/xhigh/max/ultra",
+    description:
+      "请求 reasoning effort 为 high/xhigh/max/ultra 且响应只有 final answer 时命中；仅 reasoning_tokens 为 0 的 context_compaction 豁免。",
+    source: "builtin",
+    readOnly: true,
+    rules: [
+      {
+        id: "builtin-reasoning-zero-allow",
+        name: "reasoning_tokens == 0 allow",
+        reasoning_tokens: 0,
+        reasoning_tokens_formula: null,
+        action: "no_intercept",
+        logic: "and",
+        filters: [],
+      },
+      {
+        id: "builtin-final-answer-only-high-xhigh",
+        name: "final answer only high/xhigh/max/ultra",
+        reasoning_tokens: null,
+        reasoning_tokens_formula: null,
+        action: "intercept",
+        logic: "and",
+        filters: [
+          {
+            id: "request-reasoning-effort-high-xhigh",
+            field: "request_reasoning_effort",
+            operator: "in",
+            number_value: null,
+            bool_value: null,
+            string_value: null,
+            string_values: ["high", "xhigh", "max", "ultra"],
+          },
+          {
+            id: "final-answer-only",
+            field: "final_answer_only",
+            operator: "equals",
+            number_value: null,
+            bool_value: true,
+            string_value: null,
+            string_values: [],
+          },
+          {
+            id: "no-commentary",
+            field: "commentary_observed",
+            operator: "not_equals",
+            number_value: null,
+            bool_value: true,
+            string_value: null,
+            string_values: [],
+          },
+          {
+            id: "no-tool-call",
+            field: "has_tool_call",
+            operator: "not_equals",
+            number_value: null,
+            bool_value: true,
+            string_value: null,
+            string_values: [],
+          },
+          {
+            id: "no-reasoning-item",
+            field: "has_reasoning_item",
+            operator: "not_equals",
+            number_value: null,
+            bool_value: true,
+            string_value: null,
+            string_values: [],
+          },
+        ],
+      },
+    ],
+  },
+];
 
 const CODEX_REASONING_GUARD_PERCENT_FORMATTER = new Intl.NumberFormat("zh-CN", {
   style: "percent",
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,
 });
-
-function formatCodexReasoningGuardValues(values: number[] | null | undefined) {
-  return (
-    values && values.length > 0 ? values : DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
-  ).join(", ");
-}
-
-function resolveCodexReasoningGuardCompareMode(
-  compareMode: CodexReasoningGuardCompareMode | null | undefined
-): CodexReasoningGuardCompareMode {
-  return compareMode ?? "equals";
-}
-
-function formatCodexReasoningGuardRuleLabel(
-  compareMode: CodexReasoningGuardCompareMode,
-  values: number[] | null | undefined
-) {
-  const symbol = compareMode === "less_than_or_equal" ? "<=" : "==";
-  return `${symbol} ${formatCodexReasoningGuardValues(values)}`;
-}
+const CODEX_REASONING_GUARD_DECIMAL_FORMATTER = new Intl.NumberFormat("zh-CN", {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
 
 function formatCodexReasoningGuardHitRate(value: number | null | undefined) {
   return CODEX_REASONING_GUARD_PERCENT_FORMATTER.format(value ?? 0);
+}
+
+function formatCodexReasoningGuardDecimal(value: number | null | undefined) {
+  return CODEX_REASONING_GUARD_DECIMAL_FORMATTER.format(value ?? 0);
+}
+
+function formatCodexReasoningContinuationStatusLabel(status: string | null | undefined) {
+  switch ((status ?? "").trim()) {
+    case "continuation_repaired":
+    case "repaired":
+      return "已修复";
+    case "missing_encrypted":
+      return "缺少 encrypted";
+    case "capped_max_output_tokens":
+      return "达到 output 上限";
+    case "still_matched":
+      return "仍命中";
+    case "failed":
+      return "补救失败";
+    case "unsupported":
+      return "不支持";
+    case "unavailable":
+      return "不可用";
+    case "unknown":
+      return "未知状态";
+    default:
+      return status ? status : "未知状态";
+  }
+}
+
+function formatCodexReasoningGuardRuleModeLabel(mode: CodexReasoningGuardRuleMode) {
+  switch (mode) {
+    case "final_answer_only_high_xhigh":
+      return "final answer only";
+    case "reasoning_tokens":
+    default:
+      return "reasoning tokens";
+  }
 }
 
 function formatCodexReasoningGuardExhaustedActionLabel(action: CodexReasoningGuardExhaustedAction) {
@@ -156,8 +318,188 @@ function formatCodexReasoningGuardRetryPolicyLabel(policy: CodexReasoningGuardRe
   return policy === "concurrent" ? "并发重试" : "单路重试";
 }
 
+function formatCodexReasoningGuardPostMatchStrategyLabel(
+  strategy: CodexReasoningGuardPostMatchStrategy
+) {
+  if (strategy === "continuation_repair") return "思考续写";
+  return "自动重试";
+}
+
+function isCodexReasoningGuardContinuationStrategy(strategy: CodexReasoningGuardPostMatchStrategy) {
+  return strategy === "continuation_repair";
+}
+
 function formatCodexReasoningGuardModelFallbacks(models: string[] | null | undefined) {
   return (models ?? []).join("\n");
+}
+
+const CODEX_REASONING_GUARD_FILTER_FIELD_OPTIONS: Array<{
+  value: CodexReasoningGuardTemplateFilterField;
+  label: string;
+  kind: "number" | "boolean" | "string";
+}> = [
+  { value: "duration_ms", label: "duration_ms", kind: "number" },
+  { value: "tps", label: "tps", kind: "number" },
+  { value: "output_tokens", label: "output_tokens", kind: "number" },
+  { value: "input_tokens", label: "input_tokens", kind: "number" },
+  { value: "total_tokens", label: "total_tokens", kind: "number" },
+  { value: "reasoning_tokens", label: "reasoning_tokens", kind: "number" },
+  { value: "final_answer_only", label: "final_answer_only", kind: "boolean" },
+  { value: "has_tool_call", label: "has_tool_call", kind: "boolean" },
+  { value: "has_reasoning_item", label: "has_reasoning_item", kind: "boolean" },
+  { value: "commentary_observed", label: "commentary_observed", kind: "boolean" },
+  { value: "request_reasoning_effort", label: "request_reasoning_effort", kind: "string" },
+  { value: "requested_model", label: "requested_model", kind: "string" },
+];
+
+const CODEX_REASONING_GUARD_NUMBER_OPERATORS: CodexReasoningGuardTemplateFilterOperator[] = [
+  "equals",
+  "not_equals",
+  "less_than",
+  "less_than_or_equal",
+  "greater_than",
+  "greater_than_or_equal",
+];
+const CODEX_REASONING_GUARD_BOOLEAN_OPERATORS: CodexReasoningGuardTemplateFilterOperator[] = [
+  "equals",
+  "not_equals",
+];
+const CODEX_REASONING_GUARD_STRING_OPERATORS: CodexReasoningGuardTemplateFilterOperator[] = [
+  "equals",
+  "not_equals",
+  "in",
+  "not_in",
+];
+
+function codexReasoningGuardFilterKind(field: CodexReasoningGuardTemplateFilterField) {
+  return (
+    CODEX_REASONING_GUARD_FILTER_FIELD_OPTIONS.find((option) => option.value === field)?.kind ??
+    "number"
+  );
+}
+
+function codexReasoningGuardFilterOperators(field: CodexReasoningGuardTemplateFilterField) {
+  switch (codexReasoningGuardFilterKind(field)) {
+    case "boolean":
+      return CODEX_REASONING_GUARD_BOOLEAN_OPERATORS;
+    case "string":
+      return CODEX_REASONING_GUARD_STRING_OPERATORS;
+    case "number":
+    default:
+      return CODEX_REASONING_GUARD_NUMBER_OPERATORS;
+  }
+}
+
+function normalizeCodexReasoningGuardFilterForField(
+  filter: CodexReasoningGuardTemplateFilter,
+  field: CodexReasoningGuardTemplateFilterField
+): CodexReasoningGuardTemplateFilter {
+  const kind = codexReasoningGuardFilterKind(field);
+  const operators = codexReasoningGuardFilterOperators(field);
+  const operator = operators.includes(filter.operator) ? filter.operator : operators[0];
+  return {
+    id: filter.id,
+    field,
+    operator,
+    number_value: kind === "number" ? (filter.number_value ?? 0) : null,
+    bool_value: kind === "boolean" ? (filter.bool_value ?? true) : null,
+    string_value:
+      kind === "string" && (operator === "equals" || operator === "not_equals")
+        ? (filter.string_value ?? "")
+        : null,
+    string_values:
+      kind === "string" && (operator === "in" || operator === "not_in") ? filter.string_values : [],
+  };
+}
+
+function buildCodexReasoningGuardFilter(id: string): CodexReasoningGuardTemplateFilter {
+  return {
+    id,
+    field: "reasoning_tokens",
+    operator: "less_than_or_equal",
+    number_value: 516,
+    bool_value: null,
+    string_value: null,
+    string_values: [],
+  };
+}
+
+function buildCodexReasoningGuardRule(id: string): CodexReasoningGuardTemplateRule {
+  return {
+    id,
+    name: "New rule",
+    reasoning_tokens: null,
+    reasoning_tokens_formula: null,
+    action: "intercept",
+    logic: "and",
+    filters: [buildCodexReasoningGuardFilter(`${id}-filter-1`)],
+  };
+}
+
+function resolveCodexReasoningGuardTemplateOption(
+  id: string,
+  customTemplates: CodexReasoningGuardRuleTemplate[]
+): CodexReasoningGuardTemplateOption | null {
+  const builtin = CODEX_REASONING_GUARD_BUILTIN_TEMPLATES.find((template) => template.id === id);
+  if (builtin) return builtin;
+  const custom = customTemplates.find((template) => template.id === id);
+  return custom ? { ...custom, source: "custom", readOnly: false } : null;
+}
+
+function uniqueCodexReasoningGuardTemplateId(
+  templates: CodexReasoningGuardRuleTemplate[],
+  preferredId: string
+) {
+  const builtinIds = new Set(
+    CODEX_REASONING_GUARD_BUILTIN_TEMPLATES.map((template) => template.id)
+  );
+  const existingIds = new Set([...builtinIds, ...templates.map((template) => template.id.trim())]);
+  const base =
+    preferredId
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 72) || "custom-template";
+  if (!existingIds.has(base)) return base;
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!existingIds.has(candidate)) return candidate;
+  }
+  return `${base}-${templates.length + 1}`;
+}
+
+function buildNewCodexReasoningGuardTemplate(
+  customTemplates: CodexReasoningGuardRuleTemplate[]
+): CodexReasoningGuardRuleTemplate {
+  return {
+    id: uniqueCodexReasoningGuardTemplateId(customTemplates, "custom-reasoning-guard"),
+    name: "Custom reasoning guard",
+    description: "自定义 Codex 降智拦截规则模板。",
+    rules: [
+      {
+        id: "token-516",
+        name: "reasoning_tokens == 516",
+        reasoning_tokens: 516,
+        reasoning_tokens_formula: null,
+        action: "intercept",
+        logic: "and",
+        filters: [],
+      },
+    ],
+  };
+}
+
+function copyCodexReasoningGuardTemplateAsCustom(
+  template: CodexReasoningGuardRuleTemplate,
+  customTemplates: CodexReasoningGuardRuleTemplate[]
+): CodexReasoningGuardRuleTemplate {
+  return {
+    rules: structuredClone(template.rules),
+    id: uniqueCodexReasoningGuardTemplateId(customTemplates, `custom-${template.id}`),
+    name: `${template.name} copy`,
+    description: template.description || "Copied from an existing Codex reasoning guard template.",
+  };
 }
 
 function formatLocalDateInputValue(date: Date) {
@@ -254,65 +596,6 @@ function buildCodexReasoningGuardStatsPresetRange(
   }
 }
 
-function codexReasoningGuardCompareModeHelperText(compareMode: CodexReasoningGuardCompareMode) {
-  return compareMode === "less_than_or_equal"
-    ? "多个值请用英文逗号分隔。命中条件为 reasoning_tokens 小于等于任一规则值；若有多个阈值，会优先匹配更贴近的较小阈值。"
-    : `多个值请用英文逗号分隔。默认规则是 ${DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.join(", ")}。命中后会在同一 provider 上继续重试。`;
-}
-
-function buildCodexReasoningGuardModelRuleDrafts(
-  rules: CodexReasoningGuardModelRule[] | null | undefined
-): CodexReasoningGuardModelRuleDraft[] {
-  return (rules ?? []).map((rule) => ({
-    requestedModel: rule.requested_model,
-    compareMode: resolveCodexReasoningGuardCompareMode(rule.compare_mode),
-    valuesText: formatCodexReasoningGuardValues(rule.reasoning_equals),
-  }));
-}
-
-function resolveCodexReasoningGuardRuleForModel(
-  settings: AppSettings | null | undefined,
-  requestedModel: string
-) {
-  if (!settings) {
-    return { label: "—", sourceLabel: "—" };
-  }
-  const modelRule = settings.codex_reasoning_guard_model_rules.find(
-    (rule) => rule.requested_model === requestedModel
-  );
-  if (modelRule) {
-    return {
-      label: formatCodexReasoningGuardRuleLabel(
-        resolveCodexReasoningGuardCompareMode(modelRule.compare_mode),
-        modelRule.reasoning_equals
-      ),
-      sourceLabel: "模型规则",
-    };
-  }
-  return {
-    label: formatCodexReasoningGuardRuleLabel(
-      settings.codex_reasoning_guard_compare_mode,
-      settings.codex_reasoning_guard_reasoning_equals
-    ),
-    sourceLabel: "全局默认",
-  };
-}
-
-function buildModelPatch(
-  model: string,
-  contextWindow?: string,
-  autoCompactLimit?: string
-): CodexConfigPatch {
-  const trimmed = model.trim();
-  const isGpt54 = trimmed === GPT_54_MODEL;
-
-  return {
-    model: trimmed,
-    model_context_window: isGpt54 ? parsePositiveInt(contextWindow) : null,
-    model_auto_compact_token_limit: isGpt54 ? parsePositiveInt(autoCompactLimit) : null,
-  };
-}
-
 /** Parse a string to a positive integer; return null on empty / NaN / <= 0. */
 function parsePositiveInt(v: string | undefined): number | null {
   if (v == null) return null;
@@ -332,10 +615,6 @@ function buildPersonalityPatch(value: string): CodexConfigPatch {
   return {
     personality: value === "none" ? "" : value,
   };
-}
-
-function isGpt54Model(model: string | null | undefined) {
-  return (model ?? "").trim() === GPT_54_MODEL;
 }
 
 function validateCustomCodexHome(value: string): string | null {
@@ -365,6 +644,173 @@ function normalizeComparablePath(path: string) {
     .toLowerCase();
 }
 
+type CodexConfigDraft = {
+  configKey: string;
+  modelText: string;
+  contextWindowText: string;
+  autoCompactLimitText: string;
+  sandboxModeText: string;
+  webSearchText: string;
+  personalityText: string;
+  reasoningEffortText: string;
+  planModeReasoningEffortText: string;
+};
+
+function buildCodexConfigKey(codexConfig: CodexConfigState | null) {
+  if (!codexConfig) return "none";
+  return [
+    codexConfig.model ?? "",
+    codexConfig.model_context_window ?? "",
+    codexConfig.model_auto_compact_token_limit ?? "",
+    codexConfig.sandbox_mode ?? "",
+    codexConfig.web_search ?? "",
+    codexConfig.personality ?? "",
+    codexConfig.model_reasoning_effort ?? "",
+    codexConfig.plan_mode_reasoning_effort ?? "",
+  ].join("\u0000");
+}
+
+function buildCodexConfigDraft(codexConfig: CodexConfigState | null): CodexConfigDraft {
+  return {
+    configKey: buildCodexConfigKey(codexConfig),
+    modelText: codexConfig?.model ?? "",
+    contextWindowText:
+      codexConfig?.model_context_window != null ? String(codexConfig.model_context_window) : "",
+    autoCompactLimitText:
+      codexConfig?.model_auto_compact_token_limit != null
+        ? String(codexConfig.model_auto_compact_token_limit)
+        : "",
+    sandboxModeText: codexConfig?.sandbox_mode ?? "",
+    webSearchText: codexConfig?.web_search ?? "cached",
+    personalityText: codexConfig?.personality?.trim() || "none",
+    reasoningEffortText: codexConfig?.model_reasoning_effort ?? "",
+    planModeReasoningEffortText: codexConfig?.plan_mode_reasoning_effort ?? "",
+  };
+}
+
+type ConfigLocationDraft = {
+  settingsKey: string;
+  configLocationMode: CodexHomeMode;
+  customHomeText: string;
+  configLocationError: string | null;
+};
+
+function readConfigLocationSettings(appSettings: AppSettings | null | undefined) {
+  const savedOverride = appSettings?.codex_home_override?.trim() ?? "";
+  const savedMode =
+    appSettings?.codex_home_mode ?? (savedOverride ? "custom" : "user_home_default");
+  return { savedMode, savedOverride };
+}
+
+function buildConfigLocationKey(appSettings: AppSettings | null | undefined) {
+  const { savedMode, savedOverride } = readConfigLocationSettings(appSettings);
+  return [savedMode, savedOverride].join("\u0000");
+}
+
+function buildConfigLocationDraft(
+  appSettings: AppSettings | null | undefined
+): ConfigLocationDraft {
+  const { savedMode, savedOverride } = readConfigLocationSettings(appSettings);
+  return {
+    settingsKey: buildConfigLocationKey(appSettings),
+    configLocationMode: savedMode,
+    customHomeText: savedOverride,
+    configLocationError: null,
+  };
+}
+
+type TomlDraftState = {
+  sourceKey: string;
+  configPath: string | null;
+  tomlDraft: string;
+  tomlDirty: boolean;
+  tomlValidating: boolean;
+  tomlValidation: CodexConfigTomlValidationResult | null;
+  tomlEditEnabled: boolean;
+};
+
+function buildTomlSourceKey(codexConfigToml: CodexConfigTomlState | null) {
+  if (!codexConfigToml) return "none";
+  return [codexConfigToml.config_path ?? "", codexConfigToml.toml ?? ""].join("\u0000");
+}
+
+function buildTomlDraftState(codexConfigToml: CodexConfigTomlState | null): TomlDraftState {
+  return {
+    sourceKey: buildTomlSourceKey(codexConfigToml),
+    configPath: codexConfigToml?.config_path ?? null,
+    tomlDraft: codexConfigToml?.toml ?? "",
+    tomlDirty: false,
+    tomlValidating: false,
+    tomlValidation: null,
+    tomlEditEnabled: false,
+  };
+}
+
+type CodexTabUiState = {
+  versionRefreshToken: number;
+  codexDraft: CodexConfigDraft;
+  configLocationDraft: ConfigLocationDraft;
+  selectingCodexHomeDir: boolean;
+  tomlAdvancedOpen: boolean;
+  tomlState: TomlDraftState;
+};
+
+type CodexTabUiAction =
+  | { type: "incrementVersionRefreshToken" }
+  | { type: "setCodexDraft"; draft: CodexConfigDraft }
+  | { type: "patchCodexDraft"; patch: Partial<Omit<CodexConfigDraft, "configKey">> }
+  | { type: "setConfigLocationDraft"; draft: ConfigLocationDraft }
+  | { type: "patchConfigLocationDraft"; patch: Partial<Omit<ConfigLocationDraft, "settingsKey">> }
+  | { type: "setSelectingCodexHomeDir"; value: boolean }
+  | { type: "setTomlAdvancedOpen"; value: boolean }
+  | { type: "setTomlState"; state: TomlDraftState }
+  | { type: "patchTomlState"; patch: Partial<Omit<TomlDraftState, "sourceKey" | "configPath">> };
+
+function initCodexTabUiState({
+  codexConfig,
+  codexConfigToml,
+  appSettings,
+}: {
+  codexConfig: CodexConfigState | null;
+  codexConfigToml: CodexConfigTomlState | null;
+  appSettings: AppSettings | null | undefined;
+}): CodexTabUiState {
+  return {
+    versionRefreshToken: 0,
+    codexDraft: buildCodexConfigDraft(codexConfig),
+    configLocationDraft: buildConfigLocationDraft(appSettings),
+    selectingCodexHomeDir: false,
+    tomlAdvancedOpen: false,
+    tomlState: buildTomlDraftState(codexConfigToml),
+  };
+}
+
+function codexTabUiReducer(state: CodexTabUiState, action: CodexTabUiAction): CodexTabUiState {
+  switch (action.type) {
+    case "incrementVersionRefreshToken":
+      return { ...state, versionRefreshToken: state.versionRefreshToken + 1 };
+    case "setCodexDraft":
+      return { ...state, codexDraft: action.draft };
+    case "patchCodexDraft":
+      return { ...state, codexDraft: { ...state.codexDraft, ...action.patch } };
+    case "setConfigLocationDraft":
+      return { ...state, configLocationDraft: action.draft };
+    case "patchConfigLocationDraft":
+      return {
+        ...state,
+        configLocationDraft: { ...state.configLocationDraft, ...action.patch },
+      };
+    case "setSelectingCodexHomeDir":
+      return { ...state, selectingCodexHomeDir: action.value };
+    case "setTomlAdvancedOpen":
+      return { ...state, tomlAdvancedOpen: action.value };
+    case "setTomlState":
+      return { ...state, tomlState: action.state };
+    case "patchTomlState":
+      return { ...state, tomlState: { ...state.tomlState, ...action.patch } };
+  }
+}
+
 export type CliManagerAvailability = "checking" | "available" | "unavailable";
 
 export type CliManagerCodexTabProps = {
@@ -375,15 +821,18 @@ export type CliManagerCodexTabProps = {
   codexConfigTomlLoading: boolean;
   codexConfigTomlSaving: boolean;
   codexProviderSyncing?: boolean;
+  codexModelCatalogLoading?: boolean;
+  codexModelCatalogError?: boolean;
   codexInfo: SimpleCliInfo | null;
   codexConfig: CodexConfigState | null;
   codexConfigToml: CodexConfigTomlState | null;
+  codexModelCatalog?: CodexModelCatalogState | null;
   appSettings?: AppSettings | null;
   commonSettingsSaving?: boolean;
   codexHomeSettingsSaving?: boolean;
   refreshCodex: () => Promise<void> | void;
   openCodexConfigDir: () => Promise<void> | void;
-  persistCodexConfig: (patch: CodexConfigPatch) => Promise<void> | void;
+  persistCodexConfig: (patch: CodexConfigPatch) => Promise<CodexConfigState | null>;
   persistCodexConfigToml: (toml: string) => Promise<boolean> | boolean;
   syncCodexProvider?: () => Promise<void> | void;
   persistCommonSettings?: (
@@ -394,9 +843,14 @@ export type CliManagerCodexTabProps = {
       Pick<
         AppSettings,
         | "codex_reasoning_guard_enabled"
+        | "codex_reasoning_guard_hit_label"
+        | "codex_reasoning_guard_rule_mode"
         | "codex_reasoning_guard_compare_mode"
         | "codex_reasoning_guard_reasoning_equals"
         | "codex_reasoning_guard_model_rules"
+        | "codex_reasoning_guard_active_template_id"
+        | "codex_reasoning_guard_custom_templates"
+        | "codex_reasoning_guard_post_match_strategy"
         | "codex_reasoning_guard_immediate_retry_budget"
         | "codex_reasoning_guard_delayed_retry_budget"
         | "codex_reasoning_guard_delayed_retry_ms"
@@ -406,6 +860,9 @@ export type CliManagerCodexTabProps = {
         | "codex_reasoning_guard_concurrent_interval_ms"
         | "codex_reasoning_guard_concurrent_max_attempts"
         | "codex_reasoning_guard_model_fallbacks"
+        | "codex_reasoning_guard_continuation_repair_enabled"
+        | "codex_reasoning_guard_continuation_max_rounds"
+        | "codex_reasoning_guard_continuation_max_output_tokens"
       >
     >
   ) => Promise<boolean> | boolean;
@@ -445,6 +902,8 @@ function SettingItem({
 }
 
 function CodexReasoningGuardStatsRangeControls({
+  ariaLabel = "降智拦截统计时间范围",
+  dateInputLabelPrefix = "降智拦截统计",
   label,
   startDate,
   endDate,
@@ -458,7 +917,10 @@ function CodexReasoningGuardStatsRangeControls({
   onPreset,
   onApply,
   onRefresh,
+  popoverPortalled = true,
 }: {
+  ariaLabel?: string;
+  dateInputLabelPrefix?: string;
   label?: string;
   startDate: string;
   endDate: string;
@@ -472,6 +934,7 @@ function CodexReasoningGuardStatsRangeControls({
   onPreset: (preset: CodexReasoningGuardStatsPreset) => void;
   onApply: () => void;
   onRefresh: () => void;
+  popoverPortalled?: boolean;
 }) {
   const presets: Array<[CodexReasoningGuardStatsPreset, string]> = [
     ["today", "今天"],
@@ -485,7 +948,7 @@ function CodexReasoningGuardStatsRangeControls({
   ];
 
   return (
-    <div className="flex flex-wrap items-center gap-2" aria-label="降智拦截统计时间范围">
+    <div className="flex flex-wrap items-center gap-2" aria-label={ariaLabel}>
       {label ? (
         <span className="text-sm font-medium text-secondary-foreground">{label}</span>
       ) : null}
@@ -496,6 +959,7 @@ function CodexReasoningGuardStatsRangeControls({
         placement="bottom"
         className="rounded-lg"
         contentClassName="w-[min(30rem,calc(100vw-2rem))] border-border bg-card p-0"
+        portalled={popoverPortalled}
         trigger={
           <span className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-muted data-[state=open]:border-accent">
             <Calendar className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
@@ -522,7 +986,7 @@ function CodexReasoningGuardStatsRangeControls({
               <label className="text-xs font-medium text-muted-foreground">
                 <span className="mb-1 block">开始日期</span>
                 <Input
-                  aria-label="降智拦截统计开始日期"
+                  aria-label={`${dateInputLabelPrefix}开始日期`}
                   type="date"
                   value={startDate}
                   onChange={(e) => onStartDateChange(e.currentTarget.value)}
@@ -533,7 +997,7 @@ function CodexReasoningGuardStatsRangeControls({
               <label className="text-xs font-medium text-muted-foreground">
                 <span className="mb-1 block">结束日期</span>
                 <Input
-                  aria-label="降智拦截统计结束日期"
+                  aria-label={`${dateInputLabelPrefix}结束日期`}
                   type="date"
                   value={endDate}
                   onChange={(e) => onEndDateChange(e.currentTarget.value)}
@@ -568,22 +1032,1115 @@ function enumOrDefault(value: string | null, fallback: string) {
   return (value ?? fallback).trim();
 }
 
-export function CliManagerCodexTab({
+type UpdateCodexDraft = (patch: Partial<Omit<CodexConfigDraft, "configKey">>) => void;
+type UpdateConfigLocationDraft = (patch: Partial<Omit<ConfigLocationDraft, "settingsKey">>) => void;
+type UpdateTomlState = (patch: Partial<Omit<TomlDraftState, "sourceKey" | "configPath">>) => void;
+
+function CodexHeader({
   codexAvailable,
+  codexInfo,
+  loading,
+  saving,
+  versionRefreshToken,
+  refreshCodexStatus,
+}: {
+  codexAvailable: CliManagerAvailability;
+  codexInfo: SimpleCliInfo | null;
+  loading: boolean;
+  saving: boolean;
+  versionRefreshToken: number;
+  refreshCodexStatus: () => Promise<void>;
+}) {
+  return (
+    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="flex items-center gap-4">
+        <div className="h-14 w-14 rounded-xl bg-card/5 dark:bg-secondary flex items-center justify-center text-secondary-foreground">
+          <Terminal className="h-8 w-8" />
+        </div>
+        <div>
+          <h2 className="text-base font-semibold text-foreground">Codex</h2>
+          <div className="flex items-center gap-2 mt-1">
+            {codexAvailable === "available" && codexInfo?.found ? (
+              <>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-green-50 dark:bg-green-900/30 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-400 ring-1 ring-inset ring-green-600/20">
+                  <CheckCircle2 className="h-3 w-3" />
+                  已安装 {codexInfo.version}
+                </span>
+                <CliVersionBadge
+                  cliKey="codex"
+                  installedVersion={codexInfo.version}
+                  refreshToken={versionRefreshToken}
+                  onUpdateComplete={refreshCodexStatus}
+                />
+              </>
+            ) : codexAvailable === "checking" || loading ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 dark:bg-blue-900/30 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400 ring-1 ring-inset ring-blue-600/20">
+                <RefreshCw className="h-3 w-3 animate-spin" />
+                加载中...
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border">
+                未检测到
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <Button
+        onClick={() => void refreshCodexStatus()}
+        variant="secondary"
+        size="sm"
+        disabled={loading || saving}
+        className="gap-2"
+      >
+        <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+        刷新
+      </Button>
+    </div>
+  );
+}
+
+function CodexInfoGrid({
+  codexConfig,
+  codexInfo,
+  activeConfigDirSummaryText,
+  openCodexConfigDir,
+}: {
+  codexConfig: CodexConfigState;
+  codexInfo: SimpleCliInfo | null;
+  activeConfigDirSummaryText: string;
+  openCodexConfigDir: () => Promise<void> | void;
+}) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
+      <div className="bg-secondary rounded-lg p-3 border border-border">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
+          <FolderOpen className="h-3 w-3" />
+          当前 .codex 目录
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div
+            className="font-mono text-xs text-secondary-foreground truncate flex-1"
+            title={codexConfig.config_dir}
+          >
+            {codexConfig.config_dir}
+          </div>
+          <Button
+            onClick={() => void openCodexConfigDir()}
+            disabled={!codexConfig.can_open_config_dir}
+            size="sm"
+            variant="ghost"
+            className="shrink-0 h-6 w-6 p-0 hover:bg-muted dark:hover:bg-secondary"
+            title={
+              codexConfig.can_open_config_dir
+                ? "打开当前生效目录"
+                : "受权限限制，无法自动打开该目录"
+            }
+          >
+            <ExternalLink className="h-3 w-3" />
+          </Button>
+        </div>
+        <div className="mt-1 text-[11px] text-muted-foreground">{activeConfigDirSummaryText}</div>
+        {!codexConfig.can_open_config_dir ? (
+          <div className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+            受权限限制，无法自动打开该目录；请手动打开该路径。
+          </div>
+        ) : null}
+      </div>
+
+      <div className="bg-secondary rounded-lg p-3 border border-border">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
+          <FileJson className="h-3 w-3" />
+          config.toml
+        </div>
+        <div
+          className="font-mono text-xs text-secondary-foreground truncate"
+          title={codexConfig.config_path}
+        >
+          {codexConfig.config_path}
+        </div>
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          {codexConfig.exists ? "已存在" : "不存在（将自动创建）"}
+        </div>
+      </div>
+
+      <div className="bg-secondary rounded-lg p-3 border border-border">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
+          <Terminal className="h-3 w-3" />
+          可执行文件
+        </div>
+        <div
+          className="font-mono text-xs text-secondary-foreground truncate"
+          title={codexInfo?.executable_path ?? "—"}
+        >
+          {codexInfo?.executable_path ?? "—"}
+        </div>
+      </div>
+
+      <div className="bg-secondary rounded-lg p-3 border border-border">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
+          <Settings className="h-3 w-3" />
+          解析方式
+        </div>
+        <div
+          className="font-mono text-xs text-secondary-foreground truncate"
+          title={codexInfo?.resolved_via ?? "—"}
+        >
+          {codexInfo?.resolved_via ?? "—"}
+        </div>
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          SHELL: {codexInfo?.shell ?? "—"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CodexConfigLocationSection({
+  codexConfig,
+  customHomeInputId,
+  configLocationMode,
+  customHomeText,
+  configLocationError,
+  selectingCodexHomeDir,
+  configLocationControlsDisabled,
+  activeConfigModeBadgeText,
+  activeConfigDirPrimaryText,
+  activeConfigDirSummaryText,
+  configLocationSummaryText,
+  followModeLabel,
+  followModeMatchesDefault,
+  userDefaultResolvedHomeDir,
+  followCodexHomeResolvedDir,
+  configLocationPreviewPath,
+  resetConfigLocation,
+  handleConfigLocationModeChange,
+  updateConfigLocationDraft,
+  persistConfigLocation,
+  restoreSavedConfigLocationState,
+  handlePickCustomHome,
+}: {
+  codexConfig: CodexConfigState;
+  customHomeInputId: string;
+  configLocationMode: CodexHomeMode;
+  customHomeText: string;
+  configLocationError: string | null;
+  selectingCodexHomeDir: boolean;
+  configLocationControlsDisabled: boolean;
+  activeConfigModeBadgeText: string;
+  activeConfigDirPrimaryText: string;
+  activeConfigDirSummaryText: string;
+  configLocationSummaryText: string;
+  followModeLabel: string;
+  followModeMatchesDefault: boolean;
+  userDefaultResolvedHomeDir: string;
+  followCodexHomeResolvedDir: string;
+  configLocationPreviewPath: string;
+  resetConfigLocation: () => Promise<void>;
+  handleConfigLocationModeChange: (nextMode: CodexHomeMode) => Promise<void>;
+  updateConfigLocationDraft: UpdateConfigLocationDraft;
+  persistConfigLocation: (
+    nextMode: CodexHomeMode,
+    nextCustomHome?: string
+  ) => Promise<PersistConfigLocationResult>;
+  restoreSavedConfigLocationState: () => void;
+  handlePickCustomHome: () => Promise<void>;
+}) {
+  return (
+    <div className="rounded-xl border border-border/80 bg-white/80 p-4 dark:border-border dark:bg-card/20">
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-foreground">Windows 本机配置</div>
+            <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              仅影响 Windows 本机上的 Codex 用户级 <span className="font-mono">.codex</span>{" "}
+              目录，不改写 WSL 内各 distro 的目标路径。
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center rounded-full border border-border bg-secondary px-2.5 py-1 text-[11px] font-medium text-secondary-foreground dark:border-border dark:bg-secondary dark:text-foreground">
+              {activeConfigModeBadgeText}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => void resetConfigLocation()}
+              disabled={
+                configLocationControlsDisabled ||
+                (configLocationMode === "user_home_default" && customHomeText.trim().length === 0)
+              }
+            >
+              恢复默认
+            </Button>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border/70 bg-secondary/80 p-3 dark:border-border dark:bg-secondary/80">
+          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+            <div className="min-w-0">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                当前会使用
+              </div>
+              <div
+                className="mt-1 break-all font-mono text-xs text-secondary-foreground"
+                title={activeConfigDirPrimaryText}
+              >
+                {activeConfigDirPrimaryText}
+              </div>
+              <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                {configLocationSummaryText}
+              </div>
+            </div>
+
+            <div className="min-w-0 md:max-w-[320px]">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                config.toml
+              </div>
+              <div
+                className="mt-1 break-all font-mono text-xs text-secondary-foreground"
+                title={codexConfig.config_path}
+              >
+                {codexConfig.config_path}
+              </div>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                {activeConfigDirSummaryText}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border/70 bg-white/70 p-3 dark:border-border dark:bg-card/20">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            {CODEX_CONFIG_LOCATION_MODE_LABEL}
+          </div>
+          <div className="mt-2">
+            <RadioGroup
+              name="codex_config_location_mode"
+              ariaLabel={CODEX_CONFIG_LOCATION_MODE_LABEL}
+              value={configLocationMode}
+              onChange={(value) =>
+                void handleConfigLocationModeChange(
+                  value === "follow_codex_home"
+                    ? "follow_codex_home"
+                    : value === "custom"
+                      ? "custom"
+                      : "user_home_default"
+                )
+              }
+              options={[
+                { value: "user_home_default", label: "固定到 Windows 用户目录" },
+                { value: "follow_codex_home", label: followModeLabel },
+                { value: "custom", label: "手动指定目录" },
+              ]}
+              disabled={configLocationControlsDisabled}
+            />
+          </div>
+          <div className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground">
+            <div>
+              固定目录：<span className="ml-1 font-mono">{userDefaultResolvedHomeDir}</span>
+            </div>
+            <div>
+              <span className="font-mono">$CODEX_HOME</span> 当前解析：
+              <span className="ml-1 font-mono">{followCodexHomeResolvedDir}</span>
+              {followModeMatchesDefault ? (
+                <span className="ml-2 text-amber-700 dark:text-amber-400">
+                  当前路径相同，但后续会随 $CODEX_HOME 变化。
+                </span>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        {configLocationMode === "custom" ? (
+          <div className="rounded-lg border border-border/70 bg-secondary/80 p-3 dark:border-border dark:bg-secondary/80">
+            <label
+              htmlFor={customHomeInputId}
+              className="text-xs font-medium text-secondary-foreground"
+            >
+              自定义 .codex 目录
+            </label>
+
+            <div className="mt-3 flex flex-col gap-2 lg:flex-row">
+              <Input
+                id={customHomeInputId}
+                value={customHomeText}
+                onChange={(e) => {
+                  const next = e.currentTarget.value;
+                  updateConfigLocationDraft({
+                    customHomeText: next,
+                    configLocationError: configLocationError
+                      ? validateCustomCodexHome(next)
+                      : configLocationError,
+                  });
+                }}
+                onBlur={() => {
+                  if (configLocationMode !== "custom") return;
+                  void persistConfigLocation("custom", customHomeText).then((result) => {
+                    if (result === "persist_failed") {
+                      restoreSavedConfigLocationState();
+                    }
+                  });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                }}
+                placeholder="例如：D:\\Users\\you\\.codex"
+                className={cn(
+                  "font-mono text-xs lg:flex-1",
+                  configLocationError &&
+                    "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                )}
+                disabled={configLocationControlsDisabled}
+              />
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void handlePickCustomHome()}
+                  disabled={configLocationControlsDisabled}
+                >
+                  <FolderOpen className="mr-1.5 h-3.5 w-3.5" />
+                  {selectingCodexHomeDir ? "选择中..." : "选择目录"}
+                </Button>
+              </div>
+            </div>
+
+            <div
+              className={cn(
+                "mt-2 text-[11px] leading-relaxed",
+                configLocationError ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground"
+              )}
+            >
+              {configLocationError
+                ? configLocationError
+                : configLocationPreviewPath
+                  ? `保存后将使用 ${configLocationPreviewPath}。支持普通 Windows 路径、UNC 路径，也可以点“选择目录”。`
+                  : "请输入一个 .codex 目录路径，然后按 Enter、移出输入框，或直接使用目录选择器保存。"}
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border/80 bg-secondary/50 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground dark:border-border dark:bg-secondary/40 dark:text-muted-foreground">
+            {configLocationMode === "follow_codex_home"
+              ? `当前为跟随模式，手动目录选择器已收起；现在会使用 ${followCodexHomeResolvedDir}。`
+              : `当前为默认模式，手动目录选择器已收起；固定使用 ${userDefaultResolvedHomeDir}。`}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CodexOauthProxySection({
+  appSettings,
+  proxyModeControlsDisabled,
+  persistCodexOauthCompatibleProxyMode,
+}: {
+  appSettings: AppSettings;
+  proxyModeControlsDisabled: boolean;
+  persistCodexOauthCompatibleProxyMode?: (enabled: boolean) => Promise<boolean> | boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-border/80 bg-white/80 p-4 dark:border-border dark:bg-card/20">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-foreground">OAuth 兼容代理模式</div>
+          <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            开启后，AIO 接管 Codex 代理时只写入 <span className="font-mono">config.toml</span> 的
+            AIO provider，不创建、不备份、 不恢复 <span className="font-mono">auth.json</span>
+            。适合继续使用 Codex 自己的 ChatGPT/OAuth 登录状态。
+          </div>
+          <div className="mt-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+            该模式不会写入 <span className="font-mono">preferred_auth_method = "chatgpt"</span>
+            ；会在配置中保留<span className="font-mono"> requires_openai_auth = true</span>。
+          </div>
+        </div>
+        <Switch
+          aria-label="切换 Codex OAuth 兼容代理模式"
+          checked={appSettings.codex_oauth_compatible_proxy_mode}
+          onCheckedChange={(checked) => void persistCodexOauthCompatibleProxyMode?.(checked)}
+          disabled={proxyModeControlsDisabled}
+        />
+      </div>
+    </div>
+  );
+}
+
+function CodexBasicConfigSection({
+  codexConfig,
+  saving,
+  modelText,
+  modelSuggestions,
+  contextWindowText,
+  autoCompactLimitText,
+  sandboxModeText,
+  reasoningEffortText,
+  planModeReasoningEffortText,
+  webSearchText,
+  personalityText,
+  reasoningOptions,
+  reasoningStatusText,
+  reasoningStatusRetryable,
+  ultraConflictText,
+  onModelInputChange,
+  onEffortInputChange,
+  persistModel,
+  refreshCodexStatus,
+  updateCodexDraft,
+  persistCodexConfig,
+}: {
+  codexConfig: CodexConfigState;
+  saving: boolean;
+  modelText: string;
+  modelSuggestions: CodexModelCapability[];
+  contextWindowText: string;
+  autoCompactLimitText: string;
+  sandboxModeText: string;
+  reasoningEffortText: string;
+  planModeReasoningEffortText: string;
+  webSearchText: string;
+  personalityText: string;
+  reasoningOptions: ReasoningOptionView[];
+  reasoningStatusText: string | null;
+  reasoningStatusRetryable: boolean;
+  ultraConflictText: string | null;
+  onModelInputChange: () => void;
+  onEffortInputChange: () => void;
+  persistModel: (modelText: string, currentEffort: string) => Promise<CodexConfigState | null>;
+  refreshCodexStatus: () => Promise<void>;
+  updateCodexDraft: UpdateCodexDraft;
+  persistCodexConfig: CliManagerCodexTabProps["persistCodexConfig"];
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <Settings className="h-4 w-4 text-muted-foreground" />
+        基础配置
+      </h3>
+      <div className="divide-y divide-border">
+        <SettingItem
+          label="默认模型 (model)"
+          subtitle="设置 Codex 默认使用的模型（例如 gpt-5-codex）。留空表示不设置（交由 Codex 默认/上层配置决定）。"
+        >
+          <Input
+            value={modelText}
+            onChange={(e) => {
+              onModelInputChange();
+              updateCodexDraft({ modelText: e.currentTarget.value });
+            }}
+            onBlur={() => {
+              updateCodexDraft({ modelText: modelText.trim() });
+              void persistModel(modelText, reasoningEffortText);
+            }}
+            placeholder="例如：gpt-5-codex"
+            list="codex-model-suggestions"
+            aria-label="默认模型 (model)"
+            className="font-mono w-[280px] max-w-full"
+            disabled={saving}
+          />
+          <datalist id="codex-model-suggestions">
+            {modelSuggestions.map((suggestion) => (
+              <option
+                key={`${suggestion.id}:${suggestion.model}`}
+                value={suggestion.model}
+                label={suggestion.display_name}
+              />
+            ))}
+          </datalist>
+        </SettingItem>
+
+        <SettingItem
+          label="model_context_window"
+          subtitle="模型上下文窗口覆盖值。留空表示删除覆盖，使用 Codex/上层默认行为。"
+        >
+          <Input
+            type="number"
+            value={contextWindowText}
+            onChange={(e) => updateCodexDraft({ contextWindowText: e.currentTarget.value })}
+            onBlur={() =>
+              void persistCodexConfig({
+                model_context_window: parsePositiveInt(contextWindowText),
+              })
+            }
+            placeholder="例如：1000000"
+            className="font-mono w-[220px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="model_auto_compact_token_limit"
+          subtitle="自动压缩 token 上限覆盖值。留空表示删除覆盖，使用 Codex/上层默认行为。"
+        >
+          <Input
+            type="number"
+            value={autoCompactLimitText}
+            onChange={(e) => updateCodexDraft({ autoCompactLimitText: e.currentTarget.value })}
+            onBlur={() =>
+              void persistCodexConfig({
+                model_auto_compact_token_limit: parsePositiveInt(autoCompactLimitText),
+              })
+            }
+            placeholder="例如：900000"
+            className="font-mono w-[220px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="审批策略 (approval_policy)"
+          subtitle="控制何时需要你确认才会执行命令。推荐 on-request（默认）或 on-failure。"
+        >
+          <Select
+            value={codexConfig.approval_policy ?? ""}
+            onChange={(e) => void persistCodexConfig({ approval_policy: e.currentTarget.value })}
+            disabled={saving}
+            className="w-[220px] max-w-full font-mono"
+          >
+            <option value="">默认（不设置）</option>
+            <option value="untrusted">不信任（untrusted）</option>
+            <option value="on-failure">失败时（on-failure）</option>
+            <option value="on-request">请求时（on-request）</option>
+            <option value="never">从不询问（never）</option>
+          </Select>
+        </SettingItem>
+
+        <SettingItem
+          label="沙箱模式 (sandbox_mode)"
+          subtitle="控制文件/网络访问策略。danger-full-access 风险极高，仅在完全信任的环境使用。"
+        >
+          <Select
+            value={sandboxModeText}
+            onChange={(e) => {
+              const next = e.currentTarget.value;
+              void (async () => {
+                if (next === "danger-full-access") {
+                  const ok = await confirmDesktopDialog(
+                    "你选择了 danger-full-access（危险：完全访问）。确认要继续吗？"
+                  );
+                  if (!ok) {
+                    updateCodexDraft({ sandboxModeText: codexConfig.sandbox_mode ?? "" });
+                    return;
+                  }
+                }
+                updateCodexDraft({ sandboxModeText: next });
+                await persistCodexConfig({ sandbox_mode: next });
+              })();
+            }}
+            disabled={saving}
+            className="w-[220px] max-w-full font-mono"
+          >
+            <option value="">默认（不设置）</option>
+            <option value="read-only">只读（read-only）</option>
+            <option value="workspace-write">工作区写入（workspace-write）</option>
+            <option value="danger-full-access">危险：完全访问（danger-full-access）</option>
+          </Select>
+        </SettingItem>
+
+        <SettingItem
+          label={MODEL_REASONING_EFFORT_LABEL}
+          subtitle={MODEL_REASONING_EFFORT_DESCRIPTION}
+        >
+          <RadioGroup
+            name="model_reasoning_effort"
+            ariaLabel={MODEL_REASONING_EFFORT_LABEL}
+            ariaDescription={MODEL_REASONING_EFFORT_DESCRIPTION}
+            value={reasoningEffortText}
+            onChange={(value) => {
+              onEffortInputChange();
+              updateCodexDraft({ reasoningEffortText: value });
+              void persistCodexConfig({ model_reasoning_effort: value });
+            }}
+            options={reasoningOptions.map((option) => ({
+              value: option.reasoning_effort,
+              label: option.label,
+              description: option.description,
+            }))}
+            disabled={saving}
+          />
+          {reasoningStatusText || reasoningStatusRetryable ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] leading-relaxed text-muted-foreground">
+              {reasoningStatusText ? <span>{reasoningStatusText}</span> : null}
+              {reasoningStatusRetryable ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 gap-1 px-2 text-[11px]"
+                  onClick={() => void refreshCodexStatus()}
+                  disabled={saving}
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  重试能力目录
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          {ultraConflictText ? (
+            <div className="mt-2 flex items-start gap-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{ultraConflictText}</span>
+            </div>
+          ) : null}
+        </SettingItem>
+
+        <SettingItem
+          label={PLAN_MODE_REASONING_EFFORT_LABEL}
+          subtitle="调整计划模式下的推理强度。值越高通常规划越充分但更慢。"
+        >
+          <RadioGroup
+            name="plan_mode_reasoning_effort"
+            ariaLabel={PLAN_MODE_REASONING_EFFORT_LABEL}
+            value={planModeReasoningEffortText}
+            onChange={(value) => {
+              updateCodexDraft({ planModeReasoningEffortText: value });
+              void persistCodexConfig({ plan_mode_reasoning_effort: value });
+            }}
+            options={[
+              { value: "", label: "默认" },
+              { value: "low", label: "低 (low)" },
+              { value: "medium", label: "中 (medium)" },
+              { value: "high", label: "高 (high)" },
+              { value: "xhigh", label: "极高 (xhigh)" },
+            ]}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label={WEB_SEARCH_MODE_LABEL}
+          subtitle="控制 Web Search 工具的行为。cached：使用缓存结果；live：获取最新数据；disabled：禁用。"
+        >
+          <RadioGroup
+            name="web_search"
+            ariaLabel={WEB_SEARCH_MODE_LABEL}
+            value={webSearchText}
+            onChange={(value) => {
+              updateCodexDraft({ webSearchText: value });
+              void persistCodexConfig({ web_search: value });
+            }}
+            options={[
+              { value: "cached", label: "缓存 (cached)" },
+              { value: "live", label: "实时 (live)" },
+              { value: "disabled", label: "禁用 (disabled)" },
+            ]}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label={PERSONALITY_LABEL}
+          subtitle="控制 web_search 结果的输出风格。pragmatic 更务实，friendly 更友好；none 会删除该配置，交给 Codex 默认行为。"
+        >
+          <RadioGroup
+            name="personality"
+            ariaLabel={PERSONALITY_LABEL}
+            value={personalityText}
+            onChange={(value) => {
+              updateCodexDraft({ personalityText: value });
+              void persistCodexConfig(buildPersonalityPatch(value));
+            }}
+            options={[
+              { value: "pragmatic", label: "务实 (pragmatic)" },
+              { value: "friendly", label: "友好 (friendly)" },
+              { value: "none", label: "默认 / 删除配置 (none)" },
+            ]}
+            disabled={saving}
+          />
+        </SettingItem>
+      </div>
+    </div>
+  );
+}
+
+function CodexSandboxSection({
+  codexConfig,
+  saving,
+  effectiveSandboxMode,
+  persistCodexConfig,
+}: {
+  codexConfig: CodexConfigState;
+  saving: boolean;
+  effectiveSandboxMode: string;
+  persistCodexConfig: CliManagerCodexTabProps["persistCodexConfig"];
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <Settings className="h-4 w-4 text-muted-foreground" />
+        Sandbox（workspace-write）
+      </h3>
+      <div className="divide-y divide-border">
+        <SettingItem
+          label="允许联网 (sandbox_workspace_write.network_access)"
+          subtitle="仅在 sandbox_mode=workspace-write 时生效。开启写入 network_access=true；关闭删除该项（不写 false）。"
+        >
+          <Switch
+            checked={boolOrDefault(codexConfig.sandbox_workspace_write_network_access, false)}
+            onCheckedChange={(checked) =>
+              void persistCodexConfig({ sandbox_workspace_write_network_access: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+      </div>
+      {effectiveSandboxMode !== "workspace-write" ? (
+        <div className="mt-3 rounded-lg bg-amber-50 dark:bg-amber-900/30 p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <div>
+            当前 sandbox_mode 不是 <span className="font-mono">workspace-write</span>
+            ，此分区设置可能不会生效。
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CodexFeaturesSection({
+  codexConfig,
+  saving,
+  effectiveFastModeEnabled,
+  persistCodexConfig,
+}: {
+  codexConfig: CodexConfigState;
+  saving: boolean;
+  effectiveFastModeEnabled: boolean;
+  persistCodexConfig: CliManagerCodexTabProps["persistCodexConfig"];
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <Settings className="h-4 w-4 text-muted-foreground" />
+        Features（实验/可选能力）
+      </h3>
+      <div className="divide-y divide-border">
+        <SettingItem
+          label="shell_snapshot"
+          subtitle="测试版：快照 shell 环境以加速重复命令。开启写入 shell_snapshot=true；"
+        >
+          <Switch
+            checked={boolOrDefault(codexConfig.features_shell_snapshot, false)}
+            onCheckedChange={(checked) =>
+              void persistCodexConfig({ features_shell_snapshot: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="unified_exec"
+          subtitle="测试版：使用统一的、基于 PTY 的 exec 工具。开启写入 unified_exec=true；"
+        >
+          <Switch
+            checked={boolOrDefault(codexConfig.features_unified_exec, false)}
+            onCheckedChange={(checked) =>
+              void persistCodexConfig({ features_unified_exec: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="shell_tool"
+          subtitle="稳定：启用默认 shell 工具。开启写入 shell_tool=true；"
+        >
+          <Switch
+            checked={boolOrDefault(codexConfig.features_shell_tool, false)}
+            onCheckedChange={(checked) => void persistCodexConfig({ features_shell_tool: checked })}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="exec_policy"
+          subtitle="实验性：对 shell/unified_exec 强制执行规则检查。开启写入 exec_policy=true；"
+        >
+          <Switch
+            checked={boolOrDefault(codexConfig.features_exec_policy, false)}
+            onCheckedChange={(checked) =>
+              void persistCodexConfig({ features_exec_policy: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="apply_patch_freeform"
+          subtitle="实验性：启用自由格式 apply_patch 工具。开启写入 apply_patch_freeform=true；"
+        >
+          <Switch
+            checked={boolOrDefault(codexConfig.features_apply_patch_freeform, false)}
+            onCheckedChange={(checked) =>
+              void persistCodexConfig({ features_apply_patch_freeform: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="remote_compaction"
+          subtitle="实验性：启用 remote compaction（需要 ChatGPT 身份验证）。开启写入 remote_compaction=true；"
+        >
+          <Switch
+            checked={boolOrDefault(codexConfig.features_remote_compaction, false)}
+            onCheckedChange={(checked) =>
+              void persistCodexConfig({ features_remote_compaction: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="fast_mode"
+          subtitle={
+            '实验性：启用快速模式。开启同时写入 fast_mode=true 与 service_tier="fast"；关闭删除这两项。'
+          }
+        >
+          <Switch
+            checked={effectiveFastModeEnabled}
+            onCheckedChange={(checked) => void persistCodexConfig(buildFastModePatch(checked))}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="responses_websockets_v2"
+          subtitle="实验性：启用 Responses API websocket 支持（需要中转站支持）。开启写入 responses_websockets_v2=true；关闭删除该项。"
+        >
+          <Switch
+            checked={boolOrDefault(codexConfig.features_responses_websockets_v2, false)}
+            onCheckedChange={(checked) =>
+              void persistCodexConfig({ features_responses_websockets_v2: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="multi_agent"
+          subtitle={
+            codexConfig.features_multi_agent == null
+              ? "实验性：通过并行生成多个专门化代理来协作完成复杂任务，最后整合结果。当前未设置，使用 Codex 默认行为。"
+              : "实验性：通过并行生成多个专门化代理来协作完成复杂任务，最后整合结果。开启写入 multi_agent=true；"
+          }
+        >
+          <Switch
+            checked={boolOrDefault(codexConfig.features_multi_agent, false)}
+            onCheckedChange={(checked) =>
+              void persistCodexConfig({ features_multi_agent: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+      </div>
+    </div>
+  );
+}
+
+function CodexTomlAdvancedSection({
+  codexConfig,
+  codexConfigToml,
+  codexConfigTomlLoading,
+  tomlAdvancedOpen,
+  tomlBusy,
+  tomlEditEnabled,
+  tomlDraft,
+  tomlDirty,
+  tomlValidating,
+  tomlValidation,
+  setTomlAdvancedOpen,
+  updateTomlState,
+  validateToml,
+  saveTomlDraft,
+}: {
+  codexConfig: CodexConfigState;
+  codexConfigToml: CodexConfigTomlState | null;
+  codexConfigTomlLoading: boolean;
+  tomlAdvancedOpen: boolean;
+  tomlBusy: boolean;
+  tomlEditEnabled: boolean;
+  tomlDraft: string;
+  tomlDirty: boolean;
+  tomlValidating: boolean;
+  tomlValidation: CodexConfigTomlValidationResult | null;
+  setTomlAdvancedOpen: (value: boolean) => void;
+  updateTomlState: UpdateTomlState;
+  validateToml: (toml: string) => Promise<CodexConfigTomlValidationResult | null>;
+  saveTomlDraft: () => Promise<void>;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <details
+        className="group"
+        onToggle={(e) => setTomlAdvancedOpen((e.currentTarget as HTMLDetailsElement).open)}
+      >
+        <summary className="cursor-pointer select-none text-sm font-semibold text-foreground flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <Settings className="h-4 w-4 text-muted-foreground" />
+            高级配置（config.toml）
+          </span>
+          <span className="text-xs font-normal text-muted-foreground">
+            仅在需要编辑原始 TOML 时使用
+          </span>
+        </summary>
+
+        {tomlAdvancedOpen ? (
+          <div className="mt-4 space-y-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="text-xs text-muted-foreground">路径</div>
+                <div className="mt-1 font-mono text-xs text-secondary-foreground truncate">
+                  {codexConfig.config_path ?? codexConfigToml?.config_path ?? "—"}
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    updateTomlState({
+                      tomlDraft: codexConfigToml?.toml ?? "",
+                      tomlDirty: false,
+                      tomlValidation: null,
+                    });
+                  }}
+                  disabled={tomlBusy || tomlEditEnabled}
+                >
+                  重新加载
+                </Button>
+
+                {!tomlEditEnabled ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => {
+                      updateTomlState({
+                        tomlEditEnabled: true,
+                        tomlDraft: codexConfigToml?.toml ?? "",
+                        tomlDirty: false,
+                        tomlValidation: null,
+                      });
+                      void validateToml(codexConfigToml?.toml ?? "");
+                    }}
+                    disabled={tomlBusy}
+                  >
+                    编辑
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        updateTomlState({
+                          tomlEditEnabled: false,
+                          tomlDraft: codexConfigToml?.toml ?? "",
+                          tomlDirty: false,
+                          tomlValidation: null,
+                        });
+                      }}
+                      disabled={tomlBusy}
+                    >
+                      取消
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => void saveTomlDraft()}
+                      disabled={
+                        tomlBusy ||
+                        tomlValidating ||
+                        !tomlDirty ||
+                        (tomlValidation ? !tomlValidation.ok : false)
+                      }
+                    >
+                      {tomlValidating ? "校验中…" : "保存"}
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {codexConfigTomlLoading ? (
+              <div className="text-sm text-muted-foreground py-6 text-center">加载中…</div>
+            ) : (
+              <Suspense
+                fallback={
+                  <div className="text-sm text-muted-foreground py-6 text-center">加载编辑器…</div>
+                }
+              >
+                <LazyCodeEditor
+                  value={tomlDraft}
+                  onChange={
+                    tomlEditEnabled
+                      ? (next) => {
+                          updateTomlState({ tomlDraft: next, tomlDirty: true });
+                        }
+                      : undefined
+                  }
+                  readOnly={!tomlEditEnabled || tomlBusy}
+                  language="toml"
+                  minHeight="260px"
+                  placeholder='例如：approval_policy = "on-request"'
+                />
+              </Suspense>
+            )}
+
+            {tomlValidation?.ok === false && tomlValidation.error ? (
+              <div className="rounded-lg bg-rose-50 dark:bg-rose-900/30 p-3 text-xs text-rose-700 dark:text-rose-400 flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <div className="font-semibold">TOML 校验失败</div>
+                  <div className="mt-1 break-words">
+                    {tomlValidation.error.message}
+                    {tomlValidation.error.line ? (
+                      <span className="ml-2 font-mono text-rose-600">
+                        (line {tomlValidation.error.line}
+                        {tomlValidation.error.column
+                          ? `, column ${tomlValidation.error.column}`
+                          : ""}
+                        )
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">
+                保存前会进行后端 TOML 校验；校验失败不会写入文件。
+              </div>
+            )}
+          </div>
+        ) : null}
+      </details>
+    </div>
+  );
+}
+
+function useCodexTabController({
   codexLoading,
   codexConfigLoading,
   codexConfigSaving,
   codexConfigTomlLoading,
   codexConfigTomlSaving,
   codexProviderSyncing = false,
+  codexModelCatalogLoading = false,
+  codexModelCatalogError = false,
   codexInfo,
   codexConfig,
   codexConfigToml,
+  codexModelCatalog = null,
   appSettings,
   commonSettingsSaving = false,
   codexHomeSettingsSaving = false,
   refreshCodex,
-  openCodexConfigDir,
   persistCodexConfig,
   persistCodexConfigToml,
   syncCodexProvider,
@@ -593,29 +2150,52 @@ export function CliManagerCodexTab({
   persistCodexOauthCompatibleProxyMode,
   pickCodexHomeDirectory,
 }: CliManagerCodexTabProps) {
+  const customHomeInputId = useId();
+  const [uiState, dispatchUiState] = useReducer(
+    codexTabUiReducer,
+    {
+      codexConfig,
+      codexConfigToml,
+      appSettings,
+    },
+    initCodexTabUiState
+  );
+  const {
+    versionRefreshToken,
+    codexDraft,
+    configLocationDraft,
+    selectingCodexHomeDir,
+    tomlAdvancedOpen,
+    tomlState,
+  } = uiState;
+  const codexConfigKey = buildCodexConfigKey(codexConfig);
+  let effectiveCodexDraft = codexDraft;
+
+  if (codexDraft.configKey !== codexConfigKey) {
+    effectiveCodexDraft = buildCodexConfigDraft(codexConfig);
+    dispatchUiState({ type: "setCodexDraft", draft: effectiveCodexDraft });
+  }
+
+  const configLocationKey = buildConfigLocationKey(appSettings);
+  let effectiveConfigLocationDraft = configLocationDraft;
+
+  if (configLocationDraft.settingsKey !== configLocationKey) {
+    effectiveConfigLocationDraft = buildConfigLocationDraft(appSettings);
+    dispatchUiState({ type: "setConfigLocationDraft", draft: effectiveConfigLocationDraft });
+  }
+
+  const nextTomlSourceKey = buildTomlSourceKey(codexConfigToml);
+  const nextTomlConfigPath = codexConfigToml?.config_path ?? null;
+  let effectiveTomlState = tomlState;
+
   const todayDate = useMemo(() => formatLocalDateInputValue(new Date()), []);
-  const [versionRefreshToken, setVersionRefreshToken] = useState(0);
-  const [modelText, setModelText] = useState("");
   const [providerTestModelText, setProviderTestModelText] = useState(
     DEFAULT_CODEX_PROVIDER_TEST_MODEL
   );
-  const [contextWindowText, setContextWindowText] = useState("");
-  const [autoCompactLimitText, setAutoCompactLimitText] = useState("");
-  const [sandboxModeText, setSandboxModeText] = useState("");
-  const [webSearchText, setWebSearchText] = useState("");
-  const [personalityText, setPersonalityText] = useState("none");
-  const [reasoningEffortText, setReasoningEffortText] = useState("");
-  const [planModeReasoningEffortText, setPlanModeReasoningEffortText] = useState("");
-  const [configLocationMode, setConfigLocationMode] = useState<CodexHomeMode>("user_home_default");
-  const [customHomeText, setCustomHomeText] = useState("");
-  const [configLocationError, setConfigLocationError] = useState<string | null>(null);
-  const [selectingCodexHomeDir, setSelectingCodexHomeDir] = useState(false);
-  const [codexReasoningGuardValuesText, setCodexReasoningGuardValuesText] = useState("");
-  const [codexReasoningGuardCompareMode, setCodexReasoningGuardCompareMode] =
-    useState<CodexReasoningGuardCompareMode>("equals");
-  const [codexReasoningGuardValuesError, setCodexReasoningGuardValuesError] = useState<
-    string | null
-  >(null);
+  const [codexReasoningGuardHitLabelText, setCodexReasoningGuardHitLabelText] =
+    useState("降智命中");
+  const [codexReasoningGuardRuleMode, setCodexReasoningGuardRuleMode] =
+    useState<CodexReasoningGuardRuleMode>(DEFAULT_CODEX_REASONING_GUARD_RULE_MODE);
   const [codexReasoningGuardImmediateBudgetText, setCodexReasoningGuardImmediateBudgetText] =
     useState(String(DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET));
   const [codexReasoningGuardDelayedBudgetText, setCodexReasoningGuardDelayedBudgetText] = useState(
@@ -626,6 +2206,10 @@ export function CliManagerCodexTab({
   );
   const [codexReasoningGuardExhaustedAction, setCodexReasoningGuardExhaustedAction] =
     useState<CodexReasoningGuardExhaustedAction>(DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION);
+  const [codexReasoningGuardPostMatchStrategy, setCodexReasoningGuardPostMatchStrategy] =
+    useState<CodexReasoningGuardPostMatchStrategy>(
+      DEFAULT_CODEX_REASONING_GUARD_POST_MATCH_STRATEGY
+    );
   const [codexReasoningGuardRetryPolicy, setCodexReasoningGuardRetryPolicy] =
     useState<CodexReasoningGuardRetryPolicy>(DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY);
   const [codexReasoningGuardConcurrentMaxText, setCodexReasoningGuardConcurrentMaxText] = useState(
@@ -641,7 +2225,14 @@ export function CliManagerCodexTab({
   ] = useState(String(DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS));
   const [codexReasoningGuardModelFallbacksText, setCodexReasoningGuardModelFallbacksText] =
     useState("");
+  const [
+    codexReasoningGuardContinuationMaxOutputTokensText,
+    setCodexReasoningGuardContinuationMaxOutputTokensText,
+  ] = useState(String(DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS));
   const [codexReasoningGuardBudgetError, setCodexReasoningGuardBudgetError] = useState<
+    string | null
+  >(null);
+  const [codexReasoningGuardContinuationError, setCodexReasoningGuardContinuationError] = useState<
     string | null
   >(null);
   const [codexReasoningGuardModelFallbacksError, setCodexReasoningGuardModelFallbacksError] =
@@ -659,42 +2250,118 @@ export function CliManagerCodexTab({
   const [codexReasoningGuardStatsRangeError, setCodexReasoningGuardStatsRangeError] = useState<
     string | null
   >(null);
-  const [codexReasoningGuardStatsRangePopoverOpen, setCodexReasoningGuardStatsRangePopoverOpen] =
-    useState(false);
-  const [codexReasoningGuardModelRuleDrafts, setCodexReasoningGuardModelRuleDrafts] = useState<
-    CodexReasoningGuardModelRuleDraft[]
-  >([]);
-  const [codexReasoningGuardModelRuleErrors, setCodexReasoningGuardModelRuleErrors] = useState<
-    Record<number, string>
-  >({});
-
-  const [tomlAdvancedOpen, setTomlAdvancedOpen] = useState(false);
-  const [tomlEditEnabled, setTomlEditEnabled] = useState(false);
-  const [tomlDraft, setTomlDraft] = useState("");
-  const [tomlDirty, setTomlDirty] = useState(false);
-  const [tomlValidating, setTomlValidating] = useState(false);
-  const [tomlValidation, setTomlValidation] = useState<CodexConfigTomlValidationResult | null>(
-    null
+  const [codexReasoningGuardStatsRangePopoverScope, setCodexReasoningGuardStatsRangePopoverScope] =
+    useState<CodexReasoningGuardStatsRangePopoverScope | null>(null);
+  const [codexReasoningGuardActiveTemplateId, setCodexReasoningGuardActiveTemplateId] = useState(
+    CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
   );
+  const [codexReasoningGuardCustomTemplates, setCodexReasoningGuardCustomTemplates] = useState<
+    CodexReasoningGuardRuleTemplate[]
+  >([]);
+  const [codexReasoningGuardTemplateError, setCodexReasoningGuardTemplateError] = useState<
+    string | null
+  >(null);
 
   const validateSeqRef = useRef(0);
   const validateTimerRef = useRef<number | null>(null);
-  const lastTomlConfigPathRef = useRef<string | null>(null);
+
+  if (
+    tomlState.configPath !== nextTomlConfigPath ||
+    (!tomlState.tomlDirty && tomlState.sourceKey !== nextTomlSourceKey)
+  ) {
+    if (tomlState.configPath !== nextTomlConfigPath) {
+      if (validateTimerRef.current) {
+        window.clearTimeout(validateTimerRef.current);
+        validateTimerRef.current = null;
+      }
+      validateSeqRef.current += 1;
+    }
+    effectiveTomlState = buildTomlDraftState(codexConfigToml);
+    dispatchUiState({ type: "setTomlState", state: effectiveTomlState });
+  }
+
+  const {
+    modelText,
+    contextWindowText,
+    autoCompactLimitText,
+    sandboxModeText,
+    webSearchText,
+    personalityText,
+    reasoningEffortText,
+    planModeReasoningEffortText,
+  } = effectiveCodexDraft;
+  const { configLocationMode, customHomeText, configLocationError } = effectiveConfigLocationDraft;
+  const { tomlDraft, tomlDirty, tomlValidating, tomlValidation, tomlEditEnabled } =
+    effectiveTomlState;
+
+  const modelMigration = useCodexModelMigration({
+    codexConfig,
+    codexInfo,
+    codexModelCatalog,
+    persistCodexConfig,
+  });
+  const reasoningResolution = useMemo(
+    () =>
+      resolveReasoningOptions(
+        modelMigration.catalog,
+        codexConfig?.model ?? "",
+        reasoningEffortText
+      ),
+    [codexConfig?.model, modelMigration.catalog, reasoningEffortText]
+  );
+  const modelSuggestions = useMemo(() => {
+    const seen = new Set<string>();
+    return (modelMigration.catalog?.models ?? []).filter((entry) => {
+      const model = entry.model.trim();
+      if (entry.hidden || !model || seen.has(model)) return false;
+      seen.add(model);
+      return true;
+    });
+  }, [modelMigration.catalog]);
+  const reasoningStatusText = codexModelCatalogLoading
+    ? "正在读取模型能力目录…"
+    : (modelMigration.statusText ??
+      (codexModelCatalogError
+        ? "读取模型能力失败，当前推理选项仅供编辑。"
+        : reasoningResolution.statusText));
+  const reasoningStatusRetryable =
+    !codexModelCatalogLoading &&
+    (codexModelCatalogError ||
+      codexModelCatalog?.status === "degraded" ||
+      codexModelCatalog?.status === "unavailable");
+  const ultraConflictWarning = ultraConflictText(
+    reasoningEffortText,
+    codexConfig?.features_multi_agent ?? null
+  );
+
+  function updateCodexDraft(patch: Partial<Omit<CodexConfigDraft, "configKey">>) {
+    dispatchUiState({ type: "patchCodexDraft", patch });
+  }
+
+  function updateConfigLocationDraft(patch: Partial<Omit<ConfigLocationDraft, "settingsKey">>) {
+    dispatchUiState({ type: "patchConfigLocationDraft", patch });
+  }
+
+  function updateTomlState(patch: Partial<Omit<TomlDraftState, "sourceKey" | "configPath">>) {
+    dispatchUiState({ type: "patchTomlState", patch });
+  }
 
   const validateToml = useCallback(
     async (toml: string): Promise<CodexConfigTomlValidationResult | null> => {
       const seq = validateSeqRef.current + 1;
       validateSeqRef.current = seq;
-      setTomlValidating(true);
+      dispatchUiState({ type: "patchTomlState", patch: { tomlValidating: true } });
       try {
-        const result = await cliManagerCodexConfigTomlValidate(toml);
         if (seq !== validateSeqRef.current) return null;
-        if (!result) return null;
-        setTomlValidation(result);
-        return result;
+        const result = await cliManagerCodexConfigTomlValidate(toml);
+        if (seq === validateSeqRef.current && result) {
+          dispatchUiState({ type: "patchTomlState", patch: { tomlValidation: result } });
+          return result;
+        }
+        return null;
       } finally {
         if (seq === validateSeqRef.current) {
-          setTomlValidating(false);
+          dispatchUiState({ type: "patchTomlState", patch: { tomlValidating: false } });
         }
       }
     },
@@ -702,98 +2369,95 @@ export function CliManagerCodexTab({
   );
 
   useEffect(() => {
-    if (!codexConfig) return;
-    setModelText(codexConfig.model ?? "");
-    setContextWindowText(
-      codexConfig.model_context_window != null ? String(codexConfig.model_context_window) : ""
-    );
-    setAutoCompactLimitText(
-      codexConfig.model_auto_compact_token_limit != null
-        ? String(codexConfig.model_auto_compact_token_limit)
-        : ""
-    );
-    setSandboxModeText(codexConfig.sandbox_mode ?? "");
-    setWebSearchText(codexConfig.web_search ?? "cached");
-    setPersonalityText(codexConfig.personality?.trim() || "none");
-    setReasoningEffortText(codexConfig.model_reasoning_effort ?? "");
-    setPlanModeReasoningEffortText(codexConfig.plan_mode_reasoning_effort ?? "");
-  }, [codexConfig]);
-
-  useEffect(() => {
     setProviderTestModelText(
       appSettings?.codex_provider_test_model?.trim() || DEFAULT_CODEX_PROVIDER_TEST_MODEL
     );
   }, [appSettings?.codex_provider_test_model]);
 
-  useEffect(() => {
-    const savedOverride = appSettings?.codex_home_override?.trim() ?? "";
-    const savedMode =
-      appSettings?.codex_home_mode ?? (savedOverride ? "custom" : "user_home_default");
-    setConfigLocationMode(savedMode);
-    setCustomHomeText(savedOverride);
-    setConfigLocationError(null);
-  }, [appSettings?.codex_home_mode, appSettings?.codex_home_override]);
-
   const syncCodexReasoningGuardDrafts = useCallback(
-    (source: AppSettings | null | undefined = appSettings) => {
-      const values =
-        source?.codex_reasoning_guard_reasoning_equals ??
-        DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS;
-      setCodexReasoningGuardValuesText(values.join(", "));
-      setCodexReasoningGuardCompareMode(source?.codex_reasoning_guard_compare_mode ?? "equals");
-      setCodexReasoningGuardImmediateBudgetText(
-        String(
-          source?.codex_reasoning_guard_immediate_retry_budget ??
-            DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
-        )
-      );
-      setCodexReasoningGuardDelayedBudgetText(
-        String(
-          source?.codex_reasoning_guard_delayed_retry_budget ??
-            DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET
-        )
-      );
-      setCodexReasoningGuardDelayedMsText(
-        String(
-          source?.codex_reasoning_guard_delayed_retry_ms ??
-            DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS
-        )
-      );
-      setCodexReasoningGuardExhaustedAction(
-        source?.codex_reasoning_guard_exhausted_action ??
-          DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION
-      );
-      setCodexReasoningGuardRetryPolicy(
-        source?.codex_reasoning_guard_retry_policy ?? DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY
-      );
-      setCodexReasoningGuardConcurrentMaxText(
-        String(
-          source?.codex_reasoning_guard_concurrent_max ??
-            DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX
-        )
-      );
-      setCodexReasoningGuardConcurrentIntervalMsText(
-        String(
-          source?.codex_reasoning_guard_concurrent_interval_ms ??
-            DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS
-        )
-      );
-      setCodexReasoningGuardConcurrentMaxAttemptsText(
-        String(
-          source?.codex_reasoning_guard_concurrent_max_attempts ??
-            DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
-        )
-      );
-      setCodexReasoningGuardModelFallbacksText(
-        formatCodexReasoningGuardModelFallbacks(source?.codex_reasoning_guard_model_fallbacks)
-      );
-      setCodexReasoningGuardValuesError(null);
-      setCodexReasoningGuardBudgetError(null);
-      setCodexReasoningGuardModelFallbacksError(null);
-      setCodexReasoningGuardModelRuleDrafts(
-        buildCodexReasoningGuardModelRuleDrafts(source?.codex_reasoning_guard_model_rules)
-      );
-      setCodexReasoningGuardModelRuleErrors({});
+    (
+      source: AppSettings | null | undefined = appSettings,
+      options: { includeGuard?: boolean } = {}
+    ) => {
+      const includeGuard = options.includeGuard ?? true;
+
+      if (includeGuard) {
+        setCodexReasoningGuardHitLabelText(
+          source?.codex_reasoning_guard_hit_label?.trim() || "降智命中"
+        );
+        setCodexReasoningGuardRuleMode(
+          source?.codex_reasoning_guard_rule_mode ?? DEFAULT_CODEX_REASONING_GUARD_RULE_MODE
+        );
+        setCodexReasoningGuardImmediateBudgetText(
+          String(
+            source?.codex_reasoning_guard_immediate_retry_budget ??
+              DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
+          )
+        );
+        setCodexReasoningGuardDelayedBudgetText(
+          String(
+            source?.codex_reasoning_guard_delayed_retry_budget ??
+              DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET
+          )
+        );
+        setCodexReasoningGuardDelayedMsText(
+          String(
+            source?.codex_reasoning_guard_delayed_retry_ms ??
+              DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS
+          )
+        );
+        setCodexReasoningGuardExhaustedAction(
+          source?.codex_reasoning_guard_exhausted_action ??
+            DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION
+        );
+        setCodexReasoningGuardPostMatchStrategy(
+          source?.codex_reasoning_guard_post_match_strategy ??
+            DEFAULT_CODEX_REASONING_GUARD_POST_MATCH_STRATEGY
+        );
+        setCodexReasoningGuardRetryPolicy(
+          source?.codex_reasoning_guard_retry_policy ?? DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY
+        );
+        setCodexReasoningGuardConcurrentMaxText(
+          String(
+            source?.codex_reasoning_guard_concurrent_max ??
+              DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX
+          )
+        );
+        setCodexReasoningGuardConcurrentIntervalMsText(
+          String(
+            source?.codex_reasoning_guard_concurrent_interval_ms ??
+              DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS
+          )
+        );
+        setCodexReasoningGuardConcurrentMaxAttemptsText(
+          String(
+            source?.codex_reasoning_guard_concurrent_max_attempts ??
+              DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
+          )
+        );
+        setCodexReasoningGuardModelFallbacksText(
+          formatCodexReasoningGuardModelFallbacks(source?.codex_reasoning_guard_model_fallbacks)
+        );
+        setCodexReasoningGuardContinuationMaxOutputTokensText(
+          String(
+            source?.codex_reasoning_guard_continuation_max_output_tokens ??
+              DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+          )
+        );
+        setCodexReasoningGuardBudgetError(null);
+        setCodexReasoningGuardContinuationError(null);
+        setCodexReasoningGuardModelFallbacksError(null);
+        const customTemplates = source?.codex_reasoning_guard_custom_templates ?? [];
+        const savedTemplateId =
+          source?.codex_reasoning_guard_active_template_id?.trim() ||
+          CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID;
+        const activeTemplateId =
+          resolveCodexReasoningGuardTemplateOption(savedTemplateId, customTemplates)?.id ??
+          CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID;
+        setCodexReasoningGuardCustomTemplates(customTemplates);
+        setCodexReasoningGuardActiveTemplateId(activeTemplateId);
+        setCodexReasoningGuardTemplateError(null);
+      }
     },
     [appSettings]
   );
@@ -804,22 +2468,22 @@ export function CliManagerCodexTab({
   }, [codexReasoningGuardDetailsOpen, appSettings, syncCodexReasoningGuardDrafts]);
 
   function readSavedConfigLocationState() {
-    const savedOverride = appSettings?.codex_home_override?.trim() ?? "";
-    const savedMode =
-      appSettings?.codex_home_mode ?? (savedOverride ? "custom" : "user_home_default");
+    const { savedMode, savedOverride } = readConfigLocationSettings(appSettings);
     return { savedMode, savedOverride };
   }
 
   function restoreSavedConfigLocationState() {
     const { savedMode, savedOverride } = readSavedConfigLocationState();
-    setConfigLocationMode(savedMode);
-    setCustomHomeText(savedOverride);
-    setConfigLocationError(null);
+    updateConfigLocationDraft({
+      configLocationMode: savedMode,
+      customHomeText: savedOverride,
+      configLocationError: null,
+    });
   }
 
   const saving = codexConfigSaving;
   const loading = codexLoading || codexConfigLoading;
-  const tomlBusy = codexConfigTomlLoading || codexConfigTomlSaving;
+  const tomlBusy = codexConfigSaving || codexConfigTomlLoading || codexConfigTomlSaving;
   const providerSyncControlsDisabled =
     codexConfigSaving || codexConfigTomlSaving || codexProviderSyncing || !syncCodexProvider;
   const configLocationBusy = saving || codexHomeSettingsSaving;
@@ -831,6 +2495,25 @@ export function CliManagerCodexTab({
     commonSettingsControlsDisabled || !persistCodexOauthCompatibleProxyMode;
   const reasoningGuardControlsDisabled =
     commonSettingsControlsDisabled || !persistCodexReasoningGuardSettings;
+  const codexReasoningGuardTemplateOptions = useMemo<CodexReasoningGuardTemplateOption[]>(
+    () => [
+      ...CODEX_REASONING_GUARD_BUILTIN_TEMPLATES,
+      ...codexReasoningGuardCustomTemplates.map((template) => ({
+        ...template,
+        source: "custom" as const,
+        readOnly: false,
+      })),
+    ],
+    [codexReasoningGuardCustomTemplates]
+  );
+  const codexReasoningGuardSelectedTemplate = useMemo(
+    () =>
+      resolveCodexReasoningGuardTemplateOption(
+        codexReasoningGuardActiveTemplateId,
+        codexReasoningGuardCustomTemplates
+      ) ?? CODEX_REASONING_GUARD_BUILTIN_TEMPLATES[0],
+    [codexReasoningGuardActiveTemplateId, codexReasoningGuardCustomTemplates]
+  );
   const codexReasoningGuardStatsRange = useMemo(
     () =>
       buildCodexReasoningGuardStatsRange(
@@ -856,10 +2539,11 @@ export function CliManagerCodexTab({
   const codexReasoningGuardStatsLoading = codexReasoningGuardStatsQuery.isFetching;
 
   async function refreshCodexStatus() {
+    if (saving) return;
     try {
       await refreshCodex();
     } finally {
-      setVersionRefreshToken((value) => value + 1);
+      dispatchUiState({ type: "incrementVersionRefreshToken" });
     }
   }
 
@@ -902,10 +2586,6 @@ export function CliManagerCodexTab({
       codexConfig.service_tier === FAST_SERVICE_TIER
     );
   }, [codexConfig]);
-
-  const showsGpt54LinkedSettings = useMemo(() => {
-    return isGpt54Model(modelText);
-  }, [modelText]);
 
   const configLocationPreviewPath = useMemo(() => {
     return buildConfigTomlPath(customHomeText);
@@ -1015,38 +2695,6 @@ export function CliManagerCodexTab({
   ]);
 
   useEffect(() => {
-    const nextPath = codexConfigToml?.config_path ?? null;
-    const prevPath = lastTomlConfigPathRef.current;
-
-    if (!nextPath) {
-      lastTomlConfigPathRef.current = null;
-      return;
-    }
-
-    if (prevPath && prevPath !== nextPath) {
-      if (validateTimerRef.current) {
-        window.clearTimeout(validateTimerRef.current);
-        validateTimerRef.current = null;
-      }
-
-      validateSeqRef.current += 1;
-      setTomlDraft(codexConfigToml?.toml ?? "");
-      setTomlDirty(false);
-      setTomlValidating(false);
-      setTomlValidation(null);
-      setTomlEditEnabled(false);
-    }
-
-    lastTomlConfigPathRef.current = nextPath;
-  }, [codexConfigToml?.config_path, codexConfigToml?.toml]);
-
-  useEffect(() => {
-    if (!codexConfigToml) return;
-    if (tomlDirty) return;
-    setTomlDraft(codexConfigToml.toml ?? "");
-  }, [codexConfigToml, tomlDirty]);
-
-  useEffect(() => {
     if (!tomlAdvancedOpen) return;
     if (!tomlEditEnabled) return;
     if (!tomlDirty) return;
@@ -1069,6 +2717,10 @@ export function CliManagerCodexTab({
 
   async function saveTomlDraft() {
     if (tomlBusy) return;
+    if (validateTimerRef.current) {
+      window.clearTimeout(validateTimerRef.current);
+      validateTimerRef.current = null;
+    }
     const result = await validateToml(tomlDraft);
     if (!result) return;
     if (!result.ok) return;
@@ -1076,8 +2728,7 @@ export function CliManagerCodexTab({
     const ok = await persistCodexConfigToml(tomlDraft);
     if (!ok) return;
 
-    setTomlEditEnabled(false);
-    setTomlDirty(false);
+    updateTomlState({ tomlEditEnabled: false, tomlDirty: false });
   }
 
   async function persistConfigLocation(
@@ -1090,10 +2741,10 @@ export function CliManagerCodexTab({
     const normalized = normalizeCustomCodexHome(trimmed);
     if (nextMode === "custom") {
       const error = validateCustomCodexHome(trimmed);
-      setConfigLocationError(error);
+      updateConfigLocationDraft({ configLocationError: error });
       if (error) return "validation_failed";
     } else {
-      setConfigLocationError(null);
+      updateConfigLocationDraft({ configLocationError: null });
     }
 
     const nextOverride = nextMode === "custom" ? normalized : "";
@@ -1102,18 +2753,19 @@ export function CliManagerCodexTab({
       return "persist_failed";
     }
 
-    setConfigLocationMode(nextMode);
-    setCustomHomeText(nextMode === "custom" ? nextOverride : "");
-    setConfigLocationError(null);
+    updateConfigLocationDraft({
+      configLocationMode: nextMode,
+      customHomeText: nextMode === "custom" ? nextOverride : "",
+      configLocationError: null,
+    });
     return "saved";
   }
 
   async function handleConfigLocationModeChange(nextMode: CodexHomeMode) {
-    setConfigLocationMode(nextMode);
+    updateConfigLocationDraft({ configLocationMode: nextMode });
 
     if (nextMode !== "custom") {
-      setCustomHomeText("");
-      setConfigLocationError(null);
+      updateConfigLocationDraft({ customHomeText: "", configLocationError: null });
       const result = await persistConfigLocation(nextMode, "");
       if (result === "persist_failed") {
         restoreSavedConfigLocationState();
@@ -1122,7 +2774,7 @@ export function CliManagerCodexTab({
     }
 
     const error = validateCustomCodexHome(customHomeText);
-    setConfigLocationError(error);
+    updateConfigLocationDraft({ configLocationError: error });
     if (error) {
       return;
     }
@@ -1134,9 +2786,11 @@ export function CliManagerCodexTab({
   }
 
   async function resetConfigLocation() {
-    setConfigLocationMode("user_home_default");
-    setCustomHomeText("");
-    setConfigLocationError(null);
+    updateConfigLocationDraft({
+      configLocationMode: "user_home_default",
+      customHomeText: "",
+      configLocationError: null,
+    });
     const result = await persistConfigLocation("user_home_default", "");
     if (result === "persist_failed") {
       restoreSavedConfigLocationState();
@@ -1147,17 +2801,16 @@ export function CliManagerCodexTab({
     if (!pickCodexHomeDirectory) return;
     if (configLocationControlsDisabled) return;
 
-    setSelectingCodexHomeDir(true);
+    dispatchUiState({ type: "setSelectingCodexHomeDir", value: true });
     try {
       const picked = await pickCodexHomeDirectory(configLocationBrowsePath || undefined);
       if (!picked) return;
 
       const normalized = normalizeCustomCodexHome(picked);
-      setConfigLocationMode("custom");
-      setCustomHomeText(normalized);
+      updateConfigLocationDraft({ configLocationMode: "custom", customHomeText: normalized });
 
       const error = validateCustomCodexHome(normalized);
-      setConfigLocationError(error);
+      updateConfigLocationDraft({ configLocationError: error });
       if (error) {
         return;
       }
@@ -1167,50 +2820,12 @@ export function CliManagerCodexTab({
         restoreSavedConfigLocationState();
       }
     } finally {
-      setSelectingCodexHomeDir(false);
+      dispatchUiState({ type: "setSelectingCodexHomeDir", value: false });
     }
   }
 
-  function parseCodexReasoningGuardValues(raw: string):
-    | { ok: true; values: number[] }
-    | {
-        ok: false;
-        message: string;
-      } {
-    const parts = raw
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
-    if (parts.length === 0) {
-      return { ok: false, message: "至少填写一个 reasoning_tokens 值。" };
-    }
-    if (parts.length > MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN) {
-      return {
-        ok: false,
-        message: `最多支持 ${MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN} 个值。`,
-      };
-    }
-
-    const values: number[] = [];
-    for (const part of parts) {
-      if (!/^\d+$/u.test(part)) {
-        return { ok: false, message: "只支持非负整数，多个值请用逗号分隔。" };
-      }
-      const next = Number(part);
-      if (
-        !Number.isSafeInteger(next) ||
-        next < 0 ||
-        next > MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE
-      ) {
-        return {
-          ok: false,
-          message: `取值范围必须在 0 到 ${MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE} 之间。`,
-        };
-      }
-      values.push(next);
-    }
-
-    return { ok: true, values };
+  function setTomlAdvancedOpen(value: boolean) {
+    dispatchUiState({ type: "setTomlAdvancedOpen", value });
   }
 
   function parseCodexReasoningGuardInteger(
@@ -1272,49 +2887,194 @@ export function CliManagerCodexTab({
     return { ok: true, models };
   }
 
-  function updateCodexReasoningGuardModelRuleDraft(
-    index: number,
-    patch: Partial<CodexReasoningGuardModelRuleDraft>
+  function selectCodexReasoningGuardTemplate(
+    templateId: string,
+    customTemplates = codexReasoningGuardCustomTemplates
   ) {
-    setCodexReasoningGuardModelRuleDrafts((prev) =>
-      prev.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
+    const nextTemplate =
+      resolveCodexReasoningGuardTemplateOption(templateId, customTemplates) ??
+      CODEX_REASONING_GUARD_BUILTIN_TEMPLATES[0];
+    setCodexReasoningGuardActiveTemplateId(nextTemplate.id);
+    setCodexReasoningGuardTemplateError(null);
+    setCodexReasoningGuardRuleMode(
+      nextTemplate.id === CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID
+        ? "final_answer_only_high_xhigh"
+        : "reasoning_tokens"
     );
-    setCodexReasoningGuardModelRuleErrors((prev) => {
-      if (!(index in prev)) return prev;
-      const next = { ...prev };
-      delete next[index];
-      return next;
+  }
+
+  function addCodexReasoningGuardCustomTemplate() {
+    if (codexReasoningGuardCustomTemplates.length >= MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES) {
+      setCodexReasoningGuardTemplateError(
+        `最多支持 ${MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES} 个自定义模板。`
+      );
+      return;
+    }
+    const nextTemplate = buildNewCodexReasoningGuardTemplate(codexReasoningGuardCustomTemplates);
+    const nextTemplates = [...codexReasoningGuardCustomTemplates, nextTemplate];
+    setCodexReasoningGuardCustomTemplates(nextTemplates);
+    selectCodexReasoningGuardTemplate(nextTemplate.id, nextTemplates);
+  }
+
+  function copySelectedCodexReasoningGuardTemplate() {
+    if (codexReasoningGuardCustomTemplates.length >= MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES) {
+      setCodexReasoningGuardTemplateError(
+        `最多支持 ${MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES} 个自定义模板。`
+      );
+      return;
+    }
+    const nextTemplate = copyCodexReasoningGuardTemplateAsCustom(
+      codexReasoningGuardSelectedTemplate,
+      codexReasoningGuardCustomTemplates
+    );
+    const nextTemplates = [...codexReasoningGuardCustomTemplates, nextTemplate];
+    setCodexReasoningGuardCustomTemplates(nextTemplates);
+    selectCodexReasoningGuardTemplate(nextTemplate.id, nextTemplates);
+  }
+
+  function deleteSelectedCodexReasoningGuardTemplate() {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    const nextTemplates = codexReasoningGuardCustomTemplates.filter(
+      (template) => template.id !== codexReasoningGuardSelectedTemplate.id
+    );
+    setCodexReasoningGuardCustomTemplates(nextTemplates);
+    selectCodexReasoningGuardTemplate(
+      CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
+      nextTemplates
+    );
+  }
+
+  function updateSelectedCodexReasoningGuardTemplate(
+    patch: Partial<CodexReasoningGuardRuleTemplate>
+  ) {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    setCodexReasoningGuardCustomTemplates((prev) =>
+      prev.map((template) =>
+        template.id === codexReasoningGuardSelectedTemplate.id
+          ? { ...template, ...patch }
+          : template
+      )
+    );
+    if (patch.id != null) {
+      setCodexReasoningGuardActiveTemplateId(patch.id);
+    }
+    setCodexReasoningGuardTemplateError(null);
+  }
+
+  function updateSelectedCodexReasoningGuardTemplateRule(
+    ruleIndex: number,
+    patch: Partial<CodexReasoningGuardTemplateRule>
+  ) {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    updateSelectedCodexReasoningGuardTemplate({
+      rules: codexReasoningGuardSelectedTemplate.rules.map((rule, index) =>
+        index === ruleIndex ? { ...rule, ...patch } : rule
+      ),
     });
   }
 
-  function addCodexReasoningGuardModelRuleDraft() {
-    setCodexReasoningGuardModelRuleDrafts((prev) => {
-      if (prev.length >= MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN) {
-        return prev;
-      }
-      return [
-        ...prev,
-        {
-          requestedModel: "",
-          compareMode: "equals",
-          valuesText: "516",
-        },
-      ];
+  function updateSelectedCodexReasoningGuardTemplateRuleToken(ruleIndex: number, value: string) {
+    const raw = value.trim();
+    if (raw === "") {
+      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+        reasoning_tokens: null,
+        reasoning_tokens_formula: null,
+      });
+      return;
+    }
+    const parsed = Number(raw);
+    if (
+      !Number.isInteger(parsed) ||
+      parsed < 0 ||
+      parsed > MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE
+    ) {
+      setCodexReasoningGuardTemplateError(
+        `token 匹配必须是 0 到 ${MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE} 之间的整数；留空才表示 wildcard。`
+      );
+      return;
+    }
+    updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+      reasoning_tokens: parsed,
+      reasoning_tokens_formula: null,
     });
   }
 
-  function removeCodexReasoningGuardModelRuleDraft(index: number) {
-    setCodexReasoningGuardModelRuleDrafts((prev) =>
-      prev.filter((_, itemIndex) => itemIndex !== index)
-    );
-    setCodexReasoningGuardModelRuleErrors((prev) => {
-      const next: Record<number, string> = {};
-      for (const [key, value] of Object.entries(prev)) {
-        const numericKey = Number(key);
-        if (numericKey === index) continue;
-        next[numericKey > index ? numericKey - 1 : numericKey] = value;
-      }
-      return next;
+  function addCodexReasoningGuardTemplateRule() {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    if (
+      codexReasoningGuardSelectedTemplate.rules.length >= MAX_CODEX_REASONING_GUARD_TEMPLATE_RULES
+    ) {
+      setCodexReasoningGuardTemplateError(
+        `最多支持 ${MAX_CODEX_REASONING_GUARD_TEMPLATE_RULES} 条规则。`
+      );
+      return;
+    }
+    const nextIndex = codexReasoningGuardSelectedTemplate.rules.length + 1;
+    updateSelectedCodexReasoningGuardTemplate({
+      rules: [
+        ...codexReasoningGuardSelectedTemplate.rules,
+        buildCodexReasoningGuardRule(`rule-${nextIndex}`),
+      ],
+    });
+  }
+
+  function removeCodexReasoningGuardTemplateRule(ruleIndex: number) {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    updateSelectedCodexReasoningGuardTemplate({
+      rules: codexReasoningGuardSelectedTemplate.rules.filter((_, index) => index !== ruleIndex),
+    });
+  }
+
+  function moveCodexReasoningGuardTemplateRule(ruleIndex: number, direction: -1 | 1) {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    const targetIndex = ruleIndex + direction;
+    if (targetIndex < 0 || targetIndex >= codexReasoningGuardSelectedTemplate.rules.length) return;
+    const nextRules = [...codexReasoningGuardSelectedTemplate.rules];
+    const [rule] = nextRules.splice(ruleIndex, 1);
+    nextRules.splice(targetIndex, 0, rule);
+    updateSelectedCodexReasoningGuardTemplate({ rules: nextRules });
+  }
+
+  function updateCodexReasoningGuardTemplateFilter(
+    ruleIndex: number,
+    filterIndex: number,
+    patch: Partial<CodexReasoningGuardTemplateFilter>
+  ) {
+    const rule = codexReasoningGuardSelectedTemplate.rules[ruleIndex];
+    if (!rule || codexReasoningGuardSelectedTemplate.readOnly) return;
+    updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+      filters: rule.filters.map((filter, index) => {
+        if (index !== filterIndex) return filter;
+        const nextFilter = { ...filter, ...patch };
+        return normalizeCodexReasoningGuardFilterForField(nextFilter, nextFilter.field);
+      }),
+    });
+  }
+
+  function addCodexReasoningGuardTemplateFilter(ruleIndex: number) {
+    const rule = codexReasoningGuardSelectedTemplate.rules[ruleIndex];
+    if (!rule || codexReasoningGuardSelectedTemplate.readOnly) return;
+    if (rule.filters.length >= MAX_CODEX_REASONING_GUARD_TEMPLATE_RULE_FILTERS) {
+      setCodexReasoningGuardTemplateError(
+        `每条规则最多支持 ${MAX_CODEX_REASONING_GUARD_TEMPLATE_RULE_FILTERS} 个过滤器。`
+      );
+      return;
+    }
+    updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+      filters: [
+        ...rule.filters,
+        buildCodexReasoningGuardFilter(
+          `${rule.id || `rule-${ruleIndex + 1}`}-filter-${rule.filters.length + 1}`
+        ),
+      ],
+    });
+  }
+
+  function removeCodexReasoningGuardTemplateFilter(ruleIndex: number, filterIndex: number) {
+    const rule = codexReasoningGuardSelectedTemplate.rules[ruleIndex];
+    if (!rule || codexReasoningGuardSelectedTemplate.readOnly) return;
+    updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+      filters: rule.filters.filter((_, index) => index !== filterIndex),
     });
   }
 
@@ -1332,7 +3092,7 @@ export function CliManagerCodexTab({
       startDate: codexReasoningGuardStartDate,
       endDate: codexReasoningGuardEndDate,
     });
-    setCodexReasoningGuardStatsRangePopoverOpen(false);
+    setCodexReasoningGuardStatsRangePopoverScope(null);
   }
 
   function applyCodexReasoningGuardStatsPreset(preset: CodexReasoningGuardStatsPreset) {
@@ -1341,7 +3101,7 @@ export function CliManagerCodexTab({
     setCodexReasoningGuardEndDate(nextRange.endDate);
     setCodexReasoningGuardAppliedDateRange(nextRange);
     setCodexReasoningGuardStatsRangeError(null);
-    setCodexReasoningGuardStatsRangePopoverOpen(false);
+    setCodexReasoningGuardStatsRangePopoverScope(null);
   }
 
   function updateCodexReasoningGuardStatsStartDate(value: string) {
@@ -1358,38 +3118,52 @@ export function CliManagerCodexTab({
     }
   }
 
-  function renderCodexReasoningGuardStatsRangeControls(label = "时间范围:") {
+  function renderCodexReasoningGuardStatsRangeControls(
+    label = "时间范围:",
+    options?: {
+      ariaLabel?: string;
+      dateInputLabelPrefix?: string;
+      popoverPortalled?: boolean;
+      scope?: CodexReasoningGuardStatsRangePopoverScope;
+    }
+  ) {
+    const scope = options?.scope ?? "overview";
     return (
       <CodexReasoningGuardStatsRangeControls
+        ariaLabel={options?.ariaLabel}
+        dateInputLabelPrefix={options?.dateInputLabelPrefix}
         label={label}
         startDate={codexReasoningGuardStartDate}
         endDate={codexReasoningGuardEndDate}
         appliedLabel={codexReasoningGuardStatsRangeLabel}
         error={codexReasoningGuardStatsRangeError}
-        popoverOpen={codexReasoningGuardStatsRangePopoverOpen}
+        popoverOpen={codexReasoningGuardStatsRangePopoverScope === scope}
         fetching={codexReasoningGuardStatsQuery.isFetching}
-        onPopoverOpenChange={setCodexReasoningGuardStatsRangePopoverOpen}
+        onPopoverOpenChange={(open) =>
+          setCodexReasoningGuardStatsRangePopoverScope((current) =>
+            open ? scope : current === scope ? null : current
+          )
+        }
         onStartDateChange={updateCodexReasoningGuardStatsStartDate}
         onEndDateChange={updateCodexReasoningGuardStatsEndDate}
         onPreset={applyCodexReasoningGuardStatsPreset}
         onApply={applyCodexReasoningGuardStatsDateRange}
         onRefresh={() => void codexReasoningGuardStatsQuery.refetch()}
+        popoverPortalled={options?.popoverPortalled}
       />
     );
   }
 
   async function saveCodexReasoningGuardRules() {
     if (!appSettings || !persistCodexReasoningGuardSettings) return;
-
-    const parsedGlobalValues = parseCodexReasoningGuardValues(codexReasoningGuardValuesText);
-    if (!parsedGlobalValues.ok) {
-      setCodexReasoningGuardValuesError(parsedGlobalValues.message);
-      return;
-    }
+    if (codexReasoningGuardTemplateError) return;
+    const normalizedHitLabel = codexReasoningGuardHitLabelText.trim() || "降智命中";
 
     const parsedImmediateBudget = parseCodexReasoningGuardInteger(
       codexReasoningGuardImmediateBudgetText,
-      "立即重试预算",
+      isCodexReasoningGuardContinuationStrategy(codexReasoningGuardPostMatchStrategy)
+        ? "思考续写次数"
+        : "立即重试预算",
       MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
     );
     if (!parsedImmediateBudget.ok) {
@@ -1456,54 +3230,43 @@ export function CliManagerCodexTab({
       return;
     }
 
-    const nextRuleErrors: Record<number, string> = {};
-    const nextModelRules: CodexReasoningGuardModelRule[] = [];
-    const seenModels = new Set<string>();
-
-    for (const [index, draft] of codexReasoningGuardModelRuleDrafts.entries()) {
-      const requestedModel = draft.requestedModel.trim();
-      if (!requestedModel) {
-        nextRuleErrors[index] = "请填写模型名。";
-        continue;
-      }
-      if (requestedModel.length > MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN) {
-        nextRuleErrors[index] = `模型名必须 <= ${MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN} 字符。`;
-        continue;
-      }
-      if (/[\u0000-\u001f\u007f-\u009f]/u.test(requestedModel)) {
-        nextRuleErrors[index] = "模型名不能包含控制字符。";
-        continue;
-      }
-      if (seenModels.has(requestedModel)) {
-        nextRuleErrors[index] = "模型规则不能重复。";
-        continue;
-      }
-
-      const parsedValues = parseCodexReasoningGuardValues(draft.valuesText);
-      if (!parsedValues.ok) {
-        nextRuleErrors[index] = parsedValues.message;
-        continue;
-      }
-
-      seenModels.add(requestedModel);
-      nextModelRules.push({
-        requested_model: requestedModel,
-        compare_mode: draft.compareMode,
-        reasoning_equals: parsedValues.values,
-      });
-    }
-
-    if (Object.keys(nextRuleErrors).length > 0) {
-      setCodexReasoningGuardValuesError(null);
-      setCodexReasoningGuardModelRuleErrors(nextRuleErrors);
+    const parsedContinuationMaxOutputTokens = parseCodexReasoningGuardInteger(
+      codexReasoningGuardContinuationMaxOutputTokensText,
+      "继续思考最大 output tokens",
+      MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+    );
+    if (!parsedContinuationMaxOutputTokens.ok) {
+      setCodexReasoningGuardContinuationError(parsedContinuationMaxOutputTokens.message);
       return;
     }
 
-    setCodexReasoningGuardValuesError(null);
+    const nextActiveTemplateId =
+      resolveCodexReasoningGuardTemplateOption(
+        codexReasoningGuardActiveTemplateId,
+        codexReasoningGuardCustomTemplates
+      )?.id ?? CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID;
+    const validationMessage = validateSettingsSetInput({
+      codexReasoningGuardActiveTemplateId: nextActiveTemplateId,
+      codexReasoningGuardCustomTemplates: codexReasoningGuardCustomTemplates,
+      codexReasoningGuardPostMatchStrategy: codexReasoningGuardPostMatchStrategy,
+      codexReasoningGuardContinuationMaxOutputTokens: parsedContinuationMaxOutputTokens.value,
+    });
+    if (validationMessage) {
+      setCodexReasoningGuardTemplateError(validationMessage);
+      return;
+    }
+    let nextRuleMode: CodexReasoningGuardRuleMode = codexReasoningGuardRuleMode;
+    if (nextActiveTemplateId === CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID) {
+      nextRuleMode = "final_answer_only_high_xhigh";
+    } else {
+      nextRuleMode = "reasoning_tokens";
+    }
+
     setCodexReasoningGuardBudgetError(null);
+    setCodexReasoningGuardContinuationError(null);
     setCodexReasoningGuardModelFallbacksError(null);
-    setCodexReasoningGuardModelRuleErrors({});
-    setCodexReasoningGuardValuesText(parsedGlobalValues.values.join(", "));
+    setCodexReasoningGuardTemplateError(null);
+    setCodexReasoningGuardHitLabelText(normalizedHitLabel);
     setCodexReasoningGuardImmediateBudgetText(String(parsedImmediateBudget.value));
     setCodexReasoningGuardDelayedBudgetText(String(parsedDelayedBudget.value));
     setCodexReasoningGuardDelayedMsText(String(parsedDelayedMs.value));
@@ -1513,12 +3276,18 @@ export function CliManagerCodexTab({
     setCodexReasoningGuardModelFallbacksText(
       formatCodexReasoningGuardModelFallbacks(parsedFallbackModels.models)
     );
-    setCodexReasoningGuardModelRuleDrafts(buildCodexReasoningGuardModelRuleDrafts(nextModelRules));
+    setCodexReasoningGuardContinuationMaxOutputTokensText(
+      String(parsedContinuationMaxOutputTokens.value)
+    );
+    setCodexReasoningGuardActiveTemplateId(nextActiveTemplateId);
+    setCodexReasoningGuardRuleMode(nextRuleMode);
 
     const saved = await persistCodexReasoningGuardSettings({
-      codex_reasoning_guard_compare_mode: codexReasoningGuardCompareMode,
-      codex_reasoning_guard_reasoning_equals: parsedGlobalValues.values,
-      codex_reasoning_guard_model_rules: nextModelRules,
+      codex_reasoning_guard_hit_label: normalizedHitLabel,
+      codex_reasoning_guard_rule_mode: nextRuleMode,
+      codex_reasoning_guard_active_template_id: nextActiveTemplateId,
+      codex_reasoning_guard_custom_templates: codexReasoningGuardCustomTemplates,
+      codex_reasoning_guard_post_match_strategy: codexReasoningGuardPostMatchStrategy,
       codex_reasoning_guard_immediate_retry_budget: parsedImmediateBudget.value,
       codex_reasoning_guard_delayed_retry_budget: parsedDelayedBudget.value,
       codex_reasoning_guard_delayed_retry_ms: parsedDelayedMs.value,
@@ -1528,6 +3297,10 @@ export function CliManagerCodexTab({
       codex_reasoning_guard_concurrent_interval_ms: parsedConcurrentIntervalMs.value,
       codex_reasoning_guard_concurrent_max_attempts: parsedConcurrentMaxAttempts.value,
       codex_reasoning_guard_model_fallbacks: parsedFallbackModels.models,
+      codex_reasoning_guard_continuation_repair_enabled: isCodexReasoningGuardContinuationStrategy(
+        codexReasoningGuardPostMatchStrategy
+      ),
+      codex_reasoning_guard_continuation_max_output_tokens: parsedContinuationMaxOutputTokens.value,
     });
     if (!saved) {
       syncCodexReasoningGuardDrafts(appSettings);
@@ -1566,327 +3339,377 @@ export function CliManagerCodexTab({
     return codexReasoningGuardModelStats.find((row) => row.hit_request_count > 0) ?? null;
   }, [codexReasoningGuardModelStats]);
 
+  const codexReasoningContinuationStatusStats = useMemo(() => {
+    return [...(codexReasoningGuardStats?.continuation_by_status ?? [])].sort((left, right) => {
+      if (left.attempt_count !== right.attempt_count) {
+        return right.attempt_count - left.attempt_count;
+      }
+      if (left.request_count !== right.request_count) {
+        return right.request_count - left.request_count;
+      }
+      return left.status.localeCompare(right.status);
+    });
+  }, [codexReasoningGuardStats?.continuation_by_status]);
+  return {
+    customHomeInputId,
+    versionRefreshToken,
+    modelText,
+    contextWindowText,
+    autoCompactLimitText,
+    sandboxModeText,
+    webSearchText,
+    personalityText,
+    reasoningEffortText,
+    planModeReasoningEffortText,
+    configLocationMode,
+    customHomeText,
+    configLocationError,
+    selectingCodexHomeDir,
+    tomlAdvancedOpen,
+    tomlDraft,
+    tomlDirty,
+    tomlValidating,
+    tomlValidation,
+    tomlEditEnabled,
+    saving,
+    loading,
+    tomlBusy,
+    configLocationControlsDisabled,
+    proxyModeControlsDisabled,
+    effectiveSandboxMode,
+    effectiveFastModeEnabled,
+    modelSuggestions,
+    reasoningOptions: reasoningResolution.options,
+    reasoningStatusText,
+    reasoningStatusRetryable,
+    ultraConflictText: ultraConflictWarning,
+    onModelInputChange: modelMigration.onModelInputChange,
+    onEffortInputChange: modelMigration.onEffortInputChange,
+    persistModel: modelMigration.persistModel,
+    configLocationPreviewPath,
+    userDefaultResolvedHomeDir,
+    followCodexHomeResolvedDir,
+    followModeMatchesDefault,
+    followModeLabel,
+    configLocationSummaryText,
+    activeConfigDirSummaryText,
+    activeConfigModeBadgeText,
+    activeConfigDirPrimaryText,
+    refreshCodexStatus,
+    updateCodexDraft,
+    updateConfigLocationDraft,
+    updateTomlState,
+    validateToml,
+    saveTomlDraft,
+    persistConfigLocation,
+    restoreSavedConfigLocationState,
+    handleConfigLocationModeChange,
+    resetConfigLocation,
+    handlePickCustomHome,
+    setTomlAdvancedOpen,
+    providerTestModelText,
+    setProviderTestModelText,
+    providerSyncControlsDisabled,
+    providerTestModelControlsDisabled,
+    reasoningGuardControlsDisabled,
+    codexReasoningGuardHitLabelText,
+    setCodexReasoningGuardHitLabelText,
+    codexReasoningGuardImmediateBudgetText,
+    setCodexReasoningGuardImmediateBudgetText,
+    codexReasoningGuardDelayedBudgetText,
+    setCodexReasoningGuardDelayedBudgetText,
+    codexReasoningGuardDelayedMsText,
+    setCodexReasoningGuardDelayedMsText,
+    codexReasoningGuardExhaustedAction,
+    setCodexReasoningGuardExhaustedAction,
+    codexReasoningGuardPostMatchStrategy,
+    setCodexReasoningGuardPostMatchStrategy,
+    codexReasoningGuardRetryPolicy,
+    setCodexReasoningGuardRetryPolicy,
+    codexReasoningGuardConcurrentMaxText,
+    setCodexReasoningGuardConcurrentMaxText,
+    codexReasoningGuardConcurrentIntervalMsText,
+    setCodexReasoningGuardConcurrentIntervalMsText,
+    codexReasoningGuardConcurrentMaxAttemptsText,
+    setCodexReasoningGuardConcurrentMaxAttemptsText,
+    codexReasoningGuardModelFallbacksText,
+    setCodexReasoningGuardModelFallbacksText,
+    codexReasoningGuardContinuationMaxOutputTokensText,
+    setCodexReasoningGuardContinuationMaxOutputTokensText,
+    codexReasoningGuardBudgetError,
+    setCodexReasoningGuardBudgetError,
+    codexReasoningGuardContinuationError,
+    setCodexReasoningGuardContinuationError,
+    codexReasoningGuardModelFallbacksError,
+    setCodexReasoningGuardModelFallbacksError,
+    codexReasoningGuardDetailsOpen,
+    setCodexReasoningGuardDetailsOpen,
+    codexReasoningGuardDetailsTab,
+    setCodexReasoningGuardDetailsTab,
+    setCodexReasoningGuardStatsRangePopoverScope,
+    codexReasoningGuardCustomTemplates,
+    codexReasoningGuardTemplateError,
+    codexReasoningGuardTemplateOptions,
+    codexReasoningGuardSelectedTemplate,
+    codexReasoningGuardStatsRangeLabel,
+    codexReasoningGuardStatsRangeDescription,
+    codexReasoningGuardStats,
+    codexReasoningGuardStatsLoading,
+    codexReasoningGuardModelStats,
+    codexReasoningGuardModelEffortStats,
+    codexReasoningGuardTopHitModel,
+    codexReasoningContinuationStatusStats,
+    saveProviderTestModel,
+    syncCodexReasoningGuardDrafts,
+    selectCodexReasoningGuardTemplate,
+    addCodexReasoningGuardCustomTemplate,
+    copySelectedCodexReasoningGuardTemplate,
+    deleteSelectedCodexReasoningGuardTemplate,
+    updateSelectedCodexReasoningGuardTemplate,
+    updateSelectedCodexReasoningGuardTemplateRule,
+    updateSelectedCodexReasoningGuardTemplateRuleToken,
+    addCodexReasoningGuardTemplateRule,
+    removeCodexReasoningGuardTemplateRule,
+    moveCodexReasoningGuardTemplateRule,
+    updateCodexReasoningGuardTemplateFilter,
+    addCodexReasoningGuardTemplateFilter,
+    removeCodexReasoningGuardTemplateFilter,
+    renderCodexReasoningGuardStatsRangeControls,
+    saveCodexReasoningGuardRules,
+  };
+}
+
+export function CliManagerCodexTab({
+  codexAvailable,
+  codexLoading,
+  codexConfigLoading,
+  codexConfigSaving,
+  codexConfigTomlLoading,
+  codexConfigTomlSaving,
+  codexProviderSyncing = false,
+  codexModelCatalogLoading = false,
+  codexModelCatalogError = false,
+  codexInfo,
+  codexConfig,
+  codexConfigToml,
+  codexModelCatalog = null,
+  appSettings,
+  commonSettingsSaving = false,
+  codexHomeSettingsSaving = false,
+  refreshCodex,
+  openCodexConfigDir,
+  persistCodexConfig,
+  persistCodexConfigToml,
+  syncCodexProvider,
+  persistCommonSettings,
+  persistCodexReasoningGuardSettings,
+  persistCodexHomeSettings,
+  persistCodexOauthCompatibleProxyMode,
+  pickCodexHomeDirectory,
+}: CliManagerCodexTabProps) {
+  const {
+    customHomeInputId,
+    versionRefreshToken,
+    modelText,
+    contextWindowText,
+    autoCompactLimitText,
+    sandboxModeText,
+    webSearchText,
+    personalityText,
+    reasoningEffortText,
+    planModeReasoningEffortText,
+    configLocationMode,
+    customHomeText,
+    configLocationError,
+    selectingCodexHomeDir,
+    tomlAdvancedOpen,
+    tomlDraft,
+    tomlDirty,
+    tomlValidating,
+    tomlValidation,
+    tomlEditEnabled,
+    saving,
+    loading,
+    tomlBusy,
+    configLocationControlsDisabled,
+    proxyModeControlsDisabled,
+    effectiveSandboxMode,
+    effectiveFastModeEnabled,
+    modelSuggestions,
+    reasoningOptions,
+    reasoningStatusText,
+    reasoningStatusRetryable,
+    ultraConflictText,
+    onModelInputChange,
+    onEffortInputChange,
+    persistModel,
+    configLocationPreviewPath,
+    userDefaultResolvedHomeDir,
+    followCodexHomeResolvedDir,
+    followModeMatchesDefault,
+    followModeLabel,
+    configLocationSummaryText,
+    activeConfigDirSummaryText,
+    activeConfigModeBadgeText,
+    activeConfigDirPrimaryText,
+    refreshCodexStatus,
+    updateCodexDraft,
+    updateConfigLocationDraft,
+    updateTomlState,
+    validateToml,
+    saveTomlDraft,
+    persistConfigLocation,
+    restoreSavedConfigLocationState,
+    handleConfigLocationModeChange,
+    resetConfigLocation,
+    handlePickCustomHome,
+    setTomlAdvancedOpen,
+    providerTestModelText,
+    setProviderTestModelText,
+    providerSyncControlsDisabled,
+    providerTestModelControlsDisabled,
+    reasoningGuardControlsDisabled,
+    codexReasoningGuardHitLabelText,
+    setCodexReasoningGuardHitLabelText,
+    codexReasoningGuardImmediateBudgetText,
+    setCodexReasoningGuardImmediateBudgetText,
+    codexReasoningGuardDelayedBudgetText,
+    setCodexReasoningGuardDelayedBudgetText,
+    codexReasoningGuardDelayedMsText,
+    setCodexReasoningGuardDelayedMsText,
+    codexReasoningGuardExhaustedAction,
+    setCodexReasoningGuardExhaustedAction,
+    codexReasoningGuardPostMatchStrategy,
+    setCodexReasoningGuardPostMatchStrategy,
+    codexReasoningGuardRetryPolicy,
+    setCodexReasoningGuardRetryPolicy,
+    codexReasoningGuardConcurrentMaxText,
+    setCodexReasoningGuardConcurrentMaxText,
+    codexReasoningGuardConcurrentIntervalMsText,
+    setCodexReasoningGuardConcurrentIntervalMsText,
+    codexReasoningGuardConcurrentMaxAttemptsText,
+    setCodexReasoningGuardConcurrentMaxAttemptsText,
+    codexReasoningGuardModelFallbacksText,
+    setCodexReasoningGuardModelFallbacksText,
+    codexReasoningGuardContinuationMaxOutputTokensText,
+    setCodexReasoningGuardContinuationMaxOutputTokensText,
+    codexReasoningGuardBudgetError,
+    setCodexReasoningGuardBudgetError,
+    codexReasoningGuardContinuationError,
+    setCodexReasoningGuardContinuationError,
+    codexReasoningGuardModelFallbacksError,
+    setCodexReasoningGuardModelFallbacksError,
+    codexReasoningGuardDetailsOpen,
+    setCodexReasoningGuardDetailsOpen,
+    codexReasoningGuardDetailsTab,
+    setCodexReasoningGuardDetailsTab,
+    setCodexReasoningGuardStatsRangePopoverScope,
+    codexReasoningGuardCustomTemplates,
+    codexReasoningGuardTemplateError,
+    codexReasoningGuardTemplateOptions,
+    codexReasoningGuardSelectedTemplate,
+    codexReasoningGuardStatsRangeLabel,
+    codexReasoningGuardStatsRangeDescription,
+    codexReasoningGuardStats,
+    codexReasoningGuardStatsLoading,
+    codexReasoningGuardModelStats,
+    codexReasoningGuardModelEffortStats,
+    codexReasoningGuardTopHitModel,
+    codexReasoningContinuationStatusStats,
+    saveProviderTestModel,
+    syncCodexReasoningGuardDrafts,
+    selectCodexReasoningGuardTemplate,
+    addCodexReasoningGuardCustomTemplate,
+    copySelectedCodexReasoningGuardTemplate,
+    deleteSelectedCodexReasoningGuardTemplate,
+    updateSelectedCodexReasoningGuardTemplate,
+    updateSelectedCodexReasoningGuardTemplateRule,
+    updateSelectedCodexReasoningGuardTemplateRuleToken,
+    addCodexReasoningGuardTemplateRule,
+    removeCodexReasoningGuardTemplateRule,
+    moveCodexReasoningGuardTemplateRule,
+    updateCodexReasoningGuardTemplateFilter,
+    addCodexReasoningGuardTemplateFilter,
+    removeCodexReasoningGuardTemplateFilter,
+    renderCodexReasoningGuardStatsRangeControls,
+    saveCodexReasoningGuardRules,
+  } = useCodexTabController({
+    codexAvailable,
+    codexLoading,
+    codexConfigLoading,
+    codexConfigSaving,
+    codexConfigTomlLoading,
+    codexConfigTomlSaving,
+    codexProviderSyncing,
+    codexModelCatalogLoading,
+    codexModelCatalogError,
+    codexInfo,
+    codexConfig,
+    codexConfigToml,
+    codexModelCatalog,
+    appSettings,
+    commonSettingsSaving,
+    codexHomeSettingsSaving,
+    refreshCodex,
+    openCodexConfigDir,
+    persistCodexConfig,
+    persistCodexConfigToml,
+    syncCodexProvider,
+    persistCommonSettings,
+    persistCodexReasoningGuardSettings,
+    persistCodexHomeSettings,
+    persistCodexOauthCompatibleProxyMode,
+    pickCodexHomeDirectory,
+  });
+
   return (
     <div className="space-y-6">
       <Card className="overflow-hidden">
         <div className="border-b border-border">
           <div className="flex flex-col gap-4 p-6">
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-              <div className="flex items-center gap-4">
-                <div className="h-14 w-14 rounded-xl bg-card/5 dark:bg-secondary flex items-center justify-center text-secondary-foreground">
-                  <Terminal className="h-8 w-8" />
-                </div>
-                <div>
-                  <h2 className="text-base font-semibold text-foreground">Codex</h2>
-                  <div className="flex items-center gap-2 mt-1">
-                    {codexAvailable === "available" && codexInfo?.found ? (
-                      <>
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-green-50 dark:bg-green-900/30 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-400 ring-1 ring-inset ring-green-600/20">
-                          <CheckCircle2 className="h-3 w-3" />
-                          已安装 {codexInfo.version}
-                        </span>
-                        <CliVersionBadge
-                          cliKey="codex"
-                          installedVersion={codexInfo.version}
-                          refreshToken={versionRefreshToken}
-                          onUpdateComplete={refreshCodexStatus}
-                        />
-                      </>
-                    ) : codexAvailable === "checking" || loading ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 dark:bg-blue-900/30 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400 ring-1 ring-inset ring-blue-600/20">
-                        <RefreshCw className="h-3 w-3 animate-spin" />
-                        加载中...
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border">
-                        未检测到
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
+            <CodexHeader
+              codexAvailable={codexAvailable}
+              codexInfo={codexInfo}
+              loading={loading}
+              saving={saving}
+              versionRefreshToken={versionRefreshToken}
+              refreshCodexStatus={refreshCodexStatus}
+            />
 
-              <Button
-                onClick={() => void refreshCodexStatus()}
-                variant="secondary"
-                size="sm"
-                disabled={loading}
-                className="gap-2"
-              >
-                <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-                刷新
-              </Button>
-            </div>
-
-            {codexConfig && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
-                <div className="bg-secondary rounded-lg p-3 border border-border">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                    <FolderOpen className="h-3 w-3" />
-                    当前 .codex 目录
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div
-                      className="font-mono text-xs text-secondary-foreground truncate flex-1"
-                      title={codexConfig.config_dir}
-                    >
-                      {codexConfig.config_dir}
-                    </div>
-                    <Button
-                      onClick={() => void openCodexConfigDir()}
-                      disabled={!codexConfig.can_open_config_dir}
-                      size="sm"
-                      variant="ghost"
-                      className="shrink-0 h-6 w-6 p-0 hover:bg-muted dark:hover:bg-secondary"
-                      title={
-                        codexConfig.can_open_config_dir
-                          ? "打开当前生效目录"
-                          : "受权限限制，无法自动打开该目录"
-                      }
-                    >
-                      <ExternalLink className="h-3 w-3" />
-                    </Button>
-                  </div>
-                  <div className="mt-1 text-[11px] text-muted-foreground">
-                    {activeConfigDirSummaryText}
-                  </div>
-                  {!codexConfig.can_open_config_dir ? (
-                    <div className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
-                      受权限限制，无法自动打开该目录；请手动打开该路径。
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="bg-secondary rounded-lg p-3 border border-border">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                    <FileJson className="h-3 w-3" />
-                    config.toml
-                  </div>
-                  <div
-                    className="font-mono text-xs text-secondary-foreground truncate"
-                    title={codexConfig.config_path}
-                  >
-                    {codexConfig.config_path}
-                  </div>
-                  <div className="mt-1 text-[11px] text-muted-foreground">
-                    {codexConfig.exists ? "已存在" : "不存在（将自动创建）"}
-                  </div>
-                </div>
-
-                <div className="bg-secondary rounded-lg p-3 border border-border">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                    <Terminal className="h-3 w-3" />
-                    可执行文件
-                  </div>
-                  <div
-                    className="font-mono text-xs text-secondary-foreground truncate"
-                    title={codexInfo?.executable_path ?? "—"}
-                  >
-                    {codexInfo?.executable_path ?? "—"}
-                  </div>
-                </div>
-
-                <div className="bg-secondary rounded-lg p-3 border border-border">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                    <Settings className="h-3 w-3" />
-                    解析方式
-                  </div>
-                  <div
-                    className="font-mono text-xs text-secondary-foreground truncate"
-                    title={codexInfo?.resolved_via ?? "—"}
-                  >
-                    {codexInfo?.resolved_via ?? "—"}
-                  </div>
-                  <div className="mt-1 text-[11px] text-muted-foreground">
-                    SHELL: {codexInfo?.shell ?? "—"}
-                  </div>
-                </div>
-              </div>
-            )}
+            {codexConfig ? (
+              <CodexInfoGrid
+                codexConfig={codexConfig}
+                codexInfo={codexInfo}
+                activeConfigDirSummaryText={activeConfigDirSummaryText}
+                openCodexConfigDir={openCodexConfigDir}
+              />
+            ) : null}
 
             {codexConfig && isWindowsRuntime() ? (
-              <div className="rounded-xl border border-border/80 bg-white/80 p-4 dark:border-border dark:bg-card/20">
-                <div className="flex flex-col gap-4">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold text-foreground">Windows 本机配置</div>
-                      <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        仅影响 Windows 本机上的 Codex 用户级{" "}
-                        <span className="font-mono">.codex</span> 目录，不改写 WSL 内各 distro 的
-                        目标路径。
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <span className="inline-flex items-center rounded-full border border-border bg-secondary px-2.5 py-1 text-[11px] font-medium text-secondary-foreground dark:border-border dark:bg-secondary dark:text-foreground">
-                        {activeConfigModeBadgeText}
-                      </span>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        onClick={resetConfigLocation}
-                        disabled={
-                          configLocationControlsDisabled ||
-                          (configLocationMode === "user_home_default" &&
-                            customHomeText.trim().length === 0)
-                        }
-                      >
-                        恢复默认
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-border/70 bg-secondary/80 p-3 dark:border-border dark:bg-secondary/80">
-                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
-                      <div className="min-w-0">
-                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                          当前会使用
-                        </div>
-                        <div
-                          className="mt-1 break-all font-mono text-xs text-secondary-foreground"
-                          title={activeConfigDirPrimaryText}
-                        >
-                          {activeConfigDirPrimaryText}
-                        </div>
-                        <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-                          {configLocationSummaryText}
-                        </div>
-                      </div>
-
-                      <div className="min-w-0 md:max-w-[320px]">
-                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                          config.toml
-                        </div>
-                        <div
-                          className="mt-1 break-all font-mono text-xs text-secondary-foreground"
-                          title={codexConfig.config_path}
-                        >
-                          {codexConfig.config_path}
-                        </div>
-                        <div className="mt-1 text-[11px] text-muted-foreground">
-                          {activeConfigDirSummaryText}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-border/70 bg-white/70 p-3 dark:border-border dark:bg-card/20">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                      目录来源
-                    </div>
-                    <div className="mt-2">
-                      <RadioGroup
-                        name="codex_config_location_mode"
-                        value={configLocationMode}
-                        onChange={(value) =>
-                          handleConfigLocationModeChange(
-                            value === "follow_codex_home"
-                              ? "follow_codex_home"
-                              : value === "custom"
-                                ? "custom"
-                                : "user_home_default"
-                          )
-                        }
-                        options={[
-                          { value: "user_home_default", label: "固定到 Windows 用户目录" },
-                          { value: "follow_codex_home", label: followModeLabel },
-                          { value: "custom", label: "手动指定目录" },
-                        ]}
-                        disabled={configLocationControlsDisabled}
-                      />
-                    </div>
-                    <div className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground">
-                      <div>
-                        固定目录：
-                        <span className="ml-1 font-mono">{userDefaultResolvedHomeDir}</span>
-                      </div>
-                      <div>
-                        <span className="font-mono">$CODEX_HOME</span> 当前解析：
-                        <span className="ml-1 font-mono">{followCodexHomeResolvedDir}</span>
-                        {followModeMatchesDefault ? (
-                          <span className="ml-2 text-amber-700 dark:text-amber-400">
-                            当前路径相同，但后续会随 $CODEX_HOME 变化。
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-
-                  {configLocationMode === "custom" ? (
-                    <div className="rounded-lg border border-border/70 bg-secondary/80 p-3 dark:border-border dark:bg-secondary/80">
-                      <label className="text-xs font-medium text-secondary-foreground">
-                        自定义 .codex 目录
-                      </label>
-
-                      <div className="mt-3 flex flex-col gap-2 lg:flex-row">
-                        <Input
-                          value={customHomeText}
-                          onChange={(e) => {
-                            const next = e.currentTarget.value;
-                            setCustomHomeText(next);
-                            if (configLocationError) {
-                              setConfigLocationError(validateCustomCodexHome(next));
-                            }
-                          }}
-                          onBlur={() => {
-                            if (configLocationMode !== "custom") return;
-                            void persistConfigLocation("custom", customHomeText).then((result) => {
-                              if (result === "persist_failed") {
-                                restoreSavedConfigLocationState();
-                              }
-                            });
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") e.currentTarget.blur();
-                          }}
-                          placeholder="例如：D:\\Users\\you\\.codex"
-                          className={cn(
-                            "font-mono text-xs lg:flex-1",
-                            configLocationError &&
-                              "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
-                          )}
-                          disabled={configLocationControlsDisabled}
-                        />
-
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => void handlePickCustomHome()}
-                            disabled={configLocationControlsDisabled}
-                          >
-                            <FolderOpen className="mr-1.5 h-3.5 w-3.5" />
-                            {selectingCodexHomeDir ? "选择中..." : "选择目录"}
-                          </Button>
-                        </div>
-                      </div>
-
-                      <div
-                        className={cn(
-                          "mt-2 text-[11px] leading-relaxed",
-                          configLocationError
-                            ? "text-rose-600 dark:text-rose-400"
-                            : "text-muted-foreground"
-                        )}
-                      >
-                        {configLocationError
-                          ? configLocationError
-                          : configLocationPreviewPath
-                            ? `保存后将使用 ${configLocationPreviewPath}。支持普通 Windows 路径、UNC 路径，也可以点“选择目录”。`
-                            : "请输入一个 .codex 目录路径，然后按 Enter、移出输入框，或直接使用目录选择器保存。"}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="rounded-lg border border-dashed border-border/80 bg-secondary/50 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground dark:border-border dark:bg-secondary/40 dark:text-muted-foreground">
-                      {configLocationMode === "follow_codex_home"
-                        ? `当前为跟随模式，手动目录选择器已收起；现在会使用 ${followCodexHomeResolvedDir}。`
-                        : `当前为默认模式，手动目录选择器已收起；固定使用 ${userDefaultResolvedHomeDir}。`}
-                    </div>
-                  )}
-                </div>
-              </div>
+              <CodexConfigLocationSection
+                codexConfig={codexConfig}
+                customHomeInputId={customHomeInputId}
+                configLocationMode={configLocationMode}
+                customHomeText={customHomeText}
+                configLocationError={configLocationError}
+                selectingCodexHomeDir={selectingCodexHomeDir}
+                configLocationControlsDisabled={configLocationControlsDisabled}
+                activeConfigModeBadgeText={activeConfigModeBadgeText}
+                activeConfigDirPrimaryText={activeConfigDirPrimaryText}
+                activeConfigDirSummaryText={activeConfigDirSummaryText}
+                configLocationSummaryText={configLocationSummaryText}
+                followModeLabel={followModeLabel}
+                followModeMatchesDefault={followModeMatchesDefault}
+                userDefaultResolvedHomeDir={userDefaultResolvedHomeDir}
+                followCodexHomeResolvedDir={followCodexHomeResolvedDir}
+                configLocationPreviewPath={configLocationPreviewPath}
+                resetConfigLocation={resetConfigLocation}
+                handleConfigLocationModeChange={handleConfigLocationModeChange}
+                updateConfigLocationDraft={updateConfigLocationDraft}
+                persistConfigLocation={persistConfigLocation}
+                restoreSavedConfigLocationState={restoreSavedConfigLocationState}
+                handlePickCustomHome={handlePickCustomHome}
+              />
             ) : null}
 
             <div className="text-xs text-muted-foreground">
@@ -1895,33 +3718,11 @@ export function CliManagerCodexTab({
             </div>
 
             {appSettings ? (
-              <div className="rounded-xl border border-border/80 bg-white/80 p-4 dark:border-border dark:bg-card/20">
-                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-foreground">OAuth 兼容代理模式</div>
-                    <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                      开启后，AIO 接管 Codex 代理时只写入{" "}
-                      <span className="font-mono">config.toml</span> 的 AIO
-                      provider，不创建、不备份、 不恢复 <span className="font-mono">auth.json</span>
-                      。适合继续使用 Codex 自己的 ChatGPT/OAuth 登录状态。
-                    </div>
-                    <div className="mt-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
-                      该模式不会写入{" "}
-                      <span className="font-mono">preferred_auth_method = "chatgpt"</span>
-                      ；会在配置中保留
-                      <span className="font-mono"> requires_openai_auth = true</span>。
-                    </div>
-                  </div>
-                  <Switch
-                    aria-label="切换 Codex OAuth 兼容代理模式"
-                    checked={appSettings.codex_oauth_compatible_proxy_mode}
-                    onCheckedChange={(checked) =>
-                      void persistCodexOauthCompatibleProxyMode?.(checked)
-                    }
-                    disabled={proxyModeControlsDisabled}
-                  />
-                </div>
-              </div>
+              <CodexOauthProxySection
+                appSettings={appSettings}
+                proxyModeControlsDisabled={proxyModeControlsDisabled}
+                persistCodexOauthCompatibleProxyMode={persistCodexOauthCompatibleProxyMode}
+              />
             ) : null}
 
             {appSettings ? (
@@ -1931,8 +3732,9 @@ export function CliManagerCodexTab({
                     <div className="min-w-0">
                       <div className="text-sm font-semibold text-foreground">降智拦截</div>
                       <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        命中指定的 <span className="font-mono">reasoning_tokens</span>{" "}
-                        时，不把结果直接回给 Codex，而是在当前 provider 上继续重试，并且不计入熔断。
+                        支持按 <span className="font-mono">reasoning_tokens</span> 或{" "}
+                        <span className="font-mono">final-answer-only high/xhigh/max/ultra</span>{" "}
+                        特征拦截；命中后按策略执行思考续写或自动重试，并且不计入熔断。
                       </div>
                       <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
                         当前统计：{codexReasoningGuardStatsRangeLabel}，
@@ -1945,9 +3747,8 @@ export function CliManagerCodexTab({
                         variant="secondary"
                         size="sm"
                         className="gap-2"
+                        aria-label="查看降智拦截详情"
                         onClick={() => {
-                          syncCodexReasoningGuardDrafts(appSettings);
-                          setCodexReasoningGuardDetailsTab("rules");
                           setCodexReasoningGuardDetailsOpen(true);
                         }}
                       >
@@ -1967,7 +3768,17 @@ export function CliManagerCodexTab({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        总请求数
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-foreground">
+                        {codexReasoningGuardStatsLoading
+                          ? "..."
+                          : String(codexReasoningGuardStats?.total_request_count ?? 0)}
+                      </div>
+                    </div>
                     <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
                       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                         命中请求数
@@ -2004,22 +3815,37 @@ export function CliManagerCodexTab({
                     </div>
                     <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
                       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                        模型规则
+                        续写成功率
                       </div>
                       <div className="mt-1 text-2xl font-semibold text-foreground">
-                        {appSettings.codex_reasoning_guard_model_rules.length}
+                        {codexReasoningGuardStatsLoading
+                          ? "..."
+                          : formatCodexReasoningGuardHitRate(
+                              codexReasoningGuardStats?.continuation_repair_rate
+                            )}
                       </div>
-                      <div className="mt-1 text-[11px] text-muted-foreground">按模型精确匹配</div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">
+                        续写 {codexReasoningGuardStats?.continuation_repaired_request_count ?? 0} /{" "}
+                        {codexReasoningGuardStats?.continuation_triggered_request_count ?? 0}
+                      </div>
                     </div>
                   </div>
 
                   <div className="grid gap-2 rounded-lg border border-border/70 bg-secondary/80 p-3 text-xs text-muted-foreground dark:border-border dark:bg-secondary/80">
                     <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-                      <span>全局默认规则</span>
+                      <span>当前模板</span>
                       <span className="font-mono text-secondary-foreground">
-                        {formatCodexReasoningGuardRuleLabel(
-                          appSettings.codex_reasoning_guard_compare_mode,
-                          appSettings.codex_reasoning_guard_reasoning_equals
+                        {resolveCodexReasoningGuardTemplateOption(
+                          appSettings.codex_reasoning_guard_active_template_id,
+                          appSettings.codex_reasoning_guard_custom_templates
+                        )?.name ?? CODEX_REASONING_GUARD_BUILTIN_TEMPLATES[0].name}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                      <span>规则模式</span>
+                      <span className="font-mono text-secondary-foreground">
+                        {formatCodexReasoningGuardRuleModeLabel(
+                          appSettings.codex_reasoning_guard_rule_mode
                         )}
                       </span>
                     </div>
@@ -2036,14 +3862,26 @@ export function CliManagerCodexTab({
                     <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
                       <span>Guard 策略</span>
                       <span className="font-mono text-secondary-foreground">
-                        {`${formatCodexReasoningGuardRetryPolicyLabel(
-                          appSettings.codex_reasoning_guard_retry_policy
-                        )} / ${appSettings.codex_reasoning_guard_immediate_retry_budget}+${appSettings.codex_reasoning_guard_delayed_retry_budget} / ${appSettings.codex_reasoning_guard_delayed_retry_ms}ms / ${formatCodexReasoningGuardExhaustedActionLabel(
-                          appSettings.codex_reasoning_guard_exhausted_action
-                        )}`}
+                        {isCodexReasoningGuardContinuationStrategy(
+                          appSettings.codex_reasoning_guard_post_match_strategy
+                        )
+                          ? `${formatCodexReasoningGuardPostMatchStrategyLabel(
+                              appSettings.codex_reasoning_guard_post_match_strategy
+                            )} / ${appSettings.codex_reasoning_guard_immediate_retry_budget} / ${formatCodexReasoningGuardExhaustedActionLabel(
+                              appSettings.codex_reasoning_guard_exhausted_action
+                            )}`
+                          : `${formatCodexReasoningGuardPostMatchStrategyLabel(
+                              appSettings.codex_reasoning_guard_post_match_strategy
+                            )} / ${formatCodexReasoningGuardRetryPolicyLabel(
+                              appSettings.codex_reasoning_guard_retry_policy
+                            )} / ${appSettings.codex_reasoning_guard_immediate_retry_budget}+${appSettings.codex_reasoning_guard_delayed_retry_budget} / ${appSettings.codex_reasoning_guard_delayed_retry_ms}ms / ${formatCodexReasoningGuardExhaustedActionLabel(
+                              appSettings.codex_reasoning_guard_exhausted_action
+                            )}`}
                       </span>
                     </div>
-                    {appSettings.codex_reasoning_guard_retry_policy === "concurrent" ? (
+                    {appSettings.codex_reasoning_guard_post_match_strategy ===
+                      "retry_same_provider" &&
+                    appSettings.codex_reasoning_guard_retry_policy === "concurrent" ? (
                       <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
                         <span>并发重试</span>
                         <span className="font-mono text-secondary-foreground">
@@ -2070,6 +3908,9 @@ export function CliManagerCodexTab({
               onOpenChange={(next) => {
                 setCodexReasoningGuardDetailsOpen(next);
                 if (!next) {
+                  setCodexReasoningGuardStatsRangePopoverScope((current) =>
+                    current === "details" ? null : current
+                  );
                   syncCodexReasoningGuardDrafts(appSettings);
                 }
               }}
@@ -2078,7 +3919,17 @@ export function CliManagerCodexTab({
               className="max-w-5xl"
             >
               <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      总请求数
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningGuardStatsLoading
+                        ? "..."
+                        : String(codexReasoningGuardStats?.total_request_count ?? 0)}
+                    </div>
+                  </div>
                   <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
                     <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                       命中请求数
@@ -2101,22 +3952,24 @@ export function CliManagerCodexTab({
                   </div>
                   <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
                     <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                      正常请求数
-                    </div>
-                    <div className="mt-1 text-2xl font-semibold text-foreground">
-                      {codexReasoningGuardStatsLoading
-                        ? "..."
-                        : String(codexReasoningGuardStats?.normal_request_count ?? 0)}
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                       降智命中率
                     </div>
                     <div className="mt-1 text-2xl font-semibold text-foreground">
                       {codexReasoningGuardStatsLoading
                         ? "..."
                         : formatCodexReasoningGuardHitRate(codexReasoningGuardStats?.hit_rate)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      续写成功率
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningGuardStatsLoading
+                        ? "..."
+                        : formatCodexReasoningGuardHitRate(
+                            codexReasoningGuardStats?.continuation_repair_rate
+                          )}
                     </div>
                   </div>
                 </div>
@@ -2155,104 +4008,618 @@ export function CliManagerCodexTab({
                     </span>
                     <span className="ml-2">{codexReasoningGuardStatsRangeDescription}</span>
                   </div>
-                  <div className="shrink-0">{renderCodexReasoningGuardStatsRangeControls("")}</div>
+                  <div className="shrink-0">
+                    {renderCodexReasoningGuardStatsRangeControls("", {
+                      popoverPortalled: false,
+                      scope: "details",
+                    })}
+                  </div>
                 </div>
 
                 {codexReasoningGuardDetailsTab === "rules" ? (
                   <div className="space-y-4">
                     <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
-                      <div className="text-sm font-semibold text-foreground">全局回退规则</div>
-                      <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        只有在当前请求模型没有精确匹配到模型规则时，才会回落到这里。
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-foreground">规则模板</div>
+                          <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                            当前请求开始时会固定读取一次 active
+                            模板；进行中的请求不会被这里的草稿改动影响。
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="gap-2"
+                            onClick={addCodexReasoningGuardCustomTemplate}
+                            disabled={
+                              reasoningGuardControlsDisabled ||
+                              codexReasoningGuardCustomTemplates.length >=
+                                MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES
+                            }
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            新建模板
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="gap-2"
+                            onClick={copySelectedCodexReasoningGuardTemplate}
+                            disabled={
+                              reasoningGuardControlsDisabled ||
+                              codexReasoningGuardCustomTemplates.length >=
+                                MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES
+                            }
+                          >
+                            <FileJson className="h-3.5 w-3.5" />
+                            复制为自定义
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            aria-label="删除模板"
+                            onClick={deleteSelectedCodexReasoningGuardTemplate}
+                            disabled={
+                              reasoningGuardControlsDisabled ||
+                              codexReasoningGuardSelectedTemplate.readOnly
+                            }
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+
+                      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                         <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">reasoning_tokens 规则值</span>
-                          <Input
-                            value={codexReasoningGuardValuesText}
-                            onChange={(e) => {
-                              setCodexReasoningGuardValuesText(e.currentTarget.value);
-                              if (codexReasoningGuardValuesError) {
-                                const parsed = parseCodexReasoningGuardValues(
-                                  e.currentTarget.value
-                                );
-                                setCodexReasoningGuardValuesError(
-                                  parsed.ok ? null : parsed.message
-                                );
-                              }
-                            }}
-                            placeholder={DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.join(", ")}
-                            className={cn(
-                              "mt-3 font-mono text-xs",
-                              codexReasoningGuardValuesError &&
-                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
-                            )}
-                            disabled={reasoningGuardControlsDisabled}
-                          />
-                        </label>
-                        <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">比较方式</span>
+                          <span className="block">active 模板</span>
                           <Select
-                            value={codexReasoningGuardCompareMode}
-                            onChange={(e) => {
-                              setCodexReasoningGuardCompareMode(
-                                e.currentTarget.value as CodexReasoningGuardCompareMode
-                              );
-                              setCodexReasoningGuardValuesError(null);
-                            }}
+                            aria-label="规则模板"
+                            value={codexReasoningGuardSelectedTemplate.id}
+                            onChange={(e) =>
+                              selectCodexReasoningGuardTemplate(e.currentTarget.value)
+                            }
                             disabled={reasoningGuardControlsDisabled}
                             className="mt-3 font-mono text-xs"
                           >
-                            <option value="equals">等于 (==)</option>
-                            <option value="less_than_or_equal">小于等于 (&lt;=)</option>
+                            {codexReasoningGuardTemplateOptions.map((template) => (
+                              <option key={template.id} value={template.id}>
+                                {template.source === "custom" ? "custom" : template.source}:{" "}
+                                {template.name}
+                              </option>
+                            ))}
                           </Select>
                         </label>
+                        <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-xs leading-relaxed text-muted-foreground">
+                          <div className="font-medium text-secondary-foreground">
+                            {codexReasoningGuardSelectedTemplate.name}
+                          </div>
+                          <div className="mt-1">
+                            {codexReasoningGuardSelectedTemplate.description || "无描述"}
+                          </div>
+                          <div className="mt-2 font-mono text-[11px]">
+                            {codexReasoningGuardSelectedTemplate.id}
+                          </div>
+                        </div>
                       </div>
-                      <div
-                        className={cn(
-                          "mt-2 text-[11px] leading-relaxed",
-                          codexReasoningGuardValuesError
-                            ? "text-rose-600 dark:text-rose-400"
-                            : "text-muted-foreground"
+
+                      <label className="mt-4 block text-xs font-medium text-secondary-foreground">
+                        <span className="block">降智命中标签</span>
+                        <Input
+                          aria-label="降智命中标签"
+                          value={codexReasoningGuardHitLabelText}
+                          onChange={(e) =>
+                            setCodexReasoningGuardHitLabelText(e.currentTarget.value)
+                          }
+                          placeholder="降智命中"
+                          className="mt-3 text-xs"
+                          disabled={reasoningGuardControlsDisabled}
+                        />
+                      </label>
+
+                      <div className="mt-4 space-y-4">
+                        {codexReasoningGuardSelectedTemplate.readOnly ? (
+                          <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-xs leading-relaxed text-muted-foreground">
+                            内置模板只读，复制为自定义模板后可编辑规则。
+                          </div>
+                        ) : (
+                          <div className="grid gap-3 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)]">
+                            <label className="text-xs font-medium text-secondary-foreground">
+                              <span className="block">模板 ID</span>
+                              <Input
+                                aria-label="模板 ID"
+                                value={codexReasoningGuardSelectedTemplate.id}
+                                onChange={(e) =>
+                                  updateSelectedCodexReasoningGuardTemplate({
+                                    id: e.currentTarget.value,
+                                  })
+                                }
+                                className="mt-3 font-mono text-xs"
+                                disabled={reasoningGuardControlsDisabled}
+                              />
+                            </label>
+                            <label className="text-xs font-medium text-secondary-foreground">
+                              <span className="block">模板名称</span>
+                              <Input
+                                aria-label="模板名称"
+                                value={codexReasoningGuardSelectedTemplate.name}
+                                onChange={(e) =>
+                                  updateSelectedCodexReasoningGuardTemplate({
+                                    name: e.currentTarget.value,
+                                  })
+                                }
+                                className="mt-3 text-xs"
+                                disabled={reasoningGuardControlsDisabled}
+                              />
+                            </label>
+                            <label className="text-xs font-medium text-secondary-foreground lg:col-span-2">
+                              <span className="block">模板描述</span>
+                              <Textarea
+                                aria-label="模板描述"
+                                value={codexReasoningGuardSelectedTemplate.description}
+                                onChange={(e) =>
+                                  updateSelectedCodexReasoningGuardTemplate({
+                                    description: e.currentTarget.value,
+                                  })
+                                }
+                                className="mt-3 min-h-20 text-xs"
+                                disabled={reasoningGuardControlsDisabled}
+                              />
+                            </label>
+                          </div>
                         )}
-                      >
-                        {codexReasoningGuardValuesError ??
-                          codexReasoningGuardCompareModeHelperText(codexReasoningGuardCompareMode)}
+
+                        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                          <div className="text-sm font-semibold text-foreground">模板规则</div>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="gap-2"
+                            onClick={addCodexReasoningGuardTemplateRule}
+                            disabled={
+                              reasoningGuardControlsDisabled ||
+                              codexReasoningGuardSelectedTemplate.readOnly ||
+                              codexReasoningGuardSelectedTemplate.rules.length >=
+                                MAX_CODEX_REASONING_GUARD_TEMPLATE_RULES
+                            }
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            新增规则
+                          </Button>
+                        </div>
+
+                        <div className="space-y-3">
+                          {codexReasoningGuardSelectedTemplate.rules.map((rule, ruleIndex) => (
+                            <div
+                              key={`${rule.id || "rule"}-${ruleIndex}`}
+                              className="rounded-lg border border-border/70 bg-background/70 p-3"
+                            >
+                              <div className="grid gap-3 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_150px_120px_160px_auto]">
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">规则 ID</span>
+                                  <Input
+                                    value={rule.id}
+                                    onChange={(e) =>
+                                      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+                                        id: e.currentTarget.value,
+                                      })
+                                    }
+                                    className="mt-3 font-mono text-xs"
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  />
+                                </label>
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">规则名称</span>
+                                  <Input
+                                    value={rule.name}
+                                    onChange={(e) =>
+                                      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+                                        name: e.currentTarget.value,
+                                      })
+                                    }
+                                    className="mt-3 text-xs"
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  />
+                                </label>
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">动作</span>
+                                  <Select
+                                    value={rule.action}
+                                    onChange={(e) =>
+                                      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+                                        action: e.currentTarget
+                                          .value as CodexReasoningGuardTemplateRule["action"],
+                                      })
+                                    }
+                                    className="mt-3 font-mono text-xs"
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  >
+                                    <option value="intercept">intercept</option>
+                                    <option value="no_intercept">no_intercept</option>
+                                  </Select>
+                                </label>
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">逻辑</span>
+                                  <Select
+                                    value={rule.logic}
+                                    onChange={(e) =>
+                                      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+                                        logic: e.currentTarget
+                                          .value as CodexReasoningGuardTemplateRule["logic"],
+                                      })
+                                    }
+                                    className="mt-3 font-mono text-xs"
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  >
+                                    <option value="and">AND</option>
+                                    <option value="or">OR</option>
+                                  </Select>
+                                </label>
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">token 匹配</span>
+                                  <Input
+                                    value={
+                                      rule.reasoning_tokens_formula ===
+                                      "reasoning_tokens_518n_minus_2"
+                                        ? "518*N-2"
+                                        : rule.reasoning_tokens == null
+                                          ? ""
+                                          : String(rule.reasoning_tokens)
+                                    }
+                                    onChange={(e) => {
+                                      updateSelectedCodexReasoningGuardTemplateRuleToken(
+                                        ruleIndex,
+                                        e.currentTarget.value
+                                      );
+                                    }}
+                                    placeholder="空为 wildcard"
+                                    className="mt-3 font-mono text-xs"
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly ||
+                                      rule.reasoning_tokens_formula != null
+                                    }
+                                  />
+                                </label>
+                                <div className="flex items-end gap-1">
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    aria-label={`上移规则 ${ruleIndex + 1}`}
+                                    onClick={() =>
+                                      moveCodexReasoningGuardTemplateRule(ruleIndex, -1)
+                                    }
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly ||
+                                      ruleIndex === 0
+                                    }
+                                  >
+                                    ↑
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    aria-label={`下移规则 ${ruleIndex + 1}`}
+                                    onClick={() =>
+                                      moveCodexReasoningGuardTemplateRule(ruleIndex, 1)
+                                    }
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly ||
+                                      ruleIndex ===
+                                        codexReasoningGuardSelectedTemplate.rules.length - 1
+                                    }
+                                  >
+                                    ↓
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    aria-label={`删除规则 ${ruleIndex + 1}`}
+                                    onClick={() => removeCodexReasoningGuardTemplateRule(ruleIndex)}
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <div className="mt-4 space-y-2">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-xs font-medium text-secondary-foreground">
+                                    过滤条件
+                                  </div>
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    className="gap-2"
+                                    onClick={() => addCodexReasoningGuardTemplateFilter(ruleIndex)}
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly ||
+                                      rule.filters.length >=
+                                        MAX_CODEX_REASONING_GUARD_TEMPLATE_RULE_FILTERS
+                                    }
+                                  >
+                                    <Plus className="h-3.5 w-3.5" />
+                                    新增条件
+                                  </Button>
+                                </div>
+                                {rule.filters.length === 0 ? (
+                                  <div className="rounded-md border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
+                                    无过滤条件。
+                                  </div>
+                                ) : (
+                                  rule.filters.map((filter, filterIndex) => {
+                                    const kind = codexReasoningGuardFilterKind(filter.field);
+                                    const operators = codexReasoningGuardFilterOperators(
+                                      filter.field
+                                    );
+                                    return (
+                                      <div
+                                        key={`${filter.id || "filter"}-${filterIndex}`}
+                                        className="grid gap-2 rounded-md border border-border/70 bg-secondary/40 p-2 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_160px_minmax(0,1fr)_auto]"
+                                      >
+                                        <Input
+                                          aria-label={`条件 ID ${filterIndex + 1}`}
+                                          value={filter.id}
+                                          onChange={(e) =>
+                                            updateCodexReasoningGuardTemplateFilter(
+                                              ruleIndex,
+                                              filterIndex,
+                                              { id: e.currentTarget.value }
+                                            )
+                                          }
+                                          className="font-mono text-xs"
+                                          disabled={
+                                            reasoningGuardControlsDisabled ||
+                                            codexReasoningGuardSelectedTemplate.readOnly
+                                          }
+                                        />
+                                        <Select
+                                          aria-label={`条件字段 ${filterIndex + 1}`}
+                                          value={filter.field}
+                                          onChange={(e) =>
+                                            updateCodexReasoningGuardTemplateFilter(
+                                              ruleIndex,
+                                              filterIndex,
+                                              {
+                                                field: e.currentTarget
+                                                  .value as CodexReasoningGuardTemplateFilterField,
+                                              }
+                                            )
+                                          }
+                                          className="font-mono text-xs"
+                                          disabled={
+                                            reasoningGuardControlsDisabled ||
+                                            codexReasoningGuardSelectedTemplate.readOnly
+                                          }
+                                        >
+                                          {CODEX_REASONING_GUARD_FILTER_FIELD_OPTIONS.map(
+                                            (option) => (
+                                              <option key={option.value} value={option.value}>
+                                                {option.label}
+                                              </option>
+                                            )
+                                          )}
+                                        </Select>
+                                        <Select
+                                          aria-label={`条件操作符 ${filterIndex + 1}`}
+                                          value={filter.operator}
+                                          onChange={(e) =>
+                                            updateCodexReasoningGuardTemplateFilter(
+                                              ruleIndex,
+                                              filterIndex,
+                                              {
+                                                operator: e.currentTarget
+                                                  .value as CodexReasoningGuardTemplateFilterOperator,
+                                              }
+                                            )
+                                          }
+                                          className="font-mono text-xs"
+                                          disabled={
+                                            reasoningGuardControlsDisabled ||
+                                            codexReasoningGuardSelectedTemplate.readOnly
+                                          }
+                                        >
+                                          {operators.map((operator) => (
+                                            <option key={operator} value={operator}>
+                                              {operator}
+                                            </option>
+                                          ))}
+                                        </Select>
+                                        {kind === "boolean" ? (
+                                          <Select
+                                            aria-label={`条件值 ${filterIndex + 1}`}
+                                            value={filter.bool_value ? "true" : "false"}
+                                            onChange={(e) =>
+                                              updateCodexReasoningGuardTemplateFilter(
+                                                ruleIndex,
+                                                filterIndex,
+                                                { bool_value: e.currentTarget.value === "true" }
+                                              )
+                                            }
+                                            className="font-mono text-xs"
+                                            disabled={
+                                              reasoningGuardControlsDisabled ||
+                                              codexReasoningGuardSelectedTemplate.readOnly
+                                            }
+                                          >
+                                            <option value="true">true</option>
+                                            <option value="false">false</option>
+                                          </Select>
+                                        ) : (
+                                          <Input
+                                            aria-label={`条件值 ${filterIndex + 1}`}
+                                            value={
+                                              kind === "number"
+                                                ? String(filter.number_value ?? "")
+                                                : filter.operator === "in" ||
+                                                    filter.operator === "not_in"
+                                                  ? filter.string_values.join(", ")
+                                                  : (filter.string_value ?? "")
+                                            }
+                                            onChange={(e) => {
+                                              const raw = e.currentTarget.value;
+                                              if (kind === "number") {
+                                                updateCodexReasoningGuardTemplateFilter(
+                                                  ruleIndex,
+                                                  filterIndex,
+                                                  {
+                                                    number_value:
+                                                      raw.trim() === "" ? null : Number(raw),
+                                                  }
+                                                );
+                                              } else if (
+                                                filter.operator === "in" ||
+                                                filter.operator === "not_in"
+                                              ) {
+                                                updateCodexReasoningGuardTemplateFilter(
+                                                  ruleIndex,
+                                                  filterIndex,
+                                                  {
+                                                    string_values: raw
+                                                      .split(",")
+                                                      .map((item) => item.trim())
+                                                      .filter(Boolean),
+                                                  }
+                                                );
+                                              } else {
+                                                updateCodexReasoningGuardTemplateFilter(
+                                                  ruleIndex,
+                                                  filterIndex,
+                                                  { string_value: raw }
+                                                );
+                                              }
+                                            }}
+                                            className="font-mono text-xs"
+                                            disabled={
+                                              reasoningGuardControlsDisabled ||
+                                              codexReasoningGuardSelectedTemplate.readOnly
+                                            }
+                                          />
+                                        )}
+                                        <Button
+                                          variant="secondary"
+                                          size="sm"
+                                          aria-label={`删除条件 ${filterIndex + 1}`}
+                                          onClick={() =>
+                                            removeCodexReasoningGuardTemplateFilter(
+                                              ruleIndex,
+                                              filterIndex
+                                            )
+                                          }
+                                          disabled={
+                                            reasoningGuardControlsDisabled ||
+                                            codexReasoningGuardSelectedTemplate.readOnly
+                                          }
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </Button>
+                                      </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div
+                          className={cn(
+                            "text-[11px] leading-relaxed",
+                            codexReasoningGuardTemplateError
+                              ? "text-rose-600 dark:text-rose-400"
+                              : "text-muted-foreground"
+                          )}
+                        >
+                          {codexReasoningGuardTemplateError ??
+                            "保存时会校验模板 ID、规则、wildcard、过滤字段和值类型。"}
+                        </div>
                       </div>
                     </div>
 
                     <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
                       <div className="text-sm font-semibold text-foreground">重试策略与预算</div>
                       <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        每个 provider 独立计算预算。默认单路重试保持旧行为；并发重试会在连续命中后按
-                        1、2、3... 动态扩到最大并发数。
+                        命中模板后先执行命中后策略；策略失败或预算耗尽后执行失败策略。
                       </div>
                       <div className="mt-4 grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
                         <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">重试策略</span>
+                          <span className="block">命中后策略</span>
                           <Select
-                            value={codexReasoningGuardRetryPolicy}
+                            value={codexReasoningGuardPostMatchStrategy}
                             onChange={(e) =>
-                              setCodexReasoningGuardRetryPolicy(
-                                e.currentTarget.value as CodexReasoningGuardRetryPolicy
+                              setCodexReasoningGuardPostMatchStrategy(
+                                e.currentTarget.value as CodexReasoningGuardPostMatchStrategy
                               )
                             }
                             disabled={reasoningGuardControlsDisabled}
                             className="mt-3 font-mono text-xs"
                           >
-                            <option value="single">单路重试</option>
-                            <option value="concurrent">并发重试</option>
+                            <option value="continuation_repair">思考续写</option>
+                            <option value="retry_same_provider">自动重试</option>
                           </Select>
                         </label>
                         <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-[11px] leading-relaxed text-muted-foreground">
-                          {codexReasoningGuardRetryPolicy === "concurrent"
-                            ? `遇到降智命中后先走 1 路；如果仍然命中，下一轮升到 2 路，直到最大 ${MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX} 路。任一路拿到非降智响应后继续，其他路会被丢弃。`
-                            : "完全沿用现有行为：每次只发起一路重试，按立即预算和等待预算顺序执行。"}
+                          {isCodexReasoningGuardContinuationStrategy(
+                            codexReasoningGuardPostMatchStrategy
+                          )
+                            ? "命中后使用当前次数预算发送 continuation，并使用稳定折叠输出。"
+                            : "命中后按立即预算、等待预算和并发设置重试同一 provider。"}
                         </div>
                       </div>
+                      {codexReasoningGuardPostMatchStrategy === "retry_same_provider" ? (
+                        <div className="mt-4 grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
+                          <label className="text-xs font-medium text-secondary-foreground">
+                            <span className="block">重试策略</span>
+                            <Select
+                              value={codexReasoningGuardRetryPolicy}
+                              onChange={(e) =>
+                                setCodexReasoningGuardRetryPolicy(
+                                  e.currentTarget.value as CodexReasoningGuardRetryPolicy
+                                )
+                              }
+                              disabled={reasoningGuardControlsDisabled}
+                              className="mt-3 font-mono text-xs"
+                            >
+                              <option value="single">单路重试</option>
+                              <option value="concurrent">并发重试</option>
+                            </Select>
+                          </label>
+                          <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-[11px] leading-relaxed text-muted-foreground">
+                            {codexReasoningGuardRetryPolicy === "concurrent"
+                              ? `遇到降智命中后先走 1 路；如果仍然命中，下一轮升到 2 路，直到最大 ${MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX} 路。任一路拿到非降智响应后继续，其他路会被丢弃。`
+                              : "完全沿用现有行为：每次只发起一路重试，按立即预算和等待预算顺序执行。"}
+                          </div>
+                        </div>
+                      ) : null}
                       <div className="mt-4 grid gap-3 lg:grid-cols-4">
                         <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">立即重试次数</span>
+                          <span className="block">
+                            {isCodexReasoningGuardContinuationStrategy(
+                              codexReasoningGuardPostMatchStrategy
+                            )
+                              ? "思考续写次数"
+                              : "立即重试次数"}
+                          </span>
                           <Input
                             type="number"
                             min={0}
@@ -2274,48 +4641,83 @@ export function CliManagerCodexTab({
                             disabled={reasoningGuardControlsDisabled}
                           />
                         </label>
-                        <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">等待重试次数</span>
-                          <Input
-                            type="number"
-                            min={0}
-                            max={MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET}
-                            step={1}
-                            value={codexReasoningGuardDelayedBudgetText}
-                            onChange={(e) => {
-                              setCodexReasoningGuardDelayedBudgetText(e.currentTarget.value);
-                              setCodexReasoningGuardBudgetError(null);
-                            }}
-                            placeholder={String(DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET)}
-                            className={cn(
-                              "mt-3 font-mono text-xs",
-                              codexReasoningGuardBudgetError &&
-                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
-                            )}
-                            disabled={reasoningGuardControlsDisabled}
-                          />
-                        </label>
-                        <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">等待毫秒数</span>
-                          <Input
-                            type="number"
-                            min={0}
-                            max={MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}
-                            step={100}
-                            value={codexReasoningGuardDelayedMsText}
-                            onChange={(e) => {
-                              setCodexReasoningGuardDelayedMsText(e.currentTarget.value);
-                              setCodexReasoningGuardBudgetError(null);
-                            }}
-                            placeholder={String(DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS)}
-                            className={cn(
-                              "mt-3 font-mono text-xs",
-                              codexReasoningGuardBudgetError &&
-                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
-                            )}
-                            disabled={reasoningGuardControlsDisabled}
-                          />
-                        </label>
+                        {isCodexReasoningGuardContinuationStrategy(
+                          codexReasoningGuardPostMatchStrategy
+                        ) ? (
+                          <label className="text-xs font-medium text-secondary-foreground">
+                            <span className="block">最大 output tokens</span>
+                            <Input
+                              type="number"
+                              min={0}
+                              max={MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS}
+                              step={1}
+                              value={codexReasoningGuardContinuationMaxOutputTokensText}
+                              onChange={(e) => {
+                                setCodexReasoningGuardContinuationMaxOutputTokensText(
+                                  e.currentTarget.value
+                                );
+                                setCodexReasoningGuardContinuationError(null);
+                              }}
+                              placeholder={String(
+                                DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+                              )}
+                              className={cn(
+                                "mt-3 font-mono text-xs",
+                                codexReasoningGuardContinuationError &&
+                                  "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                              )}
+                              disabled={reasoningGuardControlsDisabled}
+                            />
+                          </label>
+                        ) : null}
+                        {codexReasoningGuardPostMatchStrategy === "retry_same_provider" ? (
+                          <>
+                            <label className="text-xs font-medium text-secondary-foreground">
+                              <span className="block">等待重试次数</span>
+                              <Input
+                                type="number"
+                                min={0}
+                                max={MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET}
+                                step={1}
+                                value={codexReasoningGuardDelayedBudgetText}
+                                onChange={(e) => {
+                                  setCodexReasoningGuardDelayedBudgetText(e.currentTarget.value);
+                                  setCodexReasoningGuardBudgetError(null);
+                                }}
+                                placeholder={String(
+                                  DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET
+                                )}
+                                className={cn(
+                                  "mt-3 font-mono text-xs",
+                                  codexReasoningGuardBudgetError &&
+                                    "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                                )}
+                                disabled={reasoningGuardControlsDisabled}
+                              />
+                            </label>
+                            <label className="text-xs font-medium text-secondary-foreground">
+                              <span className="block">等待毫秒数</span>
+                              <Input
+                                type="number"
+                                min={0}
+                                max={MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}
+                                step={100}
+                                value={codexReasoningGuardDelayedMsText}
+                                onChange={(e) => {
+                                  setCodexReasoningGuardDelayedMsText(e.currentTarget.value);
+                                  setCodexReasoningGuardBudgetError(null);
+                                }}
+                                placeholder={String(DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS)}
+                                className={cn(
+                                  "mt-3 font-mono text-xs",
+                                  codexReasoningGuardBudgetError &&
+                                    "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                                )}
+                                disabled={reasoningGuardControlsDisabled}
+                              />
+                            </label>
+                          </>
+                        ) : null}
                         <label className="text-xs font-medium text-secondary-foreground">
                           <span className="block">预算耗尽后</span>
                           <Select
@@ -2334,7 +4736,8 @@ export function CliManagerCodexTab({
                           </Select>
                         </label>
                       </div>
-                      {codexReasoningGuardRetryPolicy === "concurrent" ? (
+                      {codexReasoningGuardPostMatchStrategy === "retry_same_provider" &&
+                      codexReasoningGuardRetryPolicy === "concurrent" ? (
                         <div className="mt-4 grid gap-3 rounded-lg border border-border/70 bg-background/60 p-3 lg:grid-cols-3">
                           <label className="text-xs font-medium text-secondary-foreground">
                             <span className="block">最大并发数</span>
@@ -2443,128 +4846,20 @@ export function CliManagerCodexTab({
                       <div
                         className={cn(
                           "mt-2 text-[11px] leading-relaxed",
-                          codexReasoningGuardBudgetError
+                          codexReasoningGuardBudgetError || codexReasoningGuardContinuationError
                             ? "text-rose-600 dark:text-rose-400"
                             : "text-muted-foreground"
                         )}
                       >
                         {codexReasoningGuardBudgetError ??
-                          `默认 ${DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET} 次立即重试 + ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET} 次等待 ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}ms，耗尽后返回 GW_CODEX_REASONING_GUARD。`}
+                          codexReasoningGuardContinuationError ??
+                          (isCodexReasoningGuardContinuationStrategy(
+                            codexReasoningGuardPostMatchStrategy
+                          )
+                            ? `默认 ${DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET} 次思考续写；output tokens 为 ${DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS} 时不设额外上限。`
+                            : `默认 ${DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET} 次立即重试 + ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET} 次等待 ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}ms，耗尽后返回 GW_CODEX_REASONING_GUARD。`)}
                       </div>
-                    </div>
-
-                    <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <div>
-                          <div className="text-sm font-semibold text-foreground">模型规则</div>
-                          <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                            这里按 <span className="font-mono">requested_model</span>{" "}
-                            精确匹配；没匹配到的请求，才会走上面的全局回退规则。
-                          </div>
-                        </div>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="gap-2"
-                          onClick={addCodexReasoningGuardModelRuleDraft}
-                          disabled={
-                            reasoningGuardControlsDisabled ||
-                            codexReasoningGuardModelRuleDrafts.length >=
-                              MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN
-                          }
-                        >
-                          <Plus className="h-3.5 w-3.5" />
-                          新增模型规则
-                        </Button>
-                      </div>
-
-                      <div className="mt-4 space-y-3">
-                        {codexReasoningGuardModelRuleDrafts.length === 0 ? (
-                          <div className="rounded-lg border border-dashed border-border/70 bg-background/60 px-4 py-5 text-center text-xs text-muted-foreground">
-                            暂无模型规则，当前所有 Codex 请求都会回落到全局默认规则。
-                          </div>
-                        ) : (
-                          codexReasoningGuardModelRuleDrafts.map((draft, index) => (
-                            <div
-                              key={`${draft.requestedModel || "rule"}-${index}`}
-                              className="rounded-lg border border-border/70 bg-background/80 p-3"
-                            >
-                              <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_220px_minmax(0,1fr)_auto]">
-                                <label className="text-xs font-medium text-secondary-foreground">
-                                  <span className="block">模型名</span>
-                                  <Input
-                                    value={draft.requestedModel}
-                                    onChange={(e) =>
-                                      updateCodexReasoningGuardModelRuleDraft(index, {
-                                        requestedModel: e.currentTarget.value,
-                                      })
-                                    }
-                                    placeholder="例如：gpt-5-codex"
-                                    className="mt-3 font-mono text-xs"
-                                    disabled={reasoningGuardControlsDisabled}
-                                  />
-                                </label>
-                                <label className="text-xs font-medium text-secondary-foreground">
-                                  <span className="block">比较方式</span>
-                                  <Select
-                                    value={draft.compareMode}
-                                    onChange={(e) =>
-                                      updateCodexReasoningGuardModelRuleDraft(index, {
-                                        compareMode: e.currentTarget
-                                          .value as CodexReasoningGuardCompareMode,
-                                      })
-                                    }
-                                    disabled={reasoningGuardControlsDisabled}
-                                    className="mt-3 font-mono text-xs"
-                                  >
-                                    <option value="equals">等于 (==)</option>
-                                    <option value="less_than_or_equal">小于等于 (&lt;=)</option>
-                                  </Select>
-                                </label>
-                                <label className="text-xs font-medium text-secondary-foreground">
-                                  <span className="block">reasoning_tokens 规则值</span>
-                                  <Input
-                                    value={draft.valuesText}
-                                    onChange={(e) =>
-                                      updateCodexReasoningGuardModelRuleDraft(index, {
-                                        valuesText: e.currentTarget.value,
-                                      })
-                                    }
-                                    placeholder="516"
-                                    className="mt-3 font-mono text-xs"
-                                    disabled={reasoningGuardControlsDisabled}
-                                  />
-                                </label>
-                                <div className="flex items-end">
-                                  <Button
-                                    variant="secondary"
-                                    size="sm"
-                                    aria-label={`删除模型规则 ${index + 1}`}
-                                    onClick={() => removeCodexReasoningGuardModelRuleDraft(index)}
-                                    disabled={reasoningGuardControlsDisabled}
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </Button>
-                                </div>
-                              </div>
-                              {codexReasoningGuardModelRuleErrors[index] ? (
-                                <div className="mt-2 text-[11px] text-rose-600 dark:text-rose-400">
-                                  {codexReasoningGuardModelRuleErrors[index]}
-                                </div>
-                              ) : (
-                                <div className="mt-2 text-[11px] text-muted-foreground">
-                                  {codexReasoningGuardCompareModeHelperText(draft.compareMode)}
-                                </div>
-                              )}
-                            </div>
-                          ))
-                        )}
-                      </div>
-
-                      <div className="mt-4 flex items-center justify-between gap-3">
-                        <div className="text-[11px] text-muted-foreground">
-                          最多支持 {MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN} 条模型规则。
-                        </div>
+                      <div className="mt-4 flex justify-end">
                         <Button
                           size="sm"
                           className="gap-2"
@@ -2632,36 +4927,65 @@ export function CliManagerCodexTab({
                                 <th className="px-3 py-2 font-medium">正常请求</th>
                                 <th className="px-3 py-2 font-medium">命中率</th>
                                 <th className="px-3 py-2 font-medium">命中次数</th>
-                                <th className="px-3 py-2 font-medium">当前规则</th>
-                                <th className="px-3 py-2 font-medium">规则来源</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-border bg-background/80">
-                              {codexReasoningGuardModelStats.map((row) => {
-                                const ruleInfo = resolveCodexReasoningGuardRuleForModel(
-                                  appSettings,
-                                  row.requested_model
-                                );
-                                return (
-                                  <tr key={row.requested_model}>
-                                    <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
-                                      {row.requested_model}
-                                    </td>
-                                    <td className="px-3 py-2">{row.hit_request_count}</td>
-                                    <td className="px-3 py-2">{row.normal_request_count}</td>
+                              {codexReasoningGuardModelStats.map((row) => (
+                                <tr key={row.requested_model}>
+                                  <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
+                                    {row.requested_model}
+                                  </td>
+                                  <td className="px-3 py-2">{row.hit_request_count}</td>
+                                  <td className="px-3 py-2">{row.normal_request_count}</td>
+                                  <td className="px-3 py-2">
+                                    {formatCodexReasoningGuardHitRate(row.hit_rate)}
+                                  </td>
+                                  <td className="px-3 py-2">{row.hit_attempt_count}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div className="overflow-x-auto rounded-lg border border-border/70">
+                          <table className="min-w-full divide-y divide-border text-sm">
+                            <thead className="bg-secondary/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                              <tr>
+                                <th className="px-3 py-2 font-medium">续写状态</th>
+                                <th className="px-3 py-2 font-medium">触发请求</th>
+                                <th className="px-3 py-2 font-medium">触发次数</th>
+                                <th className="px-3 py-2 font-medium">平均续写轮数</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border bg-background/80">
+                              {codexReasoningContinuationStatusStats.length === 0 ? (
+                                <tr>
+                                  <td
+                                    className="px-3 py-4 text-center text-xs text-muted-foreground"
+                                    colSpan={4}
+                                  >
+                                    还没有可展示的思考续写记录。
+                                  </td>
+                                </tr>
+                              ) : (
+                                codexReasoningContinuationStatusStats.map((row) => (
+                                  <tr key={row.status}>
                                     <td className="px-3 py-2">
-                                      {formatCodexReasoningGuardHitRate(row.hit_rate)}
+                                      <div className="font-medium text-secondary-foreground">
+                                        {formatCodexReasoningContinuationStatusLabel(row.status)}
+                                      </div>
+                                      <div className="font-mono text-[11px] text-muted-foreground">
+                                        {row.status}
+                                      </div>
                                     </td>
-                                    <td className="px-3 py-2">{row.hit_attempt_count}</td>
-                                    <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
-                                      {ruleInfo.label}
-                                    </td>
-                                    <td className="px-3 py-2 text-muted-foreground">
-                                      {ruleInfo.sourceLabel}
+                                    <td className="px-3 py-2">{row.request_count}</td>
+                                    <td className="px-3 py-2">{row.attempt_count}</td>
+                                    <td className="px-3 py-2">
+                                      {formatCodexReasoningGuardDecimal(row.average_sent_rounds)}
                                     </td>
                                   </tr>
-                                );
-                              })}
+                                ))
+                              )}
                             </tbody>
                           </table>
                         </div>
@@ -2674,46 +4998,52 @@ export function CliManagerCodexTab({
           </div>
         </div>
 
-        {codexAvailable === "unavailable" ? (
-          <div className="text-sm text-muted-foreground text-center py-8">数据不可用</div>
-        ) : !codexConfig ? (
-          <div className="text-sm text-muted-foreground text-center py-8">暂无配置，请尝试刷新</div>
+        {!codexConfig ? (
+          <div className="text-sm text-muted-foreground text-center py-8">
+            {codexAvailable === "unavailable" ? "数据不可用" : "暂无配置，请尝试刷新"}
+          </div>
         ) : (
           <div className="p-6 space-y-6">
-            <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                <Settings className="h-4 w-4 text-muted-foreground" />
-                基础配置
+            <CodexBasicConfigSection
+              codexConfig={codexConfig}
+              saving={saving}
+              modelText={modelText}
+              modelSuggestions={modelSuggestions}
+              contextWindowText={contextWindowText}
+              autoCompactLimitText={autoCompactLimitText}
+              sandboxModeText={sandboxModeText}
+              reasoningEffortText={reasoningEffortText}
+              planModeReasoningEffortText={planModeReasoningEffortText}
+              webSearchText={webSearchText}
+              personalityText={personalityText}
+              reasoningOptions={reasoningOptions}
+              reasoningStatusText={reasoningStatusText}
+              reasoningStatusRetryable={reasoningStatusRetryable}
+              ultraConflictText={ultraConflictText}
+              onModelInputChange={onModelInputChange}
+              onEffortInputChange={onEffortInputChange}
+              persistModel={persistModel}
+              refreshCodexStatus={refreshCodexStatus}
+              updateCodexDraft={updateCodexDraft}
+              persistCodexConfig={persistCodexConfig}
+            />
+
+            <div className="rounded-lg border border-border bg-white p-5 dark:bg-secondary">
+              <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+                <Settings className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                AIO Provider
               </h3>
               <div className="divide-y divide-border">
-                <SettingItem
-                  label="默认模型 (model)"
-                  subtitle="设置 Codex 默认使用的模型（例如 gpt-5-codex）。留空表示不设置（交由 Codex 默认/上层配置决定）。"
-                >
-                  <Input
-                    value={modelText}
-                    onChange={(e) => setModelText(e.currentTarget.value)}
-                    onBlur={() =>
-                      void persistCodexConfig(
-                        buildModelPatch(modelText, contextWindowText, autoCompactLimitText)
-                      )
-                    }
-                    placeholder="例如：gpt-5-codex"
-                    className="font-mono w-[280px] max-w-full"
-                    disabled={saving}
-                  />
-                </SettingItem>
-
                 <SettingItem
                   label="供应商测试默认模型"
                   subtitle={`Codex 供应商做“可用性测试”时使用的全局模型。Provider 编辑页不单独填写时，会回退到这里；默认值是 ${DEFAULT_CODEX_PROVIDER_TEST_MODEL}。`}
                 >
                   <Input
                     value={providerTestModelText}
-                    onChange={(e) => setProviderTestModelText(e.currentTarget.value)}
+                    onChange={(event) => setProviderTestModelText(event.currentTarget.value)}
                     onBlur={() => void saveProviderTestModel(providerTestModelText)}
                     placeholder={DEFAULT_CODEX_PROVIDER_TEST_MODEL}
-                    className="font-mono w-[280px] max-w-full"
+                    className="w-[280px] max-w-full font-mono"
                     disabled={providerTestModelControlsDisabled}
                   />
                 </SettingItem>
@@ -2727,497 +5057,48 @@ export function CliManagerCodexTab({
                     size="sm"
                     onClick={() => void syncCodexProvider?.()}
                     disabled={providerSyncControlsDisabled}
+                    className="gap-2"
                   >
                     <RefreshCw
-                      className={cn("h-4 w-4", codexProviderSyncing ? "animate-spin" : "")}
+                      className={cn("h-4 w-4", codexProviderSyncing && "animate-spin")}
+                      aria-hidden="true"
                     />
                     {codexProviderSyncing ? "同步中…" : "手动 Provider Sync"}
                   </Button>
                 </SettingItem>
-
-                {showsGpt54LinkedSettings ? (
-                  <>
-                    <SettingItem
-                      label="model_context_window"
-                      subtitle={`模型上下文窗口大小。仅当 model=${GPT_54_MODEL} 时生效；切换到其他模型时自动删除。留空则不写入配置，默认参考值 ${GPT_54_CONTEXT_WINDOW.toLocaleString()}。`}
-                    >
-                      <Input
-                        type="number"
-                        value={contextWindowText}
-                        onChange={(e) => setContextWindowText(e.currentTarget.value)}
-                        onBlur={() =>
-                          void persistCodexConfig({
-                            model_context_window: parsePositiveInt(contextWindowText),
-                          })
-                        }
-                        placeholder={String(GPT_54_CONTEXT_WINDOW)}
-                        className="font-mono w-[220px] max-w-full"
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="model_auto_compact_token_limit"
-                      subtitle={`自动压缩 token 上限。仅当 model=${GPT_54_MODEL} 时生效；切换到其他模型时自动删除。留空则不写入配置，默认参考值 ${GPT_54_AUTO_COMPACT_TOKEN_LIMIT.toLocaleString()}。`}
-                    >
-                      <Input
-                        type="number"
-                        value={autoCompactLimitText}
-                        onChange={(e) => setAutoCompactLimitText(e.currentTarget.value)}
-                        onBlur={() =>
-                          void persistCodexConfig({
-                            model_auto_compact_token_limit: parsePositiveInt(autoCompactLimitText),
-                          })
-                        }
-                        placeholder={String(GPT_54_AUTO_COMPACT_TOKEN_LIMIT)}
-                        className="font-mono w-[220px] max-w-full"
-                        disabled={saving}
-                      />
-                    </SettingItem>
-                  </>
-                ) : null}
-
-                <SettingItem
-                  label="审批策略 (approval_policy)"
-                  subtitle="控制何时需要你确认才会执行命令。推荐 on-request（默认）或 on-failure。"
-                >
-                  <Select
-                    value={codexConfig.approval_policy ?? ""}
-                    onChange={(e) =>
-                      void persistCodexConfig({ approval_policy: e.currentTarget.value })
-                    }
-                    disabled={saving}
-                    className="w-[220px] max-w-full font-mono"
-                  >
-                    <option value="">默认（不设置）</option>
-                    <option value="untrusted">不信任（untrusted）</option>
-                    <option value="on-failure">失败时（on-failure）</option>
-                    <option value="on-request">请求时（on-request）</option>
-                    <option value="never">从不询问（never）</option>
-                  </Select>
-                </SettingItem>
-
-                <SettingItem
-                  label="沙箱模式 (sandbox_mode)"
-                  subtitle="控制文件/网络访问策略。danger-full-access 风险极高，仅在完全信任的环境使用。"
-                >
-                  <Select
-                    value={sandboxModeText}
-                    onChange={(e) => {
-                      const next = e.currentTarget.value;
-                      if (next === "danger-full-access") {
-                        const ok = window.confirm(
-                          "你选择了 danger-full-access（危险：完全访问）。确认要继续吗？"
-                        );
-                        if (!ok) {
-                          setSandboxModeText(codexConfig.sandbox_mode ?? "");
-                          return;
-                        }
-                      }
-                      setSandboxModeText(next);
-                      void persistCodexConfig({ sandbox_mode: next });
-                    }}
-                    disabled={saving}
-                    className="w-[220px] max-w-full font-mono"
-                  >
-                    <option value="">默认（不设置）</option>
-                    <option value="read-only">只读（read-only）</option>
-                    <option value="workspace-write">工作区写入（workspace-write）</option>
-                    <option value="danger-full-access">危险：完全访问（danger-full-access）</option>
-                  </Select>
-                </SettingItem>
-
-                <SettingItem
-                  label="推理强度 (model_reasoning_effort)"
-                  subtitle="调整推理强度（仅对支持的模型/Responses API 生效）。值越高通常越稳健但更慢。"
-                >
-                  <RadioGroup
-                    name="model_reasoning_effort"
-                    value={reasoningEffortText}
-                    onChange={(value) => {
-                      setReasoningEffortText(value);
-                      void persistCodexConfig({ model_reasoning_effort: value });
-                    }}
-                    options={[
-                      { value: "", label: "默认" },
-                      { value: "minimal", label: "最低 (minimal)" },
-                      { value: "low", label: "低 (low)" },
-                      { value: "medium", label: "中 (medium)" },
-                      { value: "high", label: "高 (high)" },
-                      { value: "xhigh", label: "极高 (xhigh)" },
-                    ]}
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="计划模式推理强度 (plan_mode_reasoning_effort)"
-                  subtitle="调整计划模式下的推理强度。值越高通常规划越充分但更慢。"
-                >
-                  <RadioGroup
-                    name="plan_mode_reasoning_effort"
-                    value={planModeReasoningEffortText}
-                    onChange={(value) => {
-                      setPlanModeReasoningEffortText(value);
-                      void persistCodexConfig({ plan_mode_reasoning_effort: value });
-                    }}
-                    options={[
-                      { value: "", label: "默认" },
-                      { value: "low", label: "低 (low)" },
-                      { value: "medium", label: "中 (medium)" },
-                      { value: "high", label: "高 (high)" },
-                      { value: "xhigh", label: "极高 (xhigh)" },
-                    ]}
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="网络搜索模式 (web_search)"
-                  subtitle="控制 Web Search 工具的行为。cached：使用缓存结果；live：获取最新数据；disabled：禁用。"
-                >
-                  <RadioGroup
-                    name="web_search"
-                    value={webSearchText}
-                    onChange={(value) => {
-                      setWebSearchText(value);
-                      void persistCodexConfig({ web_search: value });
-                    }}
-                    options={[
-                      { value: "cached", label: "缓存 (cached)" },
-                      { value: "live", label: "实时 (live)" },
-                      { value: "disabled", label: "禁用 (disabled)" },
-                    ]}
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="输出风格 (personality)"
-                  subtitle="控制 web_search 结果的输出风格。pragmatic 更务实，friendly 更友好；none 会删除该配置，交给 Codex 默认行为。"
-                >
-                  <RadioGroup
-                    name="personality"
-                    value={personalityText}
-                    onChange={(value) => {
-                      setPersonalityText(value);
-                      void persistCodexConfig(buildPersonalityPatch(value));
-                    }}
-                    options={[
-                      { value: "pragmatic", label: "务实 (pragmatic)" },
-                      { value: "friendly", label: "友好 (friendly)" },
-                      { value: "none", label: "默认 / 删除配置 (none)" },
-                    ]}
-                    disabled={saving}
-                  />
-                </SettingItem>
               </div>
             </div>
 
-            <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                <Settings className="h-4 w-4 text-muted-foreground" />
-                Sandbox（workspace-write）
-              </h3>
-              <div className="divide-y divide-border">
-                <SettingItem
-                  label="允许联网 (sandbox_workspace_write.network_access)"
-                  subtitle="仅在 sandbox_mode=workspace-write 时生效。开启写入 network_access=true；关闭删除该项（不写 false）。"
-                >
-                  <Switch
-                    checked={boolOrDefault(
-                      codexConfig.sandbox_workspace_write_network_access,
-                      false
-                    )}
-                    onCheckedChange={(checked) =>
-                      void persistCodexConfig({ sandbox_workspace_write_network_access: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-              </div>
-              {effectiveSandboxMode !== "workspace-write" ? (
-                <div className="mt-3 rounded-lg bg-amber-50 dark:bg-amber-900/30 p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
-                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-                  <div>
-                    当前 sandbox_mode 不是 <span className="font-mono">workspace-write</span>
-                    ，此分区设置可能不会生效。
-                  </div>
-                </div>
-              ) : null}
-            </div>
+            <CodexSandboxSection
+              codexConfig={codexConfig}
+              saving={saving}
+              effectiveSandboxMode={effectiveSandboxMode}
+              persistCodexConfig={persistCodexConfig}
+            />
 
-            <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                <Settings className="h-4 w-4 text-muted-foreground" />
-                Features（实验/可选能力）
-              </h3>
-              <div className="divide-y divide-border">
-                <SettingItem
-                  label="shell_snapshot"
-                  subtitle="测试版：快照 shell 环境以加速重复命令。开启写入 shell_snapshot=true；"
-                >
-                  <Switch
-                    checked={boolOrDefault(codexConfig.features_shell_snapshot, false)}
-                    onCheckedChange={(checked) =>
-                      void persistCodexConfig({ features_shell_snapshot: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
+            <CodexFeaturesSection
+              codexConfig={codexConfig}
+              saving={saving}
+              effectiveFastModeEnabled={effectiveFastModeEnabled}
+              persistCodexConfig={persistCodexConfig}
+            />
 
-                <SettingItem
-                  label="unified_exec"
-                  subtitle="测试版：使用统一的、基于 PTY 的 exec 工具。开启写入 unified_exec=true；"
-                >
-                  <Switch
-                    checked={boolOrDefault(codexConfig.features_unified_exec, false)}
-                    onCheckedChange={(checked) =>
-                      void persistCodexConfig({ features_unified_exec: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="shell_tool"
-                  subtitle="稳定：启用默认 shell 工具。开启写入 shell_tool=true；"
-                >
-                  <Switch
-                    checked={boolOrDefault(codexConfig.features_shell_tool, false)}
-                    onCheckedChange={(checked) =>
-                      void persistCodexConfig({ features_shell_tool: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="exec_policy"
-                  subtitle="实验性：对 shell/unified_exec 强制执行规则检查。开启写入 exec_policy=true；"
-                >
-                  <Switch
-                    checked={boolOrDefault(codexConfig.features_exec_policy, false)}
-                    onCheckedChange={(checked) =>
-                      void persistCodexConfig({ features_exec_policy: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="apply_patch_freeform"
-                  subtitle="实验性：启用自由格式 apply_patch 工具。开启写入 apply_patch_freeform=true；"
-                >
-                  <Switch
-                    checked={boolOrDefault(codexConfig.features_apply_patch_freeform, false)}
-                    onCheckedChange={(checked) =>
-                      void persistCodexConfig({ features_apply_patch_freeform: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="remote_compaction"
-                  subtitle="实验性：启用 remote compaction（需要 ChatGPT 身份验证）。开启写入 remote_compaction=true；"
-                >
-                  <Switch
-                    checked={boolOrDefault(codexConfig.features_remote_compaction, false)}
-                    onCheckedChange={(checked) =>
-                      void persistCodexConfig({ features_remote_compaction: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="fast_mode"
-                  subtitle={
-                    '实验性：启用快速模式。开启同时写入 fast_mode=true 与 service_tier="fast"；关闭删除这两项。'
-                  }
-                >
-                  <Switch
-                    checked={effectiveFastModeEnabled}
-                    onCheckedChange={(checked) =>
-                      void persistCodexConfig(buildFastModePatch(checked))
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="responses_websockets_v2"
-                  subtitle="实验性：启用 Responses API websocket 支持（需要中转站支持）。开启写入 responses_websockets_v2=true；关闭删除该项。"
-                >
-                  <Switch
-                    checked={boolOrDefault(codexConfig.features_responses_websockets_v2, false)}
-                    onCheckedChange={(checked) =>
-                      void persistCodexConfig({ features_responses_websockets_v2: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="multi_agent"
-                  subtitle="实验性：通过并行生成多个专门化代理来协作完成复杂任务，最后整合结果。开启写入 multi_agent=true；"
-                >
-                  <Switch
-                    checked={boolOrDefault(codexConfig.features_multi_agent, false)}
-                    onCheckedChange={(checked) =>
-                      void persistCodexConfig({ features_multi_agent: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-              <details
-                className="group"
-                onToggle={(e) => setTomlAdvancedOpen((e.currentTarget as HTMLDetailsElement).open)}
-              >
-                <summary className="cursor-pointer select-none text-sm font-semibold text-foreground flex items-center justify-between">
-                  <span className="flex items-center gap-2">
-                    <Settings className="h-4 w-4 text-muted-foreground" />
-                    高级配置（config.toml）
-                  </span>
-                  <span className="text-xs font-normal text-muted-foreground">
-                    仅在需要编辑原始 TOML 时使用
-                  </span>
-                </summary>
-
-                {tomlAdvancedOpen ? (
-                  <div className="mt-4 space-y-3">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0">
-                        <div className="text-xs text-muted-foreground">路径</div>
-                        <div className="mt-1 font-mono text-xs text-secondary-foreground truncate">
-                          {codexConfig?.config_path ?? codexConfigToml?.config_path ?? "—"}
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-end gap-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setTomlDraft(codexConfigToml?.toml ?? "");
-                            setTomlDirty(false);
-                            setTomlValidation(null);
-                          }}
-                          disabled={tomlBusy || tomlEditEnabled}
-                        >
-                          重新加载
-                        </Button>
-
-                        {!tomlEditEnabled ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            onClick={() => {
-                              setTomlEditEnabled(true);
-                              setTomlDraft(codexConfigToml?.toml ?? "");
-                              setTomlDirty(false);
-                              setTomlValidation(null);
-                              void validateToml(codexConfigToml?.toml ?? "");
-                            }}
-                            disabled={tomlBusy}
-                          >
-                            编辑
-                          </Button>
-                        ) : (
-                          <>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => {
-                                setTomlEditEnabled(false);
-                                setTomlDraft(codexConfigToml?.toml ?? "");
-                                setTomlDirty(false);
-                                setTomlValidation(null);
-                              }}
-                              disabled={tomlBusy}
-                            >
-                              取消
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              onClick={() => void saveTomlDraft()}
-                              disabled={
-                                tomlBusy ||
-                                tomlValidating ||
-                                !tomlDirty ||
-                                (tomlValidation ? !tomlValidation.ok : false)
-                              }
-                            >
-                              {tomlValidating ? "校验中…" : "保存"}
-                            </Button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    {codexConfigTomlLoading ? (
-                      <div className="text-sm text-muted-foreground py-6 text-center">加载中…</div>
-                    ) : (
-                      <Suspense
-                        fallback={
-                          <div className="text-sm text-muted-foreground py-6 text-center">
-                            加载编辑器…
-                          </div>
-                        }
-                      >
-                        <LazyCodeEditor
-                          value={tomlDraft}
-                          onChange={
-                            tomlEditEnabled
-                              ? (next) => {
-                                  setTomlDraft(next);
-                                  setTomlDirty(true);
-                                }
-                              : undefined
-                          }
-                          readOnly={!tomlEditEnabled || tomlBusy}
-                          language="toml"
-                          minHeight="260px"
-                          placeholder='例如：approval_policy = "on-request"'
-                        />
-                      </Suspense>
-                    )}
-
-                    {tomlValidation?.ok === false && tomlValidation.error ? (
-                      <div className="rounded-lg bg-rose-50 dark:bg-rose-900/30 p-3 text-xs text-rose-700 dark:text-rose-400 flex items-start gap-2">
-                        <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-                        <div className="min-w-0">
-                          <div className="font-semibold">TOML 校验失败</div>
-                          <div className="mt-1 break-words">
-                            {tomlValidation.error.message}
-                            {tomlValidation.error.line ? (
-                              <span className="ml-2 font-mono text-rose-600">
-                                (line {tomlValidation.error.line}
-                                {tomlValidation.error.column
-                                  ? `, column ${tomlValidation.error.column}`
-                                  : ""}
-                                )
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-xs text-muted-foreground">
-                        保存前会进行后端 TOML 校验；校验失败不会写入文件。
-                      </div>
-                    )}
-                  </div>
-                ) : null}
-              </details>
-            </div>
+            <CodexTomlAdvancedSection
+              codexConfig={codexConfig}
+              codexConfigToml={codexConfigToml}
+              codexConfigTomlLoading={codexConfigTomlLoading}
+              tomlAdvancedOpen={tomlAdvancedOpen}
+              tomlBusy={tomlBusy}
+              tomlEditEnabled={tomlEditEnabled}
+              tomlDraft={tomlDraft}
+              tomlDirty={tomlDirty}
+              tomlValidating={tomlValidating}
+              tomlValidation={tomlValidation}
+              setTomlAdvancedOpen={setTomlAdvancedOpen}
+              updateTomlState={updateTomlState}
+              validateToml={validateToml}
+              saveTomlDraft={saveTomlDraft}
+            />
           </div>
         )}
 

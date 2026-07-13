@@ -4,12 +4,13 @@ use crate::db;
 use crate::shared::error::db_err;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::costing::cost_usd_from_femto;
 use super::{
-    CodexReasoningGuardModelEffortStat, CodexReasoningGuardModelStat, CodexReasoningGuardStats,
-    RequestLogDetail, RequestLogRouteHop, RequestLogSummary,
+    CodexReasoningContinuationStatusStat, CodexReasoningGuardModelEffortStat,
+    CodexReasoningGuardModelStat, CodexReasoningGuardStats, RequestLogDetail, RequestLogRouteHop,
+    RequestLogSummary,
 };
 
 const CLAUDE_VISIBLE_LOG_PATH: &str = "/v1/messages";
@@ -44,6 +45,8 @@ const REQUEST_LOG_SUMMARY_FIELDS: &str = "
   cost_usd_femto,
   cost_multiplier,
   created_at_ms,
+  last_activity_ms,
+  activity_details_json,
   created_at,
   provider_chain_json,
   error_details_json
@@ -78,6 +81,8 @@ const REQUEST_LOG_DETAIL_FIELDS: &str = "
   cost_usd_femto,
   cost_multiplier,
   created_at_ms,
+  last_activity_ms,
+  activity_details_json,
   created_at,
   provider_chain_json,
   error_details_json
@@ -211,6 +216,8 @@ pub(super) fn route_from_attempts(attempts: &[AttemptRow]) -> Vec<RequestLogRout
 struct SourceProviderInfo {
     source_provider_id: Option<i64>,
     source_provider_name: Option<String>,
+    // Same predicate as the usage-stats SQL: source id present OR cx2cc bridge.
+    bridged: bool,
 }
 
 fn normalize_source_provider_name(name: Option<String>) -> Option<String> {
@@ -243,11 +250,11 @@ fn load_source_provider_info_map(
 SELECT
   bridge.id,
   bridge.source_provider_id,
-  source.name
+  source.name,
+  bridge.bridge_type
 FROM providers bridge
 LEFT JOIN providers source ON source.id = bridge.source_provider_id
 WHERE bridge.id IN ({placeholders})
-  AND bridge.source_provider_id IS NOT NULL
 "#
     );
 
@@ -272,12 +279,19 @@ WHERE bridge.id IN ({placeholders})
         let source_provider_name: Option<String> = row
             .get(2)
             .map_err(|e| db_err!("invalid provider source name: {e}"))?;
+        let bridge_type: Option<String> = row
+            .get(3)
+            .map_err(|e| db_err!("invalid provider bridge type: {e}"))?;
 
         out.insert(
             bridge_id,
             SourceProviderInfo {
                 source_provider_id,
                 source_provider_name: normalize_source_provider_name(source_provider_name),
+                bridged: crate::usage_stats::is_bridged_input_semantics(
+                    source_provider_id,
+                    bridge_type.as_deref(),
+                ),
             },
         );
     }
@@ -293,10 +307,25 @@ fn attach_source_provider_info(
     let info_by_bridge_id = load_source_provider_info_map(conn, &ids)?;
 
     for item in items.iter_mut() {
+        let mut bridged = false;
         if let Some(info) = info_by_bridge_id.get(&item.final_provider_id) {
             item.final_provider_source_id = info.source_provider_id;
             item.final_provider_source_name = info.source_provider_name.clone();
+            bridged = info.bridged;
         }
+        let persisted_openai_semantics = super::semantics::resolve_cx2cc_cost_basis(
+            item.special_settings_json.as_deref(),
+            (item.final_provider_id > 0).then_some(item.final_provider_id),
+        )
+        .openai_input_semantics_override();
+        item.effective_input_tokens = crate::usage_stats::effective_input_tokens_display(
+            &item.cli_key,
+            persisted_openai_semantics,
+            bridged,
+            item.input_tokens,
+            item.cache_read_input_tokens,
+            item.cache_creation_input_tokens,
+        );
     }
 
     Ok(())
@@ -309,12 +338,18 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<RequestLogSummary, rusqlite
     let (start_provider_id, start_provider_name) = start_provider_from_attempts(&attempts);
     let (final_provider_id, final_provider_name) = final_provider_from_attempts(&attempts);
     let route = route_from_attempts(&attempts);
-    // has_failover: 真正切换过 provider（route 中有多个 hop，skipped 已被过滤）
+    // has_failover: 切换过 provider（route 中有多个 hop）。注意 provider_id>0 的
+    // skipped attempt 也计入 hop（见 route_includes_skipped_attempts 测试）；前端
+    // src/services/gateway/traceRoute.ts 复刻此语义，两侧需保持同步。
     let has_failover = route.len() > 1;
     let session_reuse = attempts
         .iter()
         .any(|row| row.session_reuse.unwrap_or(false));
     let cost_usd = cost_usd_from_femto(row.get("cost_usd_femto")?);
+
+    let status: Option<i64> = row.get("status")?;
+    let error_code: Option<String> = row.get("error_code")?;
+    let is_interrupted = status.is_none() && error_code.is_none();
 
     Ok(RequestLogSummary {
         id: row.get("id")?,
@@ -326,8 +361,9 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<RequestLogSummary, rusqlite
         excluded_from_stats: row.get::<_, i64>("excluded_from_stats").unwrap_or(0) != 0,
         special_settings_json: row.get("special_settings_json")?,
         requested_model: row.get("requested_model")?,
-        status: row.get("status")?,
-        error_code: row.get("error_code")?,
+        status,
+        error_code,
+        is_interrupted,
         duration_ms: row.get("duration_ms")?,
         ttfb_ms: row.get("ttfb_ms")?,
         visible_ttfb_ms: row.get("visible_ttfb_ms")?,
@@ -348,9 +384,13 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<RequestLogSummary, rusqlite
         cache_creation_input_tokens: row.get("cache_creation_input_tokens")?,
         cache_creation_5m_input_tokens: row.get("cache_creation_5m_input_tokens")?,
         cache_creation_1h_input_tokens: row.get("cache_creation_1h_input_tokens")?,
+        // Filled by attach_source_provider_info (needs the providers table).
+        effective_input_tokens: None,
         cost_usd,
         cost_multiplier: row.get("cost_multiplier")?,
         created_at_ms: row.get("created_at_ms")?,
+        last_activity_ms: row.get("last_activity_ms")?,
+        activity_details_json: row.get("activity_details_json").unwrap_or(None),
         created_at: row.get("created_at")?,
         provider_chain_json: row.get("provider_chain_json").unwrap_or(None),
         error_details_json: row.get("error_details_json").unwrap_or(None),
@@ -362,6 +402,9 @@ fn row_to_detail(row: &rusqlite::Row<'_>) -> Result<RequestLogDetail, rusqlite::
     let attempts = parse_attempts(&attempts_json);
     let (final_provider_id, final_provider_name) = final_provider_from_attempts(&attempts);
     let cost_usd = cost_usd_from_femto(row.get("cost_usd_femto")?);
+    let status: Option<i64> = row.get("status")?;
+    let error_code: Option<String> = row.get("error_code")?;
+    let is_interrupted = status.is_none() && error_code.is_none();
 
     Ok(RequestLogDetail {
         id: row.get("id")?,
@@ -373,8 +416,9 @@ fn row_to_detail(row: &rusqlite::Row<'_>) -> Result<RequestLogDetail, rusqlite::
         query: row.get("query")?,
         excluded_from_stats: row.get::<_, i64>("excluded_from_stats").unwrap_or(0) != 0,
         special_settings_json: row.get("special_settings_json")?,
-        status: row.get("status")?,
-        error_code: row.get("error_code")?,
+        status,
+        error_code,
+        is_interrupted,
         duration_ms: row.get("duration_ms")?,
         ttfb_ms: row.get("ttfb_ms")?,
         visible_ttfb_ms: row.get("visible_ttfb_ms")?,
@@ -386,6 +430,8 @@ fn row_to_detail(row: &rusqlite::Row<'_>) -> Result<RequestLogDetail, rusqlite::
         cache_creation_input_tokens: row.get("cache_creation_input_tokens")?,
         cache_creation_5m_input_tokens: row.get("cache_creation_5m_input_tokens")?,
         cache_creation_1h_input_tokens: row.get("cache_creation_1h_input_tokens")?,
+        // Filled by attach_source_provider_info_to_detail.
+        effective_input_tokens: None,
         usage_json: row.get("usage_json")?,
         requested_model: row.get("requested_model")?,
         final_provider_id,
@@ -395,6 +441,8 @@ fn row_to_detail(row: &rusqlite::Row<'_>) -> Result<RequestLogDetail, rusqlite::
         cost_usd,
         cost_multiplier: row.get("cost_multiplier")?,
         created_at_ms: row.get("created_at_ms")?,
+        last_activity_ms: row.get("last_activity_ms")?,
+        activity_details_json: row.get("activity_details_json").unwrap_or(None),
         created_at: row.get("created_at")?,
         provider_chain_json: row.get("provider_chain_json").unwrap_or(None),
         error_details_json: row.get("error_details_json").unwrap_or(None),
@@ -406,10 +454,25 @@ fn attach_source_provider_info_to_detail(
     item: &mut RequestLogDetail,
 ) -> crate::shared::error::AppResult<()> {
     let info_by_bridge_id = load_source_provider_info_map(conn, &[item.final_provider_id])?;
+    let mut bridged = false;
     if let Some(info) = info_by_bridge_id.get(&item.final_provider_id) {
         item.final_provider_source_id = info.source_provider_id;
         item.final_provider_source_name = info.source_provider_name.clone();
+        bridged = info.bridged;
     }
+    let persisted_openai_semantics = super::semantics::resolve_cx2cc_cost_basis(
+        item.special_settings_json.as_deref(),
+        (item.final_provider_id > 0).then_some(item.final_provider_id),
+    )
+    .openai_input_semantics_override();
+    item.effective_input_tokens = crate::usage_stats::effective_input_tokens_display(
+        &item.cli_key,
+        persisted_openai_semantics,
+        bridged,
+        item.input_tokens,
+        item.cache_read_input_tokens,
+        item.cache_creation_input_tokens,
+    );
     Ok(())
 }
 
@@ -591,6 +654,43 @@ pub fn get_by_trace_id(
     Ok(item)
 }
 
+pub fn terminal_trace_ids(
+    db: &db::Db,
+    trace_ids: &[String],
+) -> crate::shared::error::AppResult<HashSet<String>> {
+    const SQLITE_PARAM_CHUNK: usize = 900;
+
+    let mut terminal = HashSet::new();
+    if trace_ids.is_empty() {
+        return Ok(terminal);
+    }
+
+    let conn = db.open_connection()?;
+    for chunk in trace_ids.chunks(SQLITE_PARAM_CHUNK) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT trace_id FROM request_logs \
+             WHERE trace_id IN ({placeholders}) \
+             AND (status IS NOT NULL OR error_code IS NOT NULL)"
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| db_err!("failed to prepare terminal trace query: {e}"))?;
+        let rows = stmt
+            .query_map(params_from_iter(chunk.iter().map(String::as_str)), |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|e| db_err!("failed to query terminal traces: {e}"))?;
+        for row in rows {
+            terminal.insert(row.map_err(|e| db_err!("failed to read terminal trace: {e}"))?);
+        }
+    }
+
+    Ok(terminal)
+}
+
 pub fn codex_reasoning_guard_stats(
     db: &db::Db,
     start_created_at_ms: Option<i64>,
@@ -640,19 +740,86 @@ pub fn codex_reasoning_guard_stats(
 WITH codex_requests AS (
   SELECT
     id,
-    COALESCE(NULLIF(TRIM(requested_model), ''), '{unknown}') AS requested_model
+    COALESCE(NULLIF(TRIM(requested_model), ''), '{unknown}') AS requested_model,
+    duration_ms,
+    output_tokens
   FROM request_logs
   WHERE cli_key = 'codex'{time_filter}
 ),
+-- Unified guard hits include continuation_repair strategy records; each matched
+-- attempt counts once whether the strategy retried or repaired the stream.
 guard_hit_attempts AS (
   SELECT
-    request_logs.id AS request_id,
-    COALESCE(NULLIF(TRIM(request_logs.requested_model), ''), '{unknown}') AS requested_model
-  FROM request_logs
+    codex_requests.id AS request_id,
+    codex_requests.requested_model AS requested_model,
+    COALESCE(
+      NULLIF(TRIM(json_extract(special.value, '$.hitSource')), ''),
+      'reasoning_tokens'
+    ) AS hit_source
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
   JOIN json_each(request_logs.special_settings_json) AS special
-  WHERE request_logs.cli_key = 'codex'
-    {hit_time_filter}
-    AND json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+),
+feature_samples AS (
+  SELECT
+    codex_requests.id AS request_id,
+    codex_requests.duration_ms AS duration_ms,
+    codex_requests.output_tokens AS output_tokens,
+    special.value AS feature,
+    LOWER(TRIM(COALESCE(
+      json_extract(special.value, '$.requestReasoningEffort'),
+      json_extract(special.value, '$.rawRequestReasoningEffort'),
+      ''
+    ))) AS request_reasoning_effort
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_features'
+),
+unified_continuation_attempts AS (
+  SELECT
+    codex_requests.id AS request_id,
+    CASE COALESCE(
+      NULLIF(LOWER(TRIM(json_extract(special.value, '$.guardStrategyOutcome'))), ''),
+      'unknown'
+    )
+      WHEN 'continuation_repaired' THEN 'repaired'
+      ELSE COALESCE(
+        NULLIF(LOWER(TRIM(json_extract(special.value, '$.guardStrategyOutcome'))), ''),
+        'unknown'
+      )
+    END AS status,
+    MAX(COALESCE(CAST(json_extract(special.value, '$.continuationSentRounds') AS INTEGER), 0), 0) AS sent_rounds
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.guardPostMatchStrategy'), ''))) IN ('continuation_repair', 'continuation_repair_experimental')
+    AND NULLIF(TRIM(COALESCE(json_extract(special.value, '$.guardStrategyOutcome'), '')), '') IS NOT NULL
+),
+legacy_continuation_attempts AS (
+  SELECT
+    codex_requests.id AS request_id,
+    COALESCE(
+      NULLIF(LOWER(TRIM(json_extract(special.value, '$.status'))), ''),
+      'unknown'
+    ) AS status,
+    MAX(COALESCE(CAST(json_extract(special.value, '$.sentRounds') AS INTEGER), 0), 0) AS sent_rounds
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_continuation'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM unified_continuation_attempts AS unified
+      WHERE unified.request_id = codex_requests.id
+    )
+),
+continuation_attempts AS (
+  SELECT request_id, status, sent_rounds FROM unified_continuation_attempts
+  UNION ALL
+  SELECT request_id, status, sent_rounds FROM legacy_continuation_attempts
 ),
 guard_hit_requests AS (
   SELECT request_id, requested_model, COUNT(1) AS hit_attempt_count
@@ -662,26 +829,162 @@ guard_hit_requests AS (
 SELECT
   COALESCE((SELECT COUNT(*) FROM guard_hit_requests), 0) AS hit_request_count,
   COALESCE((SELECT SUM(hit_attempt_count) FROM guard_hit_requests), 0) AS hit_attempt_count,
+  COALESCE((SELECT SUM(CASE WHEN hit_source = 'reasoning_tokens' THEN 1 ELSE 0 END) FROM guard_hit_attempts), 0) AS token_hit_attempt_count,
+  COALESCE((SELECT SUM(CASE WHEN hit_source = 'final_answer_only_high_xhigh' THEN 1 ELSE 0 END) FROM guard_hit_attempts), 0) AS feature_hit_attempt_count,
+  COALESCE((SELECT COUNT(DISTINCT CASE WHEN hit_source = 'reasoning_tokens' THEN request_id END) FROM guard_hit_attempts), 0) AS reasoning_token_hit_request_count,
+  COALESCE((SELECT COUNT(DISTINCT CASE WHEN hit_source = 'final_answer_only_high_xhigh' THEN request_id END) FROM guard_hit_attempts), 0) AS final_answer_only_high_xhigh_hit_request_count,
+  COALESCE((SELECT COUNT(DISTINCT request_id) FROM feature_samples), 0) AS feature_sample_request_count,
+  COALESCE((SELECT COUNT(*) FROM feature_samples), 0) AS feature_sample_count,
+  COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.finalAnswerOnly') = 1 THEN 1 ELSE 0 END) FROM feature_samples), 0) AS final_answer_only_sample_count,
+  COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.finalAnswerOnly') = 1 AND request_reasoning_effort IN ('high', 'xhigh', 'max', 'ultra') THEN 1 ELSE 0 END) FROM feature_samples), 0) AS high_xhigh_final_answer_only_sample_count,
+  COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.reasoningTokens') = 516 AND json_extract(feature, '$.finalAnswerOnly') = 1 AND COALESCE(json_extract(feature, '$.commentaryObserved'), 0) = 0 THEN 1 ELSE 0 END) FROM feature_samples), 0) AS reasoning_516_final_answer_only_no_commentary_count,
+  COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.interceptExemptReason') = 'context_compaction' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS compaction_exempt_sample_count,
+  COALESCE((SELECT SUM(CASE WHEN json_type(feature, '$.reasoningTokens') IS NOT NULL AND json_type(feature, '$.reasoningTokens') != 'null' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS reasoning_tokens_coverage_count,
+  COALESCE((SELECT SUM(CASE WHEN json_type(feature, '$.finalAnswerOnly') IS NOT NULL AND json_type(feature, '$.finalAnswerOnly') != 'null' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS final_answer_only_coverage_count,
+  COALESCE((SELECT SUM(CASE WHEN json_type(feature, '$.commentaryObserved') IS NOT NULL AND json_type(feature, '$.commentaryObserved') != 'null' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS commentary_observed_coverage_count,
+  COALESCE((SELECT SUM(CASE WHEN request_reasoning_effort != '' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS reasoning_effort_coverage_count,
+  COALESCE((SELECT SUM(CASE WHEN duration_ms IS NOT NULL THEN 1 ELSE 0 END) FROM feature_samples), 0) AS duration_ms_coverage_count,
+  COALESCE((SELECT SUM(CASE WHEN output_tokens IS NOT NULL THEN 1 ELSE 0 END) FROM feature_samples), 0) AS output_tokens_coverage_count,
+  COALESCE((SELECT COUNT(DISTINCT request_id) FROM continuation_attempts), 0) AS continuation_triggered_request_count,
+  COALESCE((SELECT COUNT(*) FROM continuation_attempts), 0) AS continuation_triggered_attempt_count,
+  COALESCE((SELECT COUNT(DISTINCT CASE WHEN status = 'repaired' THEN request_id END) FROM continuation_attempts), 0) AS continuation_repaired_request_count,
+  COALESCE((SELECT SUM(CASE WHEN status = 'repaired' THEN 1 ELSE 0 END) FROM continuation_attempts), 0) AS continuation_repaired_attempt_count,
+  COALESCE((SELECT SUM(CASE WHEN status != 'repaired' THEN 1 ELSE 0 END) FROM continuation_attempts), 0) AS continuation_non_repaired_attempt_count,
+  COALESCE((SELECT AVG(sent_rounds * 1.0) FROM continuation_attempts), 0.0) AS continuation_average_sent_rounds,
   COALESCE((SELECT COUNT(*) FROM codex_requests), 0) AS total_request_count
 "#,
         unknown = UNKNOWN_CODEX_REQUESTED_MODEL_LABEL,
-        time_filter = time_filter,
-        hit_time_filter = hit_time_filter
+        time_filter = time_filter
     );
 
     let range_params = [start_created_at_ms, end_created_at_ms];
     let range_params_iter = range_params.iter().flatten().copied();
 
-    let (hit_request_count, hit_attempt_count, total_request_count) = conn
+    let mut summary_stats = conn
         .query_row(
             &overall_sql,
             params_from_iter(range_params_iter.clone()),
             |row| {
+                let hit_request_count = row.get::<_, i64>("hit_request_count")?.max(0);
+                let total_request_count = row.get::<_, i64>("total_request_count")?.max(0);
+                let normal_request_count = (total_request_count - hit_request_count).max(0);
+                let hit_rate = if total_request_count > 0 {
+                    hit_request_count as f64 / total_request_count as f64
+                } else {
+                    0.0
+                };
                 Ok((
-                    row.get::<_, i64>("hit_request_count")?.max(0),
+                    hit_request_count,
                     row.get::<_, i64>("hit_attempt_count")?.max(0),
-                    row.get::<_, i64>("total_request_count")?.max(0),
+                    row.get::<_, i64>("token_hit_attempt_count")?.max(0),
+                    row.get::<_, i64>("feature_hit_attempt_count")?.max(0),
+                    row.get::<_, i64>("reasoning_token_hit_request_count")?
+                        .max(0),
+                    row.get::<_, i64>("final_answer_only_high_xhigh_hit_request_count")?
+                        .max(0),
+                    normal_request_count,
+                    total_request_count,
+                    hit_rate,
+                    row.get::<_, i64>("feature_sample_request_count")?.max(0),
+                    row.get::<_, i64>("feature_sample_count")?.max(0),
+                    row.get::<_, i64>("final_answer_only_sample_count")?.max(0),
+                    row.get::<_, i64>("high_xhigh_final_answer_only_sample_count")?
+                        .max(0),
+                    row.get::<_, i64>("reasoning_516_final_answer_only_no_commentary_count")?
+                        .max(0),
+                    row.get::<_, i64>("compaction_exempt_sample_count")?.max(0),
+                    row.get::<_, i64>("reasoning_tokens_coverage_count")?.max(0),
+                    row.get::<_, i64>("final_answer_only_coverage_count")?
+                        .max(0),
+                    row.get::<_, i64>("commentary_observed_coverage_count")?
+                        .max(0),
+                    row.get::<_, i64>("reasoning_effort_coverage_count")?.max(0),
+                    row.get::<_, i64>("duration_ms_coverage_count")?.max(0),
+                    row.get::<_, i64>("output_tokens_coverage_count")?.max(0),
+                    row.get::<_, i64>("continuation_triggered_request_count")?
+                        .max(0),
+                    row.get::<_, i64>("continuation_triggered_attempt_count")?
+                        .max(0),
+                    row.get::<_, i64>("continuation_repaired_request_count")?
+                        .max(0),
+                    row.get::<_, i64>("continuation_repaired_attempt_count")?
+                        .max(0),
+                    row.get::<_, i64>("continuation_non_repaired_attempt_count")?
+                        .max(0),
+                    row.get::<_, f64>("continuation_average_sent_rounds")?
+                        .max(0.0),
                 ))
+            },
+        )
+        .map(
+            |(
+                hit_request_count,
+                hit_attempt_count,
+                token_hit_attempt_count,
+                feature_hit_attempt_count,
+                reasoning_token_hit_request_count,
+                final_answer_only_high_xhigh_hit_request_count,
+                normal_request_count,
+                total_request_count,
+                hit_rate,
+                feature_sample_request_count,
+                feature_sample_count,
+                final_answer_only_sample_count,
+                high_xhigh_final_answer_only_sample_count,
+                reasoning_516_final_answer_only_no_commentary_count,
+                compaction_exempt_sample_count,
+                reasoning_tokens_coverage_count,
+                final_answer_only_coverage_count,
+                commentary_observed_coverage_count,
+                reasoning_effort_coverage_count,
+                duration_ms_coverage_count,
+                output_tokens_coverage_count,
+                continuation_triggered_request_count,
+                continuation_triggered_attempt_count,
+                continuation_repaired_request_count,
+                continuation_repaired_attempt_count,
+                continuation_non_repaired_attempt_count,
+                continuation_average_sent_rounds,
+            )| {
+                let continuation_repair_rate = if continuation_triggered_request_count > 0 {
+                    continuation_repaired_request_count as f64
+                        / continuation_triggered_request_count as f64
+                } else {
+                    0.0
+                };
+                CodexReasoningGuardStats {
+                    hit_request_count,
+                    hit_attempt_count,
+                    token_hit_attempt_count,
+                    feature_hit_attempt_count,
+                    reasoning_token_hit_request_count,
+                    final_answer_only_high_xhigh_hit_request_count,
+                    normal_request_count,
+                    total_request_count,
+                    hit_rate,
+                    feature_sample_request_count,
+                    feature_sample_count,
+                    final_answer_only_sample_count,
+                    high_xhigh_final_answer_only_sample_count,
+                    reasoning_516_final_answer_only_no_commentary_count,
+                    compaction_exempt_sample_count,
+                    reasoning_tokens_coverage_count,
+                    final_answer_only_coverage_count,
+                    commentary_observed_coverage_count,
+                    reasoning_effort_coverage_count,
+                    duration_ms_coverage_count,
+                    output_tokens_coverage_count,
+                    continuation_triggered_request_count,
+                    continuation_triggered_attempt_count,
+                    continuation_repaired_request_count,
+                    continuation_repaired_attempt_count,
+                    continuation_non_repaired_attempt_count,
+                    continuation_repair_rate,
+                    continuation_average_sent_rounds,
+                    continuation_by_status: Vec::new(),
+                    by_model: Vec::new(),
+                    by_model_and_effort: Vec::new(),
+                }
             },
         )
         .map_err(|e| db_err!("failed to query codex reasoning guard summary stats: {e}"))?;
@@ -695,6 +998,8 @@ WITH codex_requests AS (
   FROM request_logs
   WHERE cli_key = 'codex'{time_filter}
 ),
+-- Unified guard hits include continuation_repair strategy records; each matched
+-- attempt counts once whether the strategy retried or repaired the stream.
 guard_hit_attempts AS (
   SELECT
     request_logs.id AS request_id,
@@ -804,6 +1109,8 @@ WITH codex_requests AS (
             WHEN 'medium' THEN 'medium'
             WHEN 'high' THEN 'high'
             WHEN 'xhigh' THEN 'xhigh'
+            WHEN 'max' THEN 'max'
+            WHEN 'ultra' THEN 'ultra'
             ELSE NULL
           END
         FROM json_each(request_logs.special_settings_json) AS effort
@@ -828,6 +1135,8 @@ WITH codex_requests AS (
   FROM request_logs
   WHERE cli_key = 'codex'{time_filter}
 ),
+-- Unified guard hits include continuation_repair strategy records; each matched
+-- attempt counts once whether the strategy retried or repaired the stream.
 guard_hit_attempts AS (
   SELECT
     codex_requests.id AS request_id,
@@ -936,22 +1245,109 @@ ORDER BY
         });
     }
 
-    let normal_request_count = (total_request_count - hit_request_count).max(0);
-    let hit_rate = if total_request_count > 0 {
-        hit_request_count as f64 / total_request_count as f64
-    } else {
-        0.0
-    };
+    let continuation_by_status_sql = format!(
+        r#"
+WITH codex_requests AS (
+  SELECT id
+  FROM request_logs
+  WHERE cli_key = 'codex'{time_filter}
+),
+unified_continuation_attempts AS (
+  SELECT
+    codex_requests.id AS request_id,
+    CASE COALESCE(
+      NULLIF(LOWER(TRIM(json_extract(special.value, '$.guardStrategyOutcome'))), ''),
+      'unknown'
+    )
+      WHEN 'continuation_repaired' THEN 'repaired'
+      ELSE COALESCE(
+        NULLIF(LOWER(TRIM(json_extract(special.value, '$.guardStrategyOutcome'))), ''),
+        'unknown'
+      )
+    END AS status,
+    MAX(COALESCE(CAST(json_extract(special.value, '$.continuationSentRounds') AS INTEGER), 0), 0) AS sent_rounds
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.guardPostMatchStrategy'), ''))) IN ('continuation_repair', 'continuation_repair_experimental')
+    AND NULLIF(TRIM(COALESCE(json_extract(special.value, '$.guardStrategyOutcome'), '')), '') IS NOT NULL
+),
+legacy_continuation_attempts AS (
+  SELECT
+    codex_requests.id AS request_id,
+    COALESCE(
+      NULLIF(LOWER(TRIM(json_extract(special.value, '$.status'))), ''),
+      'unknown'
+    ) AS status,
+    MAX(COALESCE(CAST(json_extract(special.value, '$.sentRounds') AS INTEGER), 0), 0) AS sent_rounds
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_continuation'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM unified_continuation_attempts AS unified
+      WHERE unified.request_id = codex_requests.id
+    )
+),
+continuation_attempts AS (
+  SELECT request_id, status, sent_rounds FROM unified_continuation_attempts
+  UNION ALL
+  SELECT request_id, status, sent_rounds FROM legacy_continuation_attempts
+)
+SELECT
+  status,
+  COUNT(DISTINCT request_id) AS request_count,
+  COUNT(*) AS attempt_count,
+  COALESCE(AVG(sent_rounds * 1.0), 0.0) AS average_sent_rounds
+FROM continuation_attempts
+GROUP BY status
+ORDER BY attempt_count DESC, status ASC
+"#,
+        time_filter = time_filter
+    );
 
-    Ok(CodexReasoningGuardStats {
-        hit_request_count,
-        hit_attempt_count,
-        normal_request_count,
-        total_request_count,
-        hit_rate,
-        by_model,
-        by_model_and_effort,
-    })
+    let mut stmt = conn.prepare(&continuation_by_status_sql).map_err(|e| {
+        db_err!("failed to prepare codex reasoning continuation status stats query: {e}")
+    })?;
+    let mut rows = stmt
+        .query(params_from_iter(range_params.iter().flatten().copied()))
+        .map_err(|e| {
+            db_err!("failed to run codex reasoning continuation status stats query: {e}")
+        })?;
+
+    let mut continuation_by_status = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| db_err!("failed to read codex reasoning continuation status stats row: {e}"))?
+    {
+        continuation_by_status.push(CodexReasoningContinuationStatusStat {
+            status: row
+                .get("status")
+                .map_err(|e| db_err!("invalid codex reasoning continuation status: {e}"))?,
+            request_count: row
+                .get::<_, i64>("request_count")
+                .map_err(|e| db_err!("invalid codex reasoning continuation request_count: {e}"))?
+                .max(0),
+            attempt_count: row
+                .get::<_, i64>("attempt_count")
+                .map_err(|e| db_err!("invalid codex reasoning continuation attempt_count: {e}"))?
+                .max(0),
+            average_sent_rounds: row
+                .get::<_, f64>("average_sent_rounds")
+                .map_err(|e| {
+                    db_err!("invalid codex reasoning continuation average_sent_rounds: {e}")
+                })?
+                .max(0.0),
+        });
+    }
+
+    summary_stats.continuation_by_status = continuation_by_status;
+    summary_stats.by_model = by_model;
+    summary_stats.by_model_and_effort = by_model_and_effort;
+
+    Ok(summary_stats)
 }
 
 #[cfg(test)]
@@ -959,7 +1355,7 @@ mod tests {
     use super::{
         codex_reasoning_guard_stats, final_provider_from_attempts, get_by_id, get_by_trace_id,
         list_after_id_all, list_recent, list_recent_all, load_source_provider_info_map,
-        parse_attempts, route_from_attempts, start_provider_from_attempts,
+        parse_attempts, route_from_attempts, start_provider_from_attempts, terminal_trace_ids,
     };
     use crate::db;
     use rusqlite::Connection;
@@ -1161,15 +1557,16 @@ INSERT INTO request_logs (
 CREATE TABLE providers (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
-  source_provider_id INTEGER
+  source_provider_id INTEGER,
+  bridge_type TEXT
 );
-INSERT INTO providers (id, name, source_provider_id) VALUES (7, 'OpenAI Primary', NULL);
-INSERT INTO providers (id, name, source_provider_id) VALUES (12, 'Claude Bridge', 7);
+INSERT INTO providers (id, name, source_provider_id, bridge_type) VALUES (7, 'OpenAI Primary', NULL, NULL);
+INSERT INTO providers (id, name, source_provider_id, bridge_type) VALUES (12, 'Claude Bridge', 7, 'cx2cc');
 "#,
         )
         .unwrap();
 
-        let info = load_source_provider_info_map(&conn, &[12, 99]).unwrap();
+        let info = load_source_provider_info_map(&conn, &[7, 12, 99]).unwrap();
         let bridge = info.get(&12).expect("bridge provider source info");
 
         assert_eq!(bridge.source_provider_id, Some(7));
@@ -1177,6 +1574,12 @@ INSERT INTO providers (id, name, source_provider_id) VALUES (12, 'Claude Bridge'
             bridge.source_provider_name.as_deref(),
             Some("OpenAI Primary")
         );
+        assert!(bridge.bridged);
+
+        let plain = info.get(&7).expect("plain provider info");
+        assert_eq!(plain.source_provider_id, None);
+        assert!(!plain.bridged);
+
         assert!(!info.contains_key(&99));
     }
 
@@ -1215,6 +1618,45 @@ INSERT INTO providers (id, name, source_provider_id) VALUES (12, 'Claude Bridge'
             after.iter().map(|item| item.id).collect::<Vec<_>>(),
             vec![3]
         );
+    }
+
+    #[test]
+    fn terminal_trace_ids_returns_only_persisted_terminal_logs() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_request_log(&conn, 1, "trace-status-terminal", "codex", "/v1/responses");
+        seed_request_log(&conn, 2, "trace-error-terminal", "codex", "/v1/responses");
+        seed_request_log(&conn, 3, "trace-pending", "codex", "/v1/responses");
+        conn.execute(
+            "UPDATE request_logs SET status = NULL, error_code = 'GW_REQUEST_ABORTED' WHERE trace_id = ?1",
+            rusqlite::params!["trace-error-terminal"],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE request_logs SET status = NULL, error_code = NULL WHERE trace_id = ?1",
+            rusqlite::params!["trace-pending"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let terminal = terminal_trace_ids(
+            &db,
+            &[
+                "trace-status-terminal".to_string(),
+                "trace-error-terminal".to_string(),
+                "trace-pending".to_string(),
+                "trace-missing".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert!(terminal.contains("trace-status-terminal"));
+        assert!(terminal.contains("trace-error-terminal"));
+        assert!(!terminal.contains("trace-pending"));
+        assert!(!terminal.contains("trace-missing"));
     }
 
     #[test]
@@ -1330,9 +1772,19 @@ INSERT INTO request_logs (
         let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
         assert_eq!(stats.hit_request_count, 2);
         assert_eq!(stats.hit_attempt_count, 3);
+        assert_eq!(stats.token_hit_attempt_count, 3);
+        assert_eq!(stats.feature_hit_attempt_count, 0);
+        assert_eq!(stats.reasoning_token_hit_request_count, 2);
+        assert_eq!(stats.final_answer_only_high_xhigh_hit_request_count, 0);
         assert_eq!(stats.normal_request_count, 3);
         assert_eq!(stats.total_request_count, 5);
         assert!((stats.hit_rate - 0.4).abs() < f64::EPSILON);
+        assert_eq!(stats.feature_sample_request_count, 0);
+        assert_eq!(stats.feature_sample_count, 0);
+        assert_eq!(stats.final_answer_only_sample_count, 0);
+        assert_eq!(stats.high_xhigh_final_answer_only_sample_count, 0);
+        assert_eq!(stats.reasoning_516_final_answer_only_no_commentary_count, 0);
+        assert_eq!(stats.compaction_exempt_sample_count, 0);
 
         assert_eq!(stats.by_model.len(), 4);
         assert_eq!(stats.by_model[0].requested_model, "gpt-5-codex");
@@ -1392,6 +1844,303 @@ INSERT INTO request_logs (
             .find(|row| row.requested_model == "gpt-5.4-mini" && row.reasoning_effort == "none")
             .expect("gpt-5.4-mini none stat");
         assert_eq!(mini_default_none.normal_request_count, 1);
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_ignore_no_intercept_decision_records() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            1,
+            "trace-decision-only",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_effort","effort":"max"},{"type":"codex_reasoning_guard_decision","hit":false,"matchedRuleAction":"no_intercept"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            2,
+            "trace-hit-with-decision",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_effort","rawEffort":"Ultra"},{"type":"codex_reasoning_guard","hit":true},{"type":"codex_reasoning_guard_decision","hit":false,"matchedRuleAction":"no_intercept"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            3,
+            "trace-normal",
+            Some("gpt-5-mini-codex"),
+            None,
+        );
+        drop(conn);
+
+        let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
+
+        assert_eq!(stats.total_request_count, 3);
+        assert_eq!(stats.hit_request_count, 1);
+        assert_eq!(stats.hit_attempt_count, 1);
+        assert_eq!(stats.normal_request_count, 2);
+        assert_eq!(stats.token_hit_attempt_count, 1);
+
+        let codex_model = stats
+            .by_model
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex")
+            .expect("gpt-5-codex model stats");
+        assert_eq!(codex_model.total_request_count, 2);
+        assert_eq!(codex_model.hit_request_count, 1);
+        assert_eq!(codex_model.normal_request_count, 1);
+        assert_eq!(codex_model.hit_attempt_count, 1);
+
+        let codex_max = stats
+            .by_model_and_effort
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex" && row.reasoning_effort == "max")
+            .expect("gpt-5-codex max stats");
+        assert_eq!(codex_max.total_request_count, 1);
+        assert_eq!(codex_max.hit_request_count, 0);
+        assert_eq!(codex_max.normal_request_count, 1);
+        assert_eq!(codex_max.hit_attempt_count, 0);
+
+        let codex_ultra = stats
+            .by_model_and_effort
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex" && row.reasoning_effort == "ultra")
+            .expect("gpt-5-codex ultra stats");
+        assert_eq!(codex_ultra.total_request_count, 1);
+        assert_eq!(codex_ultra.hit_request_count, 1);
+        assert_eq!(codex_ultra.normal_request_count, 0);
+        assert_eq!(codex_ultra.hit_attempt_count, 1);
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_counts_feature_samples_separately() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            1,
+            "trace-feature-active",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_features","ruleMode":"final_answer_only_high_xhigh","reasoningTokens":516,"requestReasoningEffort":"high","responseClassification":"complete","finalAnswerOnly":true,"commentaryObserved":false,"interceptExemptReason":null},{"type":"codex_reasoning_guard","hitSource":"final_answer_only_high_xhigh"}]"#,
+            ),
+        );
+        conn.execute(
+            "UPDATE request_logs SET output_tokens = 42 WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            2,
+            "trace-feature-compaction",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_features","ruleMode":"final_answer_only_high_xhigh","reasoningTokens":null,"requestReasoningEffort":"xhigh","responseClassification":"request_only","classificationSkippedReason":"guard_disabled_stream_not_buffered","finalAnswerOnly":null,"commentaryObserved":null,"interceptExemptReason":"context_compaction"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            3,
+            "trace-token-active",
+            Some("gpt-5-mini-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_features","ruleMode":"reasoning_tokens","reasoningTokens":516,"rawRequestReasoningEffort":"Ultra","responseClassification":"complete","finalAnswerOnly":true,"commentaryObserved":false,"interceptExemptReason":null},{"type":"codex_reasoning_guard"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            4,
+            "trace-normal",
+            Some("gpt-5-mini-codex"),
+            None,
+        );
+        drop(conn);
+
+        let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
+        assert_eq!(stats.total_request_count, 4);
+        assert_eq!(stats.hit_request_count, 2);
+        assert_eq!(stats.hit_attempt_count, 2);
+        assert_eq!(stats.token_hit_attempt_count, 1);
+        assert_eq!(stats.feature_hit_attempt_count, 1);
+        assert_eq!(stats.reasoning_token_hit_request_count, 1);
+        assert_eq!(stats.final_answer_only_high_xhigh_hit_request_count, 1);
+        assert_eq!(stats.normal_request_count, 2);
+
+        assert_eq!(stats.feature_sample_request_count, 3);
+        assert_eq!(stats.feature_sample_count, 3);
+        assert_eq!(stats.final_answer_only_sample_count, 2);
+        assert_eq!(stats.high_xhigh_final_answer_only_sample_count, 2);
+        assert_eq!(stats.reasoning_516_final_answer_only_no_commentary_count, 2);
+        assert_eq!(stats.compaction_exempt_sample_count, 1);
+        assert_eq!(stats.reasoning_tokens_coverage_count, 2);
+        assert_eq!(stats.final_answer_only_coverage_count, 2);
+        assert_eq!(stats.commentary_observed_coverage_count, 2);
+        assert_eq!(stats.reasoning_effort_coverage_count, 3);
+        assert_eq!(stats.duration_ms_coverage_count, 3);
+        assert_eq!(stats.output_tokens_coverage_count, 1);
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_counts_continuation_repair_separately() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            1,
+            "trace-continuation-repaired",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_continuation","status":"repaired","sentRounds":1},{"type":"codex_reasoning_guard","ruleSource":"template_builtin","hitSource":"reasoning_tokens","guardPostMatchStrategy":"continuation_repair","guardStrategyOutcome":"continuation_repaired","continuationSentRounds":1,"matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            2,
+            "trace-continuation-multi-failure",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_continuation","status":"still_matched","sentRounds":3},{"type":"codex_reasoning_guard","ruleSource":"continuation_repair","hitSource":"reasoning_tokens","matchedRuleName":"reasoning_tokens == 518*n-2"},{"type":"codex_reasoning_continuation","status":"failed","sentRounds":2},{"type":"codex_reasoning_guard","ruleSource":"continuation_repair","hitSource":"reasoning_tokens","matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            3,
+            "trace-continuation-missing",
+            Some("gpt-5-mini-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_continuation","status":"missing_encrypted","sentRounds":0},{"type":"codex_reasoning_guard","ruleSource":"continuation_repair","hitSource":"reasoning_tokens","matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            4,
+            "trace-no-continuation",
+            Some("gpt-5-mini-codex"),
+            None,
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            5,
+            "trace-continuation-experimental-repaired",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_continuation","status":"repaired","sentRounds":2,"clientContractVersion":"bplus_protocol_reconstruction_v8"},{"type":"codex_reasoning_guard","ruleSource":"template_builtin","hitSource":"reasoning_tokens","guardPostMatchStrategy":"continuation_repair_experimental","guardStrategyOutcome":"continuation_repaired","continuationSentRounds":2,"matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+            ),
+        );
+        drop(conn);
+
+        let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
+
+        assert_eq!(stats.total_request_count, 5);
+        assert_eq!(stats.hit_request_count, 4);
+        assert_eq!(stats.hit_attempt_count, 5);
+        assert_eq!(stats.token_hit_attempt_count, 5);
+        assert_eq!(stats.feature_hit_attempt_count, 0);
+        assert_eq!(stats.reasoning_token_hit_request_count, 4);
+        assert_eq!(stats.final_answer_only_high_xhigh_hit_request_count, 0);
+        assert_eq!(stats.normal_request_count, 1);
+        let codex_model = stats
+            .by_model
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex")
+            .expect("gpt-5-codex model stats");
+        assert_eq!(codex_model.hit_request_count, 3);
+        assert_eq!(codex_model.hit_attempt_count, 4);
+        let mini_model = stats
+            .by_model
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-mini-codex")
+            .expect("gpt-5-mini-codex model stats");
+        assert_eq!(mini_model.hit_request_count, 1);
+        assert_eq!(mini_model.hit_attempt_count, 1);
+        assert_eq!(stats.continuation_triggered_request_count, 4);
+        assert_eq!(stats.continuation_triggered_attempt_count, 5);
+        assert_eq!(stats.continuation_repaired_request_count, 2);
+        assert_eq!(stats.continuation_repaired_attempt_count, 2);
+        assert_eq!(stats.continuation_non_repaired_attempt_count, 3);
+        assert!((stats.continuation_repair_rate - 0.5).abs() < f64::EPSILON);
+        assert!((stats.continuation_average_sent_rounds - 1.6).abs() < f64::EPSILON);
+
+        let repaired = stats
+            .continuation_by_status
+            .iter()
+            .find(|row| row.status == "repaired")
+            .expect("repaired continuation stat");
+        assert_eq!(repaired.request_count, 2);
+        assert_eq!(repaired.attempt_count, 2);
+        assert!((repaired.average_sent_rounds - 1.5).abs() < f64::EPSILON);
+
+        let still_matched = stats
+            .continuation_by_status
+            .iter()
+            .find(|row| row.status == "still_matched")
+            .expect("still_matched continuation stat");
+        assert_eq!(still_matched.request_count, 1);
+        assert_eq!(still_matched.attempt_count, 1);
+        assert!((still_matched.average_sent_rounds - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_counts_mixed_guard_and_continuation_once() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            1,
+            "trace-mixed-guard-continuation",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_effort","effort":"high"},{"type":"codex_reasoning_guard","hitSource":"reasoning_tokens"},{"type":"codex_reasoning_continuation","status":"repaired","sentRounds":2},{"type":"codex_reasoning_guard","ruleSource":" Continuation_Repair ","hitSource":"reasoning_tokens","matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+            ),
+        );
+        drop(conn);
+
+        let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
+
+        assert_eq!(stats.total_request_count, 1);
+        assert_eq!(stats.hit_request_count, 1);
+        assert_eq!(stats.hit_attempt_count, 2);
+        assert_eq!(stats.token_hit_attempt_count, 2);
+        assert_eq!(stats.feature_hit_attempt_count, 0);
+        assert_eq!(stats.reasoning_token_hit_request_count, 1);
+        assert_eq!(stats.continuation_triggered_request_count, 1);
+        assert_eq!(stats.continuation_triggered_attempt_count, 1);
+        assert_eq!(stats.continuation_repaired_request_count, 1);
+        assert_eq!(stats.continuation_repaired_attempt_count, 1);
+        assert_eq!(stats.continuation_non_repaired_attempt_count, 0);
+
+        let model_stats = stats
+            .by_model
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex")
+            .expect("gpt-5-codex model stats");
+        assert_eq!(model_stats.hit_request_count, 1);
+        assert_eq!(model_stats.hit_attempt_count, 2);
+
+        let high_stats = stats
+            .by_model_and_effort
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex" && row.reasoning_effort == "high")
+            .expect("gpt-5-codex high stats");
+        assert_eq!(high_stats.hit_request_count, 1);
+        assert_eq!(high_stats.hit_attempt_count, 2);
     }
 
     #[test]
@@ -1467,5 +2216,130 @@ INSERT INTO request_logs (
             .unwrap_err()
             .to_string();
         assert!(negative_error.contains("invalid codex reasoning guard stats cutoff"));
+    }
+
+    #[test]
+    fn summary_and_detail_prefer_persisted_cx2cc_semantics_over_provider_state() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-log-semantics.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        conn.execute_batch(
+            r#"
+INSERT INTO providers (id, cli_key, name, base_url, api_key_plaintext, enabled, priority,
+  sort_order, cost_multiplier, created_at, updated_at)
+VALUES (7, 'codex', 'OpenAI Primary', 'https://example.com', '', 1, 100, 0, 1.0, 1, 1);
+INSERT INTO providers (id, cli_key, name, base_url, api_key_plaintext, enabled, priority,
+  sort_order, cost_multiplier, source_provider_id, bridge_type, created_at, updated_at)
+VALUES (12, 'claude', 'Claude Bridge', 'https://example.com', '', 1, 100, 0, 1.0,
+  7, 'cx2cc', 1, 1);
+"#,
+        )
+        .unwrap();
+
+        let fixtures = [
+            (
+                31_i64,
+                Some(r#"[{"type":"cx2cc_cost_basis","source_cli_key":"codex"}]"#),
+            ),
+            (
+                32_i64,
+                Some(r#"[{"type":"cx2cc_cost_basis","source_cli_key":"claude"}]"#),
+            ),
+            (33_i64, None),
+            (34_i64, Some("not-json")),
+            (
+                35_i64,
+                Some(
+                    r#"[{"type":"cx2cc_cost_basis","bridge_provider_id":12,"source_cli_key":"codex"}]"#,
+                ),
+            ),
+            (
+                36_i64,
+                Some(
+                    r#"[{"type":"cx2cc_cost_basis","bridge_provider_id":99,"source_cli_key":"codex"}]"#,
+                ),
+            ),
+        ];
+
+        for (id, special_settings_json) in fixtures {
+            conn.execute(
+                r#"
+INSERT INTO request_logs (
+  id, trace_id, cli_key, method, path, query, excluded_from_stats,
+  special_settings_json, status, error_code, duration_ms, ttfb_ms, attempts_json,
+  input_tokens, output_tokens, total_tokens, cache_read_input_tokens,
+  cache_creation_input_tokens, cache_creation_5m_input_tokens,
+  cache_creation_1h_input_tokens, usage_json, requested_model, cost_usd_femto,
+  cost_multiplier, created_at_ms, created_at, final_provider_id
+) VALUES (?1, ?2, 'claude', 'POST', '/v1/messages', NULL, 0, ?3, 200, NULL, 10, 5,
+  '[{"provider_id":12,"provider_name":"Claude Bridge","outcome":"success","status":200}]',
+  1000, 50, 1050, 100, 200, NULL, NULL, NULL, 'claude-model', NULL, 1.0,
+  ?4, ?1, 12)
+"#,
+                rusqlite::params![
+                    id,
+                    format!("trace-semantics-{id}"),
+                    special_settings_json,
+                    id * 1000
+                ],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let assert_effective = |expected: &[(i64, i64)]| {
+            let summaries = list_recent_all(&db, 20).unwrap();
+            for (id, tokens) in expected {
+                let summary = summaries
+                    .iter()
+                    .find(|item| item.id == *id)
+                    .unwrap_or_else(|| panic!("missing summary id={id}"));
+                assert_eq!(
+                    summary.effective_input_tokens,
+                    Some(*tokens),
+                    "summary id={id}"
+                );
+
+                let detail = get_by_id(&db, *id).unwrap();
+                assert_eq!(
+                    detail.effective_input_tokens,
+                    Some(*tokens),
+                    "detail id={id}"
+                );
+            }
+        };
+
+        assert_effective(&[
+            (31, 700),
+            (32, 1000),
+            (33, 700),
+            (34, 700),
+            (35, 700),
+            (36, 1000),
+        ]);
+
+        let conn = db.open_connection().unwrap();
+        conn.execute(
+            "UPDATE providers SET source_provider_id = NULL, bridge_type = NULL WHERE id = 12",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        assert_effective(&[
+            (31, 700),
+            (32, 1000),
+            (33, 1000),
+            (34, 1000),
+            (35, 700),
+            (36, 1000),
+        ]);
+
+        let conn = db.open_connection().unwrap();
+        conn.execute("DELETE FROM providers WHERE id = 12", [])
+            .unwrap();
+        drop(conn);
+        assert_effective(&[(31, 700), (32, 1000), (35, 700), (36, 1000)]);
     }
 }

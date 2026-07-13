@@ -101,6 +101,24 @@ pub(super) enum AttemptSendOutcome {
     PluginBlocked(String),
 }
 
+/// URL build failure from the shared prepared-send primitive.
+pub(super) struct PreparedUrlBuildFailure {
+    pub(super) error: String,
+    pub(super) attempt_started_ms: u128,
+    pub(super) circuit_before: crate::circuit_breaker::CircuitSnapshot,
+}
+
+/// Result of the shared prepared-send primitive before retry-loop side effects
+/// such as recording URL/OAuth failures into the public attempt list.
+pub(super) enum PreparedSendOutcome {
+    Response(reqwest::Response, AttemptTiming),
+    Timeout(AttemptTiming),
+    ReqwestError(reqwest::Error, AttemptTiming),
+    UrlBuildFailed(PreparedUrlBuildFailure),
+    OAuthInjectFailed(Box<FailoverAttempt>),
+    PluginBlocked(String),
+}
+
 /// Build request headers, inject auth, clean body, send upstream, and return
 /// the raw outcome. The caller (retry engine / response router) handles the
 /// result.
@@ -117,6 +135,71 @@ where
     R: tauri::Runtime,
     R::Handle: Unpin,
 {
+    match send_prepared_upstream(
+        ctx,
+        input,
+        prepared,
+        retry_state,
+        retry_index,
+        attempt_index,
+        ctx.upstream_first_byte_timeout,
+        Some(loop_state.abort_guard),
+    )
+    .await
+    {
+        PreparedSendOutcome::Response(resp, timing) => AttemptSendOutcome::Response(resp, timing),
+        PreparedSendOutcome::Timeout(timing) => AttemptSendOutcome::Timeout(timing),
+        PreparedSendOutcome::ReqwestError(err, timing) => {
+            AttemptSendOutcome::ReqwestError(err, timing)
+        }
+        PreparedSendOutcome::UrlBuildFailed(failure) => {
+            let circuit_before = failure.circuit_before;
+            let attempt_ctx = build_attempt_ctx(
+                attempt_index,
+                retry_index,
+                failure.attempt_started_ms,
+                &circuit_before,
+                prepared,
+            );
+            let provider_ctx = build_provider_ctx(prepared);
+            let ctrl = handle_url_build_failure(
+                ctx,
+                input,
+                attempt_ctx,
+                provider_ctx,
+                failure.error,
+                loop_state,
+            )
+            .await;
+            AttemptSendOutcome::UrlBuildFailed(ctrl)
+        }
+        PreparedSendOutcome::OAuthInjectFailed(failed_attempt) => {
+            loop_state.attempts.push(*failed_attempt);
+            AttemptSendOutcome::OAuthInjectFailed
+        }
+        PreparedSendOutcome::PluginBlocked(reason) => AttemptSendOutcome::PluginBlocked(reason),
+    }
+}
+
+/// Build request headers, inject auth, clean body, run before-send plugins, and
+/// send one prepared upstream request. `abort_guard` is supplied only for normal
+/// retry-loop attempts; continuation repair rounds intentionally reuse the send
+/// semantics without publishing themselves as top-level attempts.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn send_prepared_upstream<R>(
+    ctx: CommonCtx<'_, R>,
+    input: &RequestContext<R>,
+    prepared: &mut PreparedProvider,
+    retry_state: &mut RetryLoopState,
+    retry_index: u32,
+    attempt_index: u32,
+    first_byte_timeout: Option<std::time::Duration>,
+    abort_guard: Option<&mut RequestAbortGuard<R>>,
+) -> PreparedSendOutcome
+where
+    R: tauri::Runtime,
+    R::Handle: Unpin,
+{
     let attempt_started_ms = input.started.elapsed().as_millis();
     let circuit_before = prepared.circuit_snapshot.clone();
 
@@ -124,31 +207,26 @@ where
     let url = match try_build_url(prepared) {
         Ok(u) => u,
         Err(err) => {
-            let attempt_ctx = build_attempt_ctx(
-                attempt_index,
-                retry_index,
+            return PreparedSendOutcome::UrlBuildFailed(PreparedUrlBuildFailure {
+                error: err,
                 attempt_started_ms,
-                &circuit_before,
-                prepared,
-            );
-            let provider_ctx = build_provider_ctx(prepared);
-            let ctrl =
-                handle_url_build_failure(ctx, input, attempt_ctx, provider_ctx, err, loop_state)
-                    .await;
-            return AttemptSendOutcome::UrlBuildFailed(ctrl);
+                circuit_before,
+            });
         }
     };
 
     // --- Emit "started" attempt event ---
-    emit_started_event(
-        input,
-        prepared,
-        attempt_index,
-        retry_index,
-        attempt_started_ms,
-        &circuit_before,
-        loop_state.abort_guard,
-    );
+    if let Some(abort_guard) = abort_guard {
+        emit_started_event(
+            input,
+            prepared,
+            attempt_index,
+            retry_index,
+            attempt_started_ms,
+            &circuit_before,
+            abort_guard,
+        );
+    }
 
     // --- Build headers + inject auth ---
     let mut headers = input.base_headers.clone();
@@ -174,8 +252,7 @@ where
         },
         &mut headers,
     ) {
-        loop_state.attempts.push(*failed_attempt);
-        return AttemptSendOutcome::OAuthInjectFailed;
+        return PreparedSendOutcome::OAuthInjectFailed(failed_attempt);
     }
 
     // --- Clean body + send upstream ---
@@ -205,14 +282,18 @@ where
         query: input.query.clone(),
         headers: semantic_headers.clone(),
         body: body_state_for_attempt.decoded_clone(),
-        requested_model: input.requested_model.clone(),
+        requested_model: prepared
+            .active_requested_model
+            .clone()
+            .or_else(|| input.requested_model.clone()),
     };
     match ctx.state.plugin_pipeline.run_request_hook(hook_input).await {
         Ok(output) => {
-            crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+            crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
                 &ctx.state.db,
                 &input.trace_id,
                 output.audit_events.clone(),
+                output.execution_reports.clone(),
             );
             if let Some(blocked) = output.blocked {
                 tracing::warn!(
@@ -222,7 +303,7 @@ where
                     reason = %blocked.reason,
                     "plugin blocked gateway request before upstream send"
                 );
-                return AttemptSendOutcome::PluginBlocked(blocked.reason);
+                return PreparedSendOutcome::PluginBlocked(blocked.reason);
             }
             semantic_headers = output.headers;
             sync_before_send_body_output(prepared, &mut body_state_for_attempt, output.body);
@@ -239,7 +320,7 @@ where
                 "plugin beforeSend hook failed: {}",
                 err
             );
-            return AttemptSendOutcome::PluginBlocked(format!(
+            return PreparedSendOutcome::PluginBlocked(format!(
                 "gateway plugin request hook failed: {err}"
             ));
         }
@@ -264,13 +345,20 @@ where
         attempt_started: Instant::now(),
     };
 
-    let send_result =
-        send::send_upstream(ctx, input.req_method.clone(), url, headers, upstream_body).await;
+    let send_result = send::send_upstream_with_first_byte_timeout(
+        ctx,
+        input.req_method.clone(),
+        url,
+        headers,
+        upstream_body,
+        first_byte_timeout,
+    )
+    .await;
 
     match send_result {
-        send::SendResult::Ok(resp) => AttemptSendOutcome::Response(resp, timing),
-        send::SendResult::Timeout => AttemptSendOutcome::Timeout(timing),
-        send::SendResult::Err(err) => AttemptSendOutcome::ReqwestError(err, timing),
+        send::SendResult::Ok(resp) => PreparedSendOutcome::Response(resp, timing),
+        send::SendResult::Timeout => PreparedSendOutcome::Timeout(timing),
+        send::SendResult::Err(err) => PreparedSendOutcome::ReqwestError(err, timing),
     }
 }
 
@@ -398,6 +486,7 @@ async fn handle_url_build_failure<R: tauri::Runtime>(
         outcome,
         reason: format!("invalid base_url: {err}"),
         record_circuit_failure: true,
+        timeout_secs: None,
     })
     .await
 }
@@ -412,12 +501,15 @@ fn build_attempt_ctx<'a>(
     AttemptCtx {
         attempt_index,
         retry_index,
+        provider_max_attempts: prepared.provider_max_attempts,
         attempt_started_ms,
         attempt_started: Instant::now(),
         circuit_before,
         gemini_oauth_response_mode: prepared.gemini_oauth_response_mode,
         cx2cc_active: prepared.cx2cc_active,
         active_bridge_type: prepared.active_bridge_type.as_deref(),
+        responses_cache_namespace: prepared.responses_cache_namespace.as_deref(),
+        responses_cache_input: prepared.responses_cache_input.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
     }
 }
@@ -427,8 +519,10 @@ fn build_provider_ctx(prepared: &PreparedProvider) -> ProviderCtx<'_> {
         provider_id: prepared.provider_id,
         provider_name_base: &prepared.provider_name_base,
         provider_base_url_base: &prepared.provider_base_url_base,
+        active_requested_model: prepared.active_requested_model.as_deref(),
         auth_mode: prepared.auth_mode.as_str(),
         provider_index: prepared.provider_index,
+        provider_bridged: prepared.provider_bridged,
         session_reuse: prepared.session_reuse,
         provider_max_attempts: prepared.provider_max_attempts,
         stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,
@@ -471,38 +565,58 @@ fn emit_started_event<R: tauri::Runtime>(
         circuit_state_after: None,
         circuit_failure_count: Some(circuit_before.failure_count),
         circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        provider_bridged: Some(prepared.provider_bridged),
+        timeout_secs: None,
     };
-    abort_guard.capture_in_flight_attempt(&started_attempt);
-    if input.observe_request {
-        emit_attempt_event(
-            &input.state.app,
-            GatewayAttemptEvent {
-                trace_id: input.trace_id.clone(),
-                cli_key: input.cli_key.clone(),
-                session_id: input.session_id.clone(),
-                method: input.method_hint.clone(),
-                path: input.forwarded_path.clone(),
-                query: input.query.clone(),
-                requested_model: input.requested_model.clone(),
-                special_settings_json: crate::gateway::response_fixer::special_settings_json(
-                    &input.special_settings,
-                ),
-                attempt_index,
-                provider_id: prepared.provider_id,
-                session_reuse: prepared.session_reuse,
-                provider_name: prepared.provider_name_base.clone(),
-                base_url: prepared.provider_base_url_base.clone(),
-                outcome: "started".to_string(),
-                status: None,
-                attempt_started_ms,
-                attempt_duration_ms: 0,
-                circuit_state_before: Some(circuit_before.state.as_str()),
-                circuit_state_after: None,
-                circuit_failure_count: Some(circuit_before.failure_count),
-                circuit_failure_threshold: Some(circuit_before.failure_threshold),
-                claude_model_mapping: prepared.claude_model_mapping.clone(),
-            },
+    abort_guard.update_requested_model(
+        prepared
+            .active_requested_model
+            .clone()
+            .or_else(|| input.requested_model.clone()),
+    );
+    let started_event = input.observe_request.then(|| {
+        bound_attempt_event(GatewayAttemptEvent {
+            trace_id: input.trace_id.clone(),
+            cli_key: input.cli_key.clone(),
+            session_id: input.session_id.clone(),
+            method: input.method_hint.clone(),
+            path: input.forwarded_path.clone(),
+            query: input.query.clone(),
+            requested_model: prepared
+                .active_requested_model
+                .clone()
+                .or_else(|| input.requested_model.clone()),
+            special_settings_json: crate::gateway::response_fixer::special_settings_json(
+                &input.special_settings,
+            ),
+            attempt_index,
+            provider_id: prepared.provider_id,
+            session_reuse: prepared.session_reuse,
+            provider_name: prepared.provider_name_base.clone(),
+            base_url: prepared.provider_base_url_base.clone(),
+            outcome: "started".to_string(),
+            status: None,
+            attempt_started_ms,
+            attempt_duration_ms: 0,
+            circuit_state_before: Some(circuit_before.state.as_str()),
+            circuit_state_after: None,
+            circuit_failure_count: Some(circuit_before.failure_count),
+            circuit_failure_threshold: Some(circuit_before.failure_threshold),
+            claude_model_mapping: prepared.claude_model_mapping.clone(),
+        })
+    });
+    if let Some(started_event) = started_event.as_ref() {
+        let elapsed_ms = i64::try_from(attempt_started_ms).unwrap_or(i64::MAX);
+        input.state.active_requests.record_attempt_start(
+            started_event.clone(),
+            input.created_at_ms.saturating_add(elapsed_ms),
         );
+    }
+    abort_guard.capture_in_flight_attempt(&started_attempt);
+    if let Some(started_event) = started_event {
+        emit_attempt_event(&input.state.app, started_event);
     }
 }
 

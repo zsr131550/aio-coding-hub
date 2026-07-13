@@ -143,13 +143,13 @@ where
     None
 }
 
-pub(super) fn resolve_primary_provider_base_url(
-    provider: &providers::ProviderForGateway,
+pub(crate) fn resolve_transport_base_url(
+    transport: &providers::ProviderTransportContext,
     cli_key: &str,
 ) -> Result<String, String> {
-    if provider.auth_mode == "oauth" {
+    if transport.auth_mode == "oauth" {
         let registry = crate::gateway::oauth::registry::global_registry();
-        let provider_type = provider
+        let provider_type = transport
             .oauth_provider_type
             .as_deref()
             .map(str::trim)
@@ -158,14 +158,14 @@ pub(super) fn resolve_primary_provider_base_url(
             registry.get_by_cli_key(cli_key).ok_or_else(|| {
                 format!(
                     "SEC_INVALID_INPUT: no OAuth adapter for cli_key={cli_key} (provider_id={})",
-                    provider.id
+                    transport.provider_id
                 )
             })?
         } else {
             registry.get_by_provider_type(provider_type).ok_or_else(|| {
                 format!(
                     "SEC_INVALID_INPUT: no OAuth adapter for provider_type={provider_type} (provider_id={}, cli_key={cli_key})",
-                    provider.id
+                    transport.provider_id
                 )
             })?
         };
@@ -173,7 +173,7 @@ pub(super) fn resolve_primary_provider_base_url(
         if adapter.cli_key() != cli_key {
             return Err(format!(
                 "SEC_INVALID_STATE: oauth adapter mismatch for provider_id={} (cli_key={cli_key}, provider_type={}, resolved_cli_key={})",
-                provider.id,
+                transport.provider_id,
                 if provider_type.is_empty() {
                     "<empty>"
                 } else {
@@ -198,12 +198,19 @@ pub(super) fn resolve_primary_provider_base_url(
 
     // Skip empty strings — legacy DB rows may store base_url="" which causes
     // `build_target_url` to fail with "relative URL without a base".
-    Ok(provider
+    Ok(transport
         .base_urls
         .iter()
         .find(|u| !u.trim().is_empty())
         .cloned()
         .unwrap_or_default())
+}
+
+pub(crate) fn resolve_primary_provider_base_url(
+    provider: &providers::ProviderForGateway,
+    cli_key: &str,
+) -> Result<String, String> {
+    resolve_transport_base_url(&provider.transport_context(), cli_key)
 }
 
 pub(super) async fn select_provider_base_url_for_request<R: tauri::Runtime>(

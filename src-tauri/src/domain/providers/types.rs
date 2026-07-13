@@ -8,6 +8,7 @@ pub(super) const DEFAULT_PRIORITY: i64 = 100;
 pub(super) const MAX_MODEL_NAME_LEN: usize = 200;
 pub(crate) const CX2CC_BRIDGE_TYPE: &str = "cx2cc";
 pub(crate) const CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE: &str = "codex_to_openai_chat";
+pub(crate) const CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE: &str = "codex_to_openai_responses";
 pub(crate) const CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE: &str = "codex_to_anthropic_messages";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
@@ -54,10 +55,19 @@ pub(crate) fn is_cx2cc_bridge(bridge_type: Option<&str>) -> bool {
     bridge_type == Some(CX2CC_BRIDGE_TYPE)
 }
 
+pub(crate) fn has_bridged_input_semantics(
+    source_provider_id: Option<i64>,
+    bridge_type: Option<&str>,
+) -> bool {
+    source_provider_id.is_some() || is_cx2cc_bridge(bridge_type)
+}
+
 pub(crate) fn is_codex_bridge_type(bridge_type: &str) -> bool {
     matches!(
         bridge_type,
-        CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE | CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE
+        CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE
+            | CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE
+            | CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE
     )
 }
 
@@ -99,6 +109,7 @@ pub struct ProviderUpsertParams {
     pub source_provider_id: Option<i64>,
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Option<Vec<ProviderExtensionValuesInput>>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
     pub upstream_retry_policy_override_specified: bool,
 }
@@ -253,6 +264,23 @@ impl ProviderBaseUrlMode {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderExtensionValues {
+    pub plugin_id: String,
+    pub namespace: String,
+    pub values: serde_json::Value,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderExtensionValuesInput {
+    pub plugin_id: String,
+    pub namespace: String,
+    pub values: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct ProviderSummary {
     pub id: i64,
@@ -285,6 +313,7 @@ pub struct ProviderSummary {
     pub source_provider_id: Option<i64>,
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Vec<ProviderExtensionValues>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
     pub api_key_configured: bool,
 }
@@ -316,7 +345,17 @@ pub(crate) struct ProviderForGateway {
     #[allow(dead_code)] // Will be read when failover_loop uses bridge_type for dispatch.
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Vec<ProviderExtensionValues>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderTransportContext {
+    pub provider_id: i64,
+    pub base_urls: Vec<String>,
+    pub api_key_plaintext: String,
+    pub auth_mode: String,
+    pub oauth_provider_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -335,6 +374,16 @@ pub(crate) struct ClaudeTerminalLaunchContext {
 impl ProviderForGateway {
     pub(crate) fn is_cx2cc_bridge(&self) -> bool {
         is_cx2cc_bridge(self.bridge_type.as_deref())
+    }
+
+    pub(crate) fn transport_context(&self) -> ProviderTransportContext {
+        ProviderTransportContext {
+            provider_id: self.id,
+            base_urls: self.base_urls.clone(),
+            api_key_plaintext: self.api_key_plaintext.clone(),
+            auth_mode: self.auth_mode.clone(),
+            oauth_provider_type: self.oauth_provider_type.clone(),
+        }
     }
 
     pub(crate) fn get_effective_claude_model(

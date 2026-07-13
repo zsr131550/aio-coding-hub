@@ -5,16 +5,15 @@ import { Select } from "../../ui/Select";
 import { TabList } from "../../ui/TabList";
 import { TagsField } from "./TagsField";
 import type { UseProviderEditorFormReturn } from "./useProviderEditorForm";
+import type { CodexBridgeTarget } from "./providerEditorUtils";
 
 export function CodexBridgeSection({ form }: { form: UseProviderEditorFormReturn }) {
   const { register, saving, tags, setTags, tagInput, setTagInput } = form;
   const exactEntries = Object.entries(form.modelMapping.exact ?? {});
-  const sourceCliKey = form.codexBridgeTarget === "anthropic_messages" ? "claude" : "codex";
   const sourceOptions = form.codexBridgeSourceProviders
     .filter(
       (provider) =>
         provider.enabled &&
-        provider.cli_key === sourceCliKey &&
         provider.id !== form.editingProviderId &&
         provider.source_provider_id == null &&
         !provider.bridge_type
@@ -52,11 +51,11 @@ export function CodexBridgeSection({ form }: { form: UseProviderEditorFormReturn
 
       <div className="space-y-4 rounded-lg border border-border bg-secondary/40 p-4">
         <FormField label="上游端点">
-          <TabList<"openai_chat" | "anthropic_messages">
+          <TabList<CodexBridgeTarget>
             ariaLabel="上游端点"
             items={[
+              { key: "openai_responses", label: "Responses" },
               { key: "openai_chat", label: "Chat Completions" },
-              { key: "anthropic_messages", label: "Anthropic Messages" },
             ]}
             value={form.codexBridgeTarget}
             onChange={form.setCodexBridgeTarget}
@@ -71,9 +70,7 @@ export function CodexBridgeSection({ form }: { form: UseProviderEditorFormReturn
               onChange={(event) => form.setCx2ccSourceValue(event.currentTarget.value)}
               disabled={form.saving}
             >
-              <option value="">
-                {sourceCliKey === "claude" ? "选择 Claude 上游来源" : "选择 Codex 上游来源"}
-              </option>
+              <option value="">选择上游来源</option>
               {sourceOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}

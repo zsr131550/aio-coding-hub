@@ -4,10 +4,12 @@
 //! directory processes a `ProxyContext` and either continues to the next step or
 //! short-circuits with a Response.
 
+use super::abort_guard::RequestAbortGuard;
 use super::is_claude_count_tokens_request;
 use super::logging::enqueue_request_log_placeholder;
 use super::request_context::RequestContext;
 
+use crate::gateway::active_requests::ActiveRequestStart;
 use crate::gateway::events::{emit_gateway_debug_log_lazy, emit_request_start_event};
 use crate::gateway::proxy::should_seed_in_progress_request_log;
 use crate::gateway::response_fixer;
@@ -74,12 +76,60 @@ fn build_in_progress_request_log_args<R: tauri::Runtime>(
         attempts_json: "[]".to_string(),
         requested_model: ctx.requested_model.as_deref().map(str::to_string),
         created_at_ms: ctx.created_at_ms,
+        last_activity_ms: Some(ctx.created_at_ms),
+        activity_details_json: None,
         created_at: ctx.created_at,
         usage_metrics: None,
         usage: None,
         provider_chain_json: None,
         error_details_json: None,
     })
+}
+
+fn register_active_request_from_proxy_context<R: tauri::Runtime>(
+    ctx: &middleware::ProxyContext<R>,
+) {
+    if !ctx.observe_request {
+        return;
+    }
+
+    ctx.state.active_requests.register(ActiveRequestStart {
+        trace_id: ctx.trace_id.clone(),
+        cli_key: ctx.cli_key.clone(),
+        method: ctx.method_hint.clone(),
+        path: ctx.forwarded_path.clone(),
+        query: ctx.query.clone(),
+        session_id: ctx.session_id.clone(),
+        requested_model: ctx.requested_model.clone(),
+        created_at_ms: ctx.created_at_ms,
+    });
+}
+
+// Armed guard for the post-chain stretch: it must exist BEFORE the active
+// request is registered and before any await, so that cancellation at any
+// later await point (e.g. the placeholder enqueue) still finishes the
+// registry entry and persists a client_abort terminal row via Drop.
+fn abort_guard_from_proxy_context<R: tauri::Runtime>(
+    ctx: &middleware::ProxyContext<R>,
+) -> RequestAbortGuard<R> {
+    RequestAbortGuard::new(
+        ctx.state.app.clone(),
+        ctx.state.db.clone(),
+        ctx.state.log_tx.clone(),
+        ctx.state.plugin_pipeline.clone(),
+        ctx.state.active_requests.clone(),
+        ctx.trace_id.clone(),
+        ctx.cli_key.clone(),
+        ctx.method_hint.clone(),
+        ctx.forwarded_path.clone(),
+        ctx.observe_request,
+        ctx.query.clone(),
+        ctx.session_id.clone(),
+        ctx.requested_model.clone(),
+        ctx.created_at_ms,
+        ctx.created_at,
+        ctx.started,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +185,7 @@ where
         special_settings: new_special_settings(),
         requested_model: None,
         requested_model_location: None,
+        is_compact_request: false,
         runtime_settings: None,
         session_id: None,
         allow_session_reuse: false,
@@ -222,7 +273,12 @@ where
     };
 
     // --- Post-chain: emit start event, seed in-progress log, then forward ---
+    // 顺序契约：先武装 abort guard，再登记活跃注册表，之后才允许出现 await。
+    // guard 未武装时登记后被取消（future 被丢弃）会让注册表条目永久泄漏，
+    // 前端将永远显示一张"进行中"合成卡片。
+    let abort_guard = abort_guard_from_proxy_context(&ctx);
     if ctx.observe_request {
+        register_active_request_from_proxy_context(&ctx);
         emit_request_start_event(
             &ctx.state.app,
             ctx.trace_id.clone(),
@@ -239,12 +295,17 @@ where
 
     emit_gateway_debug_log_lazy(&ctx.state.app, || {
         format!(
-            "[REQ] trace_id={} cli_key={} method={} path={} model={}\n  headers={}\n  body({} bytes)={}",
+            "[REQ] trace_id={} cli_key={} method={} path={} model={}{}\n  headers={}\n  body({} bytes)={}",
             ctx.trace_id,
             ctx.cli_key,
             ctx.method_hint,
             ctx.forwarded_path,
             ctx.requested_model.as_deref().unwrap_or("-"),
+            if ctx.is_compact_request {
+                " kind=compact"
+            } else {
+                ""
+            },
             redacted_headers_for_debug(&ctx.headers),
             ctx.body_bytes.len(),
             lossy_utf8_preview(&ctx.body_bytes, MAX_DEBUG_BODY_PREVIEW_BYTES),
@@ -258,6 +319,7 @@ where
 
     super::forwarder::forward(RequestContext::from_handler_parts(
         ctx.into_request_context_parts(),
+        abort_guard,
     ))
     .await
 }
@@ -268,7 +330,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::abort_guard_from_proxy_context;
     use super::early_error::early_error_contract;
+    use super::middleware;
     use super::middleware::body_reader::body_too_large_message;
     use super::middleware::cli_proxy_guard::{
         cli_proxy_disabled_message, cli_proxy_guard_special_settings_json,
@@ -279,12 +343,21 @@ mod tests {
         warmup_log_usage_metrics,
     };
     use super::provider_selection::resolve_session_routing_decision;
+    use super::register_active_request_from_proxy_context;
     use super::request_fingerprint::build_request_fingerprints;
     use super::runtime_settings::handler_runtime_settings;
+    use crate::gateway::active_requests::ActiveRequestRegistry;
+    use crate::gateway::codex_session_id::CodexSessionIdCache;
+    use crate::gateway::plugins::pipeline::GatewayPluginPipeline;
     use crate::gateway::proxy::{ErrorCategory, GatewayErrorCode};
-    use crate::settings;
-    use axum::body::Bytes;
-    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+    use crate::gateway::proxy::{ProviderBaseUrlPingCache, RecentErrorCache};
+    use crate::gateway::runtime::GatewayAppState;
+    use crate::{circuit_breaker, db, session_manager, settings};
+    use axum::body::{Body, Bytes};
+    use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     fn provider(id: i64) -> crate::providers::ProviderForGateway {
         crate::providers::ProviderForGateway {
@@ -307,12 +380,255 @@ mod tests {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: vec![],
             upstream_retry_policy_override: None,
         }
     }
 
     fn provider_ids(items: &[crate::providers::ProviderForGateway]) -> Vec<i64> {
         items.iter().map(|item| item.id).collect()
+    }
+
+    fn active_request_test_state(
+        app: tauri::AppHandle<tauri::test::MockRuntime>,
+        db: db::Db,
+        log_tx: tokio::sync::mpsc::Sender<crate::request_logs::RequestLogInsert>,
+        active_requests: Arc<ActiveRequestRegistry>,
+    ) -> GatewayAppState<tauri::test::MockRuntime> {
+        GatewayAppState {
+            app,
+            db,
+            log_tx,
+            circuit: Arc::new(circuit_breaker::CircuitBreaker::new(
+                circuit_breaker::CircuitBreakerConfig::default(),
+                HashMap::new(),
+                None,
+            )),
+            session: Arc::new(session_manager::SessionManager::new()),
+            codex_session_cache: Arc::new(Mutex::new(CodexSessionIdCache::default())),
+            recent_errors: Arc::new(Mutex::new(RecentErrorCache::default())),
+            latency_cache: Arc::new(Mutex::new(ProviderBaseUrlPingCache::default())),
+            plugin_pipeline: GatewayPluginPipeline::empty_shared(),
+            http_client_override: None,
+            active_requests,
+        }
+    }
+
+    #[test]
+    fn observed_proxy_context_registers_active_request() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db =
+            crate::db::init_for_tests(&db_dir.path().join("handler-active.db")).expect("init db");
+        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(1);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        let ctx = middleware::ProxyContext {
+            state: active_request_test_state(
+                app.handle().clone(),
+                db,
+                log_tx,
+                active_requests.clone(),
+            ),
+            cli_key: "claude".to_string(),
+            forwarded_path: "/v1/messages".to_string(),
+            req_method: Method::POST,
+            method_hint: "POST".to_string(),
+            query: Some("beta=1".to_string()),
+            trace_id: "trace-start-active".to_string(),
+            started: Instant::now(),
+            created_at_ms: 1_700_000_000_000,
+            created_at: 1_700_000_000,
+            is_claude_count_tokens: false,
+            request_body: Some(Body::empty()),
+            headers: HeaderMap::new(),
+            body_bytes: Bytes::new(),
+            request_body_state: None,
+            introspection_json: None,
+            observe_request: true,
+            strip_request_content_encoding_seed: false,
+            special_settings: Arc::new(Mutex::new(Vec::new())),
+            requested_model: Some("claude-sonnet-4".to_string()),
+            requested_model_location: None,
+            is_compact_request: false,
+            runtime_settings: None,
+            session_id: Some("session-start".to_string()),
+            allow_session_reuse: false,
+            effective_sort_mode_id: None,
+            providers: vec![],
+            session_bound_provider_id: None,
+            forced_provider_id: None,
+            fingerprint_key: 0,
+            fingerprint_debug: String::new(),
+            unavailable_fingerprint_key: 0,
+            unavailable_fingerprint_debug: String::new(),
+        };
+
+        register_active_request_from_proxy_context(&ctx);
+
+        let snapshot = active_requests.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].trace_id, "trace-start-active");
+        assert_eq!(snapshot[0].session_id.as_deref(), Some("session-start"));
+        assert_eq!(
+            snapshot[0].requested_model.as_deref(),
+            Some("claude-sonnet-4")
+        );
+    }
+
+    #[test]
+    fn unobserved_proxy_context_does_not_register_active_request() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = crate::db::init_for_tests(&db_dir.path().join("handler-unobserved.db"))
+            .expect("init db");
+        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(1);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        let mut ctx = middleware::ProxyContext {
+            state: active_request_test_state(
+                app.handle().clone(),
+                db,
+                log_tx,
+                active_requests.clone(),
+            ),
+            cli_key: "claude".to_string(),
+            forwarded_path: "/v1/messages".to_string(),
+            req_method: Method::POST,
+            method_hint: "POST".to_string(),
+            query: None,
+            trace_id: "trace-unobserved".to_string(),
+            started: Instant::now(),
+            created_at_ms: 1_700_000_000_000,
+            created_at: 1_700_000_000,
+            is_claude_count_tokens: false,
+            request_body: Some(Body::empty()),
+            headers: HeaderMap::new(),
+            body_bytes: Bytes::new(),
+            request_body_state: None,
+            introspection_json: None,
+            observe_request: false,
+            strip_request_content_encoding_seed: false,
+            special_settings: Arc::new(Mutex::new(Vec::new())),
+            requested_model: Some("claude-sonnet-4".to_string()),
+            requested_model_location: None,
+            is_compact_request: false,
+            runtime_settings: None,
+            session_id: None,
+            allow_session_reuse: false,
+            effective_sort_mode_id: None,
+            providers: vec![],
+            session_bound_provider_id: None,
+            forced_provider_id: None,
+            fingerprint_key: 0,
+            fingerprint_debug: String::new(),
+            unavailable_fingerprint_key: 0,
+            unavailable_fingerprint_debug: String::new(),
+        };
+
+        register_active_request_from_proxy_context(&ctx);
+        assert!(active_requests.snapshot().is_empty());
+
+        ctx.observe_request = true;
+        register_active_request_from_proxy_context(&ctx);
+
+        assert_eq!(active_requests.snapshot().len(), 1);
+    }
+
+    fn observed_guard_test_proxy_context(
+        app: tauri::AppHandle<tauri::test::MockRuntime>,
+        db: crate::db::Db,
+        log_tx: tokio::sync::mpsc::Sender<crate::request_logs::RequestLogInsert>,
+        active_requests: Arc<ActiveRequestRegistry>,
+        trace_id: &str,
+    ) -> middleware::ProxyContext<tauri::test::MockRuntime> {
+        middleware::ProxyContext {
+            state: active_request_test_state(app, db, log_tx, active_requests),
+            cli_key: "claude".to_string(),
+            forwarded_path: "/v1/messages".to_string(),
+            req_method: Method::POST,
+            method_hint: "POST".to_string(),
+            query: None,
+            trace_id: trace_id.to_string(),
+            started: Instant::now(),
+            created_at_ms: 1_700_000_000_000,
+            created_at: 1_700_000_000,
+            is_claude_count_tokens: false,
+            request_body: Some(Body::empty()),
+            headers: HeaderMap::new(),
+            body_bytes: Bytes::new(),
+            request_body_state: None,
+            introspection_json: None,
+            observe_request: true,
+            strip_request_content_encoding_seed: false,
+            special_settings: Arc::new(Mutex::new(Vec::new())),
+            requested_model: Some("claude-sonnet-4".to_string()),
+            requested_model_location: None,
+            is_compact_request: false,
+            runtime_settings: None,
+            session_id: Some("session-guard".to_string()),
+            allow_session_reuse: false,
+            effective_sort_mode_id: None,
+            providers: vec![],
+            session_bound_provider_id: None,
+            forced_provider_id: None,
+            fingerprint_key: 0,
+            fingerprint_debug: String::new(),
+            unavailable_fingerprint_key: 0,
+            unavailable_fingerprint_debug: String::new(),
+        }
+    }
+
+    // 取消安全契约：guard 在登记前武装。handler future 在之后任意 await 点被
+    // 取消（drop）时，guard 的 Drop 必须终结注册表条目，否则条目永久泄漏、
+    // 前端永远显示"进行中"合成卡片。
+    #[test]
+    fn dropping_armed_abort_guard_finishes_registered_active_request() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = crate::db::init_for_tests(&db_dir.path().join("handler-guard-drop.db"))
+            .expect("init db");
+        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        let ctx = observed_guard_test_proxy_context(
+            app.handle().clone(),
+            db,
+            log_tx,
+            active_requests.clone(),
+            "trace-guard-drop",
+        );
+
+        let guard = abort_guard_from_proxy_context(&ctx);
+        register_active_request_from_proxy_context(&ctx);
+        assert_eq!(active_requests.snapshot().len(), 1);
+
+        drop(guard);
+
+        assert!(active_requests.snapshot().is_empty());
+    }
+
+    #[test]
+    fn dropping_disarmed_abort_guard_keeps_active_request_for_request_end() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = crate::db::init_for_tests(&db_dir.path().join("handler-guard-disarm.db"))
+            .expect("init db");
+        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        let ctx = observed_guard_test_proxy_context(
+            app.handle().clone(),
+            db,
+            log_tx,
+            active_requests.clone(),
+            "trace-guard-disarm",
+        );
+
+        let mut guard = abort_guard_from_proxy_context(&ctx);
+        register_active_request_from_proxy_context(&ctx);
+        guard.disarm();
+
+        drop(guard);
+
+        // 正常完成路径由 request_end 负责终结，disarm 后的 guard 不得抢先移除。
+        assert_eq!(active_requests.snapshot().len(), 1);
     }
 
     #[test]

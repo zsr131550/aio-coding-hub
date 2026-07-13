@@ -101,7 +101,13 @@ fn resolve_requested_effort(
             effort: setting
                 .get("effort")
                 .and_then(Value::as_str)
-                .and_then(normalize_effort),
+                .and_then(normalize_effort)
+                .or_else(|| {
+                    setting
+                        .get("rawEffort")
+                        .and_then(Value::as_str)
+                        .and_then(normalize_effort)
+                }),
             source: "request",
         };
     }
@@ -137,7 +143,7 @@ fn normalize_effort(value: &str) -> Option<String> {
     let effort = value.trim().to_ascii_lowercase();
     matches!(
         effort.as_str(),
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
     )
     .then_some(effort)
 }
@@ -286,6 +292,36 @@ mod tests {
         assert!(setting
             .get("actualReasoningEffort")
             .is_some_and(Value::is_null));
+    }
+
+    #[test]
+    fn accepts_main_extended_and_raw_requested_efforts() {
+        for setting in [
+            json!({
+                "type": "codex_reasoning_effort",
+                "effort": "max"
+            }),
+            json!({
+                "type": "codex_reasoning_effort",
+                "effort": null,
+                "rawEffort": "Ultra"
+            }),
+        ] {
+            let mapping = build_model_route_mapping_setting(ModelRouteSettingInput {
+                cli_key: "codex",
+                requested_model: Some("gpt-5.5"),
+                actual_model: Some("gpt-5.5"),
+                special_settings: &[setting],
+                provider_id: 7,
+                provider_name: "Provider A",
+            })
+            .expect("extended effort mismatch");
+
+            assert!(mapping
+                .get("requestedReasoningEffort")
+                .and_then(Value::as_str)
+                .is_some_and(|effort| effort == "max" || effort == "ultra"));
+        }
     }
 
     #[test]

@@ -31,7 +31,9 @@ pub(super) use runtime_settings_reader::RuntimeSettingsMiddleware;
 pub(super) use warmup_interceptor::WarmupInterceptorMiddleware;
 
 use crate::gateway::proxy::request_body::GatewayRequestBody;
-use crate::gateway::proxy::request_context::RequestContextParts;
+use crate::gateway::proxy::request_context::{
+    effective_first_byte_timeout_secs, RequestContextParts,
+};
 use crate::gateway::runtime::GatewayAppState;
 use crate::gateway::util::RequestedModelLocation;
 use crate::providers;
@@ -79,6 +81,9 @@ pub(super) struct ProxyContext<R: tauri::Runtime = tauri::Wry> {
     // -- model inference results --
     pub(super) requested_model: Option<String>,
     pub(super) requested_model_location: Option<RequestedModelLocation>,
+
+    // -- request kind classification --
+    pub(super) is_compact_request: bool,
 
     // -- runtime settings (populated after settings read) --
     pub(super) runtime_settings: Option<super::runtime_settings::HandlerRuntimeSettings>,
@@ -140,9 +145,13 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             verbose_provider_error: rs.verbose_provider_error,
             enable_codex_session_id_completion: rs.enable_codex_session_id_completion,
             codex_reasoning_guard_enabled: rs.codex_reasoning_guard_enabled,
+            codex_reasoning_guard_rule_mode: rs.codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode: rs.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: rs.codex_reasoning_guard_reasoning_equals,
             codex_reasoning_guard_model_rules: rs.codex_reasoning_guard_model_rules,
+            codex_reasoning_guard_active_template_id: rs.codex_reasoning_guard_active_template_id,
+            codex_reasoning_guard_custom_templates: rs.codex_reasoning_guard_custom_templates,
+            codex_reasoning_guard_post_match_strategy: rs.codex_reasoning_guard_post_match_strategy,
             codex_reasoning_guard_immediate_retry_budget: rs
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: rs
@@ -156,11 +165,19 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             codex_reasoning_guard_concurrent_max_attempts: rs
                 .codex_reasoning_guard_concurrent_max_attempts,
             codex_reasoning_guard_model_fallbacks: rs.codex_reasoning_guard_model_fallbacks,
+            codex_reasoning_guard_continuation_max_output_tokens: rs
+                .codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider: rs.max_attempts_per_provider,
             max_providers_to_try: rs.max_providers_to_try,
             upstream_retry_policy: rs.upstream_retry_policy,
             provider_cooldown_secs: rs.provider_cooldown_secs,
-            upstream_first_byte_timeout_secs: rs.upstream_first_byte_timeout_secs,
+            // Compact requests get a widened first-byte timeout: the whole
+            // prompt cache is invalidated upstream, so the first byte can
+            // legitimately take minutes. See `effective_first_byte_timeout_secs`.
+            upstream_first_byte_timeout_secs: effective_first_byte_timeout_secs(
+                rs.upstream_first_byte_timeout_secs,
+                self.is_compact_request,
+            ),
             upstream_stream_idle_timeout_secs: rs.upstream_stream_idle_timeout_secs,
             upstream_request_timeout_non_streaming_secs: rs
                 .upstream_request_timeout_non_streaming_secs,

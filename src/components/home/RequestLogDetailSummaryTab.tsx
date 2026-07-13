@@ -11,16 +11,21 @@ import {
 } from "../../utils/formatters";
 import { RequestLogErrorObservationCard } from "./RequestLogErrorObservationCard";
 import {
+  formatCodexReasoningEffortSource,
+  resolveCodexReasoningEffort,
+  resolveCodexReasoningGuardSummary,
+} from "../../services/gateway/requestLogSpecialSettings";
+import {
   buildRequestLogAuditMeta,
   computeStatusBadge,
-  FastModeBadge,
-  formatCodexReasoningEffortSource,
+  formatCodexReasoningContinuationStatus,
   hasCodexReasoningGuardSpecialSetting,
-  hasPriorityServiceTierSpecialSetting,
-  resolveCodexReasoningEffort,
+  resolveCacheCreationDisplay,
   resolveRequestLogModelDisplayMeta,
   resolveRequestLogUsageReasoningTokens,
-} from "./HomeLogShared";
+} from "./requestLogPresentation";
+import { FastModeBadge } from "./LogBadges";
+import { hasPriorityServiceTierSpecialSetting } from "./requestLogSpecialSettings";
 
 export type RequestLogDetailSummaryTabProps = {
   selectedLog: RequestLogDetail;
@@ -30,6 +35,7 @@ export type RequestLogDetailSummaryTabProps = {
   displayDurationMs: number;
   isInProgress: boolean;
   attemptCount: number;
+  codexReasoningGuardHitLabel?: string;
 };
 
 export function RequestLogDetailSummaryTab({
@@ -40,8 +46,9 @@ export function RequestLogDetailSummaryTab({
   displayDurationMs,
   isInProgress: _isInProgress,
   attemptCount: _attemptCount,
+  codexReasoningGuardHitLabel,
 }: RequestLogDetailSummaryTabProps) {
-  const auditMeta = buildRequestLogAuditMeta(selectedLog);
+  const auditMeta = buildRequestLogAuditMeta(selectedLog, { codexReasoningGuardHitLabel });
   const usageReasoningTokens = resolveRequestLogUsageReasoningTokens(selectedLog.usage_json);
   const codexReasoningEffort =
     selectedLog.cli_key === "codex"
@@ -54,8 +61,16 @@ export function RequestLogDetailSummaryTab({
     null,
     selectedLog.final_provider_id
   );
+  const codexReasoningGuard =
+    selectedLog.cli_key === "codex"
+      ? resolveCodexReasoningGuardSummary(selectedLog.special_settings_json)
+      : null;
+  const showCodexReasoningSignals = (codexReasoningGuard?.count ?? 0) > 0;
   const showKeyMetrics =
-    hasTokens || codexReasoningEffort != null || modelDisplayMeta.isRouteMismatch;
+    hasTokens ||
+    codexReasoningEffort != null ||
+    showCodexReasoningSignals ||
+    modelDisplayMeta.isRouteMismatch;
   const isPriorityServiceTier =
     selectedLog.cli_key === "codex" &&
     hasPriorityServiceTierSpecialSetting(selectedLog.special_settings_json);
@@ -65,6 +80,7 @@ export function RequestLogDetailSummaryTab({
     displayDurationMs,
     hasCodexReasoningGuardSpecialSetting(selectedLog.special_settings_json)
   );
+  const cacheCreation = resolveCacheCreationDisplay(selectedLog);
 
   return (
     <div className="space-y-3">
@@ -115,7 +131,7 @@ export function RequestLogDetailSummaryTab({
           </div>
 
           <div className="mt-3 grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
-            <MetricCard label="输入 Token" value={selectedLog.input_tokens} />
+            <MetricCard label="输入 Token" value={selectedLog.effective_input_tokens} />
             <MetricCard label="输出 Token" value={selectedLog.output_tokens} />
             <MetricCard label="思考 Token" value={usageReasoningTokens} />
             {modelDisplayMeta.isRouteMismatch ? (
@@ -135,7 +151,45 @@ export function RequestLogDetailSummaryTab({
                 />
               </>
             ) : null}
-            <MetricCard label="缓存创建" value={resolveCacheWriteValue(selectedLog)} />
+            {showCodexReasoningSignals ? (
+              <>
+                <MetricCard
+                  label="规则模式"
+                  value={formatCodexReasoningRuleMode(codexReasoningGuard?.latestRuleMode)}
+                />
+                <MetricCard
+                  label="命中来源"
+                  value={formatCodexReasoningHitSource(codexReasoningGuard?.latestHitSource)}
+                />
+                <MetricCard label="命中次数" value={codexReasoningGuard?.count ?? 0} />
+                <MetricCard
+                  label="命中后策略"
+                  value={formatCodexReasoningPostMatchStrategy(
+                    codexReasoningGuard?.latestPostMatchStrategy
+                  )}
+                />
+                <MetricCard
+                  label="策略结果"
+                  value={formatCodexReasoningContinuationStatus(
+                    codexReasoningGuard?.latestStrategyOutcome
+                  )}
+                />
+                <MetricCard
+                  label="续写轮数"
+                  value={codexReasoningGuard?.latestContinuationSentRounds}
+                />
+              </>
+            ) : null}
+            {cacheCreation ? (
+              <MetricCard
+                label="缓存创建"
+                value={
+                  cacheCreation.ttl && cacheCreation.tokens > 0
+                    ? `${cacheCreation.tokens} (${cacheCreation.ttl})`
+                    : cacheCreation.tokens
+                }
+              />
+            ) : null}
             <MetricCard label="缓存读取" value={selectedLog.cache_read_input_tokens} />
             <MetricCard label="总耗时" value={formatDurationMs(displayDurationMs)} />
             <MetricCard
@@ -203,8 +257,8 @@ function MetricCard({
       <div className="text-xs text-muted-foreground">{label}</div>
       <div
         className={cn(
-          "mt-1 text-lg font-semibold",
-          tone === "danger" ? "break-all text-rose-700 dark:text-rose-200" : "text-foreground"
+          "mt-1 break-words text-base font-semibold leading-snug text-foreground",
+          tone === "danger" && "break-all text-rose-700 dark:text-rose-200"
         )}
       >
         {value == null || value === "" ? "—" : value}
@@ -213,32 +267,26 @@ function MetricCard({
   );
 }
 
+function formatCodexReasoningRuleMode(value: string | null | undefined) {
+  if (value === "reasoning_tokens") return "reasoning tokens";
+  if (value === "final_answer_only_high_xhigh") return "final-only";
+  return value || "—";
+}
+
+function formatCodexReasoningHitSource(value: string | null | undefined) {
+  if (value === "reasoning_tokens") return "token";
+  if (value === "final_answer_only_high_xhigh") return "final-only";
+  return value || "—";
+}
+
+function formatCodexReasoningPostMatchStrategy(value: string | null | undefined) {
+  if (value === "continuation_repair") return "思考续写";
+  if (value === "continuation_repair_experimental") return "思考续写（实验）";
+  if (value === "retry_same_provider") return "自动重试";
+  return value || "—";
+}
+
 function formatCostMultiplier(value: number | null | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "—";
   return value === 0 ? "免费" : `x${value.toFixed(2)}`;
-}
-
-function resolveCacheWriteValue(selectedLog: RequestLogDetail) {
-  if (
-    selectedLog.cache_creation_5m_input_tokens != null &&
-    selectedLog.cache_creation_5m_input_tokens > 0
-  ) {
-    return `${selectedLog.cache_creation_5m_input_tokens} (5m)`;
-  }
-  if (
-    selectedLog.cache_creation_1h_input_tokens != null &&
-    selectedLog.cache_creation_1h_input_tokens > 0
-  ) {
-    return `${selectedLog.cache_creation_1h_input_tokens} (1h)`;
-  }
-  if (selectedLog.cache_creation_input_tokens != null) {
-    return selectedLog.cache_creation_input_tokens;
-  }
-  if (selectedLog.cache_creation_5m_input_tokens != null) {
-    return `${selectedLog.cache_creation_5m_input_tokens} (5m)`;
-  }
-  if (selectedLog.cache_creation_1h_input_tokens != null) {
-    return `${selectedLog.cache_creation_1h_input_tokens} (1h)`;
-  }
-  return "—";
 }

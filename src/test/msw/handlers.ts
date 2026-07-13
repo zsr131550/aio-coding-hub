@@ -277,6 +277,9 @@ export const handlers = [
             ? input.streamIdleTimeoutSeconds
             : null
           : (existing?.stream_idle_timeout_seconds ?? null),
+      extension_values: Array.isArray(input.extensionValues)
+        ? (input.extensionValues as ProviderSummary["extension_values"])
+        : (existing?.extension_values ?? []),
       upstream_retry_policy_override:
         input.upstreamRetryPolicyOverrideSpecified === true
           ? input.upstreamRetryPolicyOverride == null
@@ -356,15 +359,6 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/usage_leaderboard_v2`, () => HttpResponse.json([])),
 
   http.post(`${TAURI_ENDPOINT}/usage_provider_cache_rate_trend_v1`, () => HttpResponse.json([])),
-
-  // ---- Cost ----
-  http.post(`${TAURI_ENDPOINT}/cost_summary_v1`, () => HttpResponse.json(null)),
-  http.post(`${TAURI_ENDPOINT}/cost_trend_v1`, () => HttpResponse.json([])),
-  http.post(`${TAURI_ENDPOINT}/cost_breakdown_provider_v1`, () => HttpResponse.json([])),
-  http.post(`${TAURI_ENDPOINT}/cost_breakdown_model_v1`, () => HttpResponse.json([])),
-  http.post(`${TAURI_ENDPOINT}/cost_top_requests_v1`, () => HttpResponse.json([])),
-  http.post(`${TAURI_ENDPOINT}/cost_scatter_cli_provider_model_v1`, () => HttpResponse.json([])),
-  http.post(`${TAURI_ENDPOINT}/cost_backfill_missing_v1`, () => HttpResponse.json(null)),
 
   // ---- Provider Limit Usage ----
   http.post(`${TAURI_ENDPOINT}/provider_limit_usage_v1`, () => HttpResponse.json([])),

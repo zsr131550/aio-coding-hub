@@ -4,7 +4,9 @@
 //! through the Outbound → IR → Inbound pipeline.  When `active` is false the
 //! stream is a zero-cost passthrough.
 
+use super::response_cache;
 use super::traits::{BridgeContext, BridgeError};
+use crate::gateway::proxy::sse::{find_sse_event_end, parse_sse_frame};
 use axum::body::Bytes;
 use futures_core::Stream;
 use serde_json::Value;
@@ -32,6 +34,8 @@ where
     buffer: VecDeque<Bytes>,
     /// Accumulator for partial SSE lines from the upstream.
     line_buf: Vec<u8>,
+    responses_cache_response: Option<Value>,
+    responses_cache_output: Vec<Value>,
     terminated: bool,
 }
 
@@ -94,6 +98,24 @@ where
         requested_model: Option<String>,
         cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
     ) -> Self {
+        Self::for_bridge_type_with_cache(
+            upstream,
+            bridge_type,
+            requested_model,
+            cx2cc_settings,
+            None,
+            None,
+        )
+    }
+
+    pub fn for_bridge_type_with_cache(
+        upstream: S,
+        bridge_type: Option<&str>,
+        requested_model: Option<String>,
+        cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
+        responses_cache_namespace: Option<String>,
+        responses_cache_input: Option<Vec<Value>>,
+    ) -> Self {
         let Some(bridge_type) = bridge_type else {
             let dummy_ctx = BridgeContext {
                 claude_models: crate::domain::providers::ClaudeModels::default(),
@@ -103,6 +125,8 @@ where
                 mapped_model: None,
                 stream_requested: false,
                 is_chatgpt_backend: false,
+                responses_cache_namespace: None,
+                responses_cache_input: None,
             };
             return Self::new(upstream, false, None, dummy_ctx);
         };
@@ -122,6 +146,8 @@ where
                     mapped_model: None,
                     stream_requested: true,
                     is_chatgpt_backend: false,
+                    responses_cache_namespace,
+                    responses_cache_input,
                 };
                 let mut stream = Self::new(upstream, true, None, ctx);
                 stream.terminate_registry_miss(bridge_type);
@@ -141,6 +167,8 @@ where
             mapped_model: None,
             stream_requested: true,
             is_chatgpt_backend: false,
+            responses_cache_namespace,
+            responses_cache_input,
         };
         Self::new(upstream, true, Some(translator), ctx)
     }
@@ -162,6 +190,8 @@ where
             ctx,
             buffer: VecDeque::new(),
             line_buf: Vec::new(),
+            responses_cache_response: None,
+            responses_cache_output: Vec::new(),
             terminated: false,
         }
     }
@@ -259,6 +289,7 @@ where
                 };
                 match translator.translate_event(&event_type, &data, &self.ctx) {
                     Ok(frames) => {
+                        self.maybe_cache_responses_event(&event_type, &data);
                         for f in frames {
                             self.buffer.push_back(f);
                         }
@@ -270,6 +301,54 @@ where
                     }
                 }
             }
+        }
+    }
+
+    fn maybe_cache_responses_event(&mut self, event_type: &str, data: &Value) {
+        if self.ctx.responses_cache_namespace.is_none() || self.ctx.responses_cache_input.is_none()
+        {
+            return;
+        }
+
+        match event_type {
+            "response.created" => {
+                self.responses_cache_response = Some(
+                    data.get("response")
+                        .cloned()
+                        .unwrap_or_else(|| data.clone()),
+                );
+            }
+            "response.output_item.done" => {
+                if let Some(item) = data.get("item").cloned() {
+                    upsert_output_item(&mut self.responses_cache_output, item);
+                }
+            }
+            "response.completed" => {
+                let completed = data
+                    .get("response")
+                    .cloned()
+                    .unwrap_or_else(|| data.clone());
+                if let Some(existing) = self.responses_cache_response.as_mut() {
+                    merge_response_object(existing, &completed);
+                } else {
+                    self.responses_cache_response = Some(completed);
+                }
+
+                if let (Some(namespace), Some(input), Some(response)) = (
+                    self.ctx.responses_cache_namespace.as_deref(),
+                    self.ctx.responses_cache_input.as_deref(),
+                    self.responses_cache_response.as_mut(),
+                ) {
+                    if let Some(obj) = response.as_object_mut() {
+                        obj.insert(
+                            "output".to_string(),
+                            Value::Array(self.responses_cache_output.clone()),
+                        );
+                    }
+                    response_cache::cache_completed_response(namespace, input, response);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -311,129 +390,6 @@ where
     }
 }
 
-// ─── SSE parsing helpers ────────────────────────────────────────────────────
-
-/// Find the byte offset immediately after the first complete SSE event,
-/// terminated by `\n\n` or `\r\n\r\n`.
-fn find_sse_event_end(buffer: &[u8]) -> Option<usize> {
-    let mut i = 0;
-    while i < buffer.len() {
-        if buffer[i] == b'\n' {
-            if i + 1 < buffer.len() && buffer[i + 1] == b'\n' {
-                return Some(i + 2);
-            }
-        } else if buffer[i] == b'\r'
-            && i + 3 < buffer.len()
-            && buffer[i + 1] == b'\n'
-            && buffer[i + 2] == b'\r'
-            && buffer[i + 3] == b'\n'
-        {
-            return Some(i + 4);
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Parse a single SSE frame string into (event_type, data_json).
-///
-/// Supports both `event: xxx\ndata: {...}\n\n` and `data: {...}\n\n` formats.
-/// In the latter case, the event type is inferred from the `type` field of the
-/// JSON data.
-fn parse_sse_frame(frame: &str) -> Option<(String, Value)> {
-    let mut event_type = None;
-    let mut data_parts: Vec<&str> = Vec::new();
-
-    for line in frame.lines() {
-        let line = line.trim_end_matches('\r');
-        if line.is_empty() || line.starts_with(':') {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("event:") {
-            event_type = Some(rest.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("data:") {
-            let payload = rest.trim_start();
-            if payload == "[DONE]" {
-                return None;
-            }
-            data_parts.push(payload);
-        }
-    }
-
-    if data_parts.is_empty() {
-        return None;
-    }
-    let data_str = data_parts.join("\n");
-    let data: Value = serde_json::from_str(&data_str).ok()?;
-
-    // Infer event type from data.type if not explicitly provided.
-    let event_type = event_type.unwrap_or_else(|| {
-        data.get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("unknown")
-            .to_string()
-    });
-
-    Some((event_type, data))
-}
-
-/// Aggregate an OpenAI Responses SSE stream into a single JSON response.
-pub(crate) fn aggregate_responses_event_stream(raw: &[u8]) -> Result<Value, String> {
-    let mut response: Option<Value> = None;
-    let mut output: Vec<Value> = Vec::new();
-    let mut cursor = 0usize;
-
-    while let Some(relative_end) = find_sse_event_end(&raw[cursor..]) {
-        let event_end = cursor + relative_end;
-        let frame = &raw[cursor..event_end];
-        cursor = event_end;
-        let text =
-            std::str::from_utf8(frame).map_err(|e| format!("invalid utf-8 in SSE frame: {e}"))?;
-        let Some((event_name, data)) = parse_sse_frame(text) else {
-            continue;
-        };
-
-        match event_name.as_str() {
-            "response.created" => {
-                let created = data.get("response").cloned().unwrap_or(data);
-                response = Some(created);
-            }
-            "response.output_item.done" => {
-                let item = data
-                    .get("item")
-                    .cloned()
-                    .ok_or_else(|| "missing item in response.output_item.done".to_string())?;
-                upsert_output_item(&mut output, item);
-            }
-            "response.completed" => {
-                let completed = data.get("response").cloned().unwrap_or(data);
-                if let Some(existing) = response.as_mut() {
-                    merge_response_object(existing, &completed);
-                } else {
-                    response = Some(completed);
-                }
-            }
-            "error" => {
-                let detail = data
-                    .get("detail")
-                    .and_then(Value::as_str)
-                    .or_else(|| data.get("message").and_then(Value::as_str))
-                    .unwrap_or("unknown SSE error");
-                return Err(detail.to_string());
-            }
-            _ => {}
-        }
-    }
-
-    let mut response =
-        response.ok_or_else(|| "missing response.created/response.completed".to_string())?;
-    let obj = response
-        .as_object_mut()
-        .ok_or_else(|| "aggregated response is not an object".to_string())?;
-    obj.insert("output".to_string(), Value::Array(output));
-    Ok(response)
-}
-
 fn merge_response_object(base: &mut Value, update: &Value) {
     let (Some(base_obj), Some(update_obj)) = (base.as_object_mut(), update.as_object()) else {
         *base = update.clone();
@@ -468,75 +424,6 @@ fn upsert_output_item(output: &mut Vec<Value>, item: Value) {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-
-    #[test]
-    fn find_sse_event_end_basic() {
-        assert_eq!(find_sse_event_end(b"abc\n\ndef"), Some(5));
-        assert_eq!(find_sse_event_end(b"abc\ndef"), None);
-        assert_eq!(find_sse_event_end(b"\n\n"), Some(2));
-        assert_eq!(find_sse_event_end(b"abc\r\n\r\ndef"), Some(7));
-    }
-
-    #[test]
-    fn parse_sse_frame_with_event() {
-        let frame = "event: response.created\ndata: {\"id\":\"r1\"}\n\n";
-        let (evt, data) = parse_sse_frame(frame).unwrap();
-        assert_eq!(evt, "response.created");
-        assert_eq!(data.get("id").unwrap().as_str().unwrap(), "r1");
-    }
-
-    #[test]
-    fn parse_sse_frame_data_only_infers_type() {
-        let frame = "data: {\"type\":\"response.completed\",\"id\":\"r2\"}\n\n";
-        let (evt, data) = parse_sse_frame(frame).unwrap();
-        assert_eq!(evt, "response.completed");
-        assert_eq!(data.get("id").unwrap().as_str().unwrap(), "r2");
-    }
-
-    #[test]
-    fn parse_sse_frame_done_returns_none() {
-        let frame = "data: [DONE]\n\n";
-        assert!(parse_sse_frame(frame).is_none());
-    }
-
-    #[test]
-    fn parse_sse_frame_comment_lines_ignored() {
-        let frame = ": keepalive\ndata: {\"type\":\"ping\"}\n\n";
-        let (evt, _) = parse_sse_frame(frame).unwrap();
-        assert_eq!(evt, "ping");
-    }
-
-    #[test]
-    fn aggregate_responses_event_stream_handles_many_frames_with_trailing_partial() {
-        let mut raw = String::from(
-            "event: response.created\n\
-             data: {\"response\":{\"id\":\"resp_many\",\"status\":\"in_progress\"}}\n\n",
-        );
-        for index in 0..128 {
-            raw.push_str(&format!(
-                "event: response.output_item.done\n\
-                 data: {{\"item\":{{\"id\":\"msg_{index}\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}}}\n\n"
-            ));
-        }
-        raw.push_str(
-            "event: response.completed\n\
-             data: {\"response\":{\"id\":\"resp_many\",\"status\":\"completed\"}}\n\n\
-             event: response.output_item.done\n\
-             data: {\"item\":{\"id\":\"partial\"",
-        );
-
-        let aggregated = aggregate_responses_event_stream(raw.as_bytes()).expect("aggregate");
-
-        assert_eq!(aggregated["id"], "resp_many");
-        assert_eq!(aggregated["status"], "completed");
-        assert_eq!(
-            aggregated
-                .get("output")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(128)
-        );
-    }
 
     struct MockStream {
         items: VecDeque<Result<Bytes, reqwest::Error>>,
@@ -634,5 +521,47 @@ mod tests {
         assert!(text.contains("event: error"));
         assert!(text.contains("GW_BRIDGE_UNSUPPORTED_FEATURE"));
         assert!(text.contains("tool_calls"));
+    }
+
+    #[test]
+    fn bridge_stream_caches_completed_responses_tool_context() {
+        let _guard = response_cache::test_guard();
+        response_cache::clear_for_tests();
+        let namespace = "codex_to_openai_responses:source=1:session=s1";
+        let input = vec![serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "call a tool"}]
+        })];
+        let raw = Bytes::from_static(
+            concat!(
+                "event: response.created\n",
+                "data: {\"response\":{\"id\":\"resp_stream\",\"model\":\"gpt-5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                "event: response.output_item.done\n",
+                "data: {\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"lookup\",\"arguments\":\"{}\"}}\n\n",
+                "event: response.completed\n",
+                "data: {\"response\":{\"id\":\"resp_stream\",\"model\":\"gpt-5\",\"status\":\"completed\"}}\n\n",
+                "data: [DONE]\n\n"
+            )
+            .as_bytes(),
+        );
+        let mut stream = BridgeStream::for_bridge_type_with_cache(
+            MockStream::new(vec![Ok(raw)]),
+            Some("codex_to_openai_responses"),
+            Some("gpt-5".to_string()),
+            crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
+            Some(namespace.to_string()),
+            Some(input),
+        );
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        while let Poll::Ready(Some(Ok(_))) = Pin::new(&mut stream).poll_next(&mut cx) {}
+
+        let key = response_cache::ResponsesCacheKey::new(namespace, "resp_stream").unwrap();
+        let cached = response_cache::get(&key).expect("completed response cached");
+        assert_eq!(cached.len(), 2);
+        assert_eq!(cached[1]["type"], "function_call");
+        assert!(cached[1].get("id").is_none());
     }
 }

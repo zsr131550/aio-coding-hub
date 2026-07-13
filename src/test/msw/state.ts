@@ -23,7 +23,7 @@ const DEFAULT_CLI_PROXY_STATUS: CliProxyStatus[] = [
 
 // Default settings matching the Rust backend defaults.
 const DEFAULT_SETTINGS: AppSettings = {
-  schema_version: 43,
+  schema_version: 48,
   preferred_port: 37123,
   show_home_heatmap: true,
   show_home_usage: true,
@@ -39,10 +39,15 @@ const DEFAULT_SETTINGS: AppSettings = {
   codex_home_override: "",
   codex_oauth_compatible_proxy_mode: false,
   codex_provider_test_model: "gpt-5.4-mini",
+  codex_reasoning_guard_hit_label: "降智命中",
   codex_reasoning_guard_enabled: true,
+  codex_reasoning_guard_rule_mode: "reasoning_tokens",
   codex_reasoning_guard_compare_mode: "equals",
   codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
   codex_reasoning_guard_model_rules: [],
+  codex_reasoning_guard_active_template_id: "builtin-reasoning-tokens-518n-minus-2",
+  codex_reasoning_guard_custom_templates: [],
+  codex_reasoning_guard_post_match_strategy: "continuation_repair",
   codex_reasoning_guard_immediate_retry_budget: 5,
   codex_reasoning_guard_delayed_retry_budget: 5,
   codex_reasoning_guard_delayed_retry_ms: 1000,
@@ -52,6 +57,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   codex_reasoning_guard_concurrent_interval_ms: 1000,
   codex_reasoning_guard_concurrent_max_attempts: 10,
   codex_reasoning_guard_model_fallbacks: [],
+  codex_reasoning_guard_continuation_repair_enabled: false,
+  codex_reasoning_guard_continuation_max_rounds: 3,
+  codex_reasoning_guard_continuation_max_output_tokens: 0,
   codex_reasoning_guard_backoff_after_hits: 5,
   codex_reasoning_guard_backoff_ms: 1000,
   auto_start: false,
@@ -59,10 +67,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   tray_enabled: true,
   enable_cli_proxy_startup_recovery: true,
   log_retention_days: 7,
+  request_log_retention_days: 0,
   provider_cooldown_seconds: 30,
   provider_base_url_ping_cache_ttl_seconds: 60,
   upstream_first_byte_timeout_seconds: 30,
-  upstream_stream_idle_timeout_seconds: 120,
+  upstream_stream_idle_timeout_seconds: 300,
   upstream_request_timeout_non_streaming_seconds: 0,
   update_releases_url: "https://github.com/FingerCaster/aio-coding-hub/releases",
   failover_max_attempts_per_provider: 5,
@@ -75,7 +84,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   intercept_anthropic_warmup_requests: true,
   enable_thinking_signature_rectifier: true,
   enable_thinking_budget_rectifier: true,
-  enable_billing_header_rectifier: true,
+  enable_billing_header_rectifier: false,
   enable_codex_session_id_completion: true,
   enable_claude_metadata_user_id_injection: true,
   enable_cache_anomaly_monitor: false,
@@ -134,6 +143,7 @@ const DEFAULT_USAGE_SUMMARY: UsageSummary = {
   requests_success: 0,
   requests_failed: 0,
   cost_covered_success: 0,
+  total_duration_ms: 0,
   avg_duration_ms: null,
   avg_ttfb_ms: null,
   avg_output_tokens_per_second: null,
@@ -148,7 +158,7 @@ const DEFAULT_USAGE_SUMMARY: UsageSummary = {
 };
 
 let traceCounter = 0;
-let cliProxyStatusAllState: CliProxyStatus[] = JSON.parse(JSON.stringify(DEFAULT_CLI_PROXY_STATUS));
+let cliProxyStatusAllState: CliProxyStatus[] = structuredClone(DEFAULT_CLI_PROXY_STATUS);
 let envConflictsState: EnvConflict[] = [];
 let settingsState: AppSettings = clone(DEFAULT_SETTINGS);
 let gatewayStatusState: GatewayStatus = clone(DEFAULT_GATEWAY_STATUS);
@@ -162,7 +172,7 @@ let workspacesState: Map<CliKey, WorkspacesListResult> = new Map();
 let pluginState: Map<string, PluginDetail> = new Map();
 
 function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
+  return structuredClone(value);
 }
 
 function nextTraceId(): string {
@@ -198,18 +208,10 @@ export function getEnvConflictsState(): EnvConflict[] {
   return clone(envConflictsState);
 }
 
-export function setEnvConflictsState(next: EnvConflict[]) {
-  envConflictsState = clone(next);
-}
-
 // -- Settings --
 
 export function getSettingsState(): AppSettings {
   return clone(settingsState);
-}
-
-export function setSettingsState(next: AppSettings) {
-  settingsState = clone(next);
 }
 
 export function mergeSettingsState(partial: Partial<AppSettings>): AppSettings {
@@ -223,10 +225,6 @@ export function getGatewayStatusState(): GatewayStatus {
   return clone(gatewayStatusState);
 }
 
-export function setGatewayStatusState(next: GatewayStatus) {
-  gatewayStatusState = clone(next);
-}
-
 // -- Plugins --
 
 function officialPrivacyFilterDetail(): PluginDetail {
@@ -236,7 +234,7 @@ function officialPrivacyFilterDetail(): PluginDetail {
     name: "Privacy Filter",
     current_version: "1.0.0",
     status: "disabled",
-    runtime: "native:privacyFilter",
+    runtime: "extensionHost",
     permission_risk: "high",
     update_available: false,
     last_error: null,
@@ -251,12 +249,36 @@ function officialPrivacyFilterDetail(): PluginDetail {
       name: "Privacy Filter",
       version: "1.0.0",
       apiVersion: "1.0.0",
-      runtime: { kind: "native", engine: "privacyFilter" },
-      hooks: [
-        { name: "gateway.request.afterBodyRead", priority: 10, failurePolicy: "fail-open" },
-        { name: "log.beforePersist", priority: 10, failurePolicy: "fail-open" },
+      runtime: { kind: "extensionHost", language: "typescript" },
+      main: "dist/extension.js",
+      activationEvents: [
+        "onGatewayHook:gateway.request.afterBodyRead",
+        "onGatewayHook:gateway.request.beforeSend",
+        "onGatewayHook:log.beforePersist",
       ],
-      permissions: ["request.body.read", "request.body.write", "log.redact"],
+      capabilities: ["gateway.hooks", "privacy.redact"],
+      contributes: {
+        gatewayHooks: [
+          {
+            name: "gateway.request.afterBodyRead",
+            priority: 5,
+            failurePolicy: "fail-closed",
+            timeoutMs: 5000,
+          },
+          {
+            name: "gateway.request.beforeSend",
+            priority: 5,
+            failurePolicy: "fail-closed",
+            timeoutMs: 5000,
+          },
+          {
+            name: "log.beforePersist",
+            priority: 1,
+            failurePolicy: "fail-closed",
+            timeoutMs: 5000,
+          },
+        ],
+      },
       hostCompatibility: {
         app: ">=0.56.0 <1.0.0",
         pluginApi: "^1.0.0",
@@ -430,6 +452,7 @@ function officialPrivacyFilterDetail(): PluginDetail {
       },
     ],
     runtime_failures: [],
+    rollback_versions: [],
   };
 }
 
@@ -466,18 +489,10 @@ export function getUsageSummaryState(): UsageSummary {
   return clone(usageSummaryState);
 }
 
-export function setUsageSummaryState(next: UsageSummary) {
-  usageSummaryState = clone(next);
-}
-
 // -- App About --
 
 export function getAppAboutState(): AppAboutInfo {
   return clone(appAboutState);
-}
-
-export function setAppAboutState(next: AppAboutInfo) {
-  appAboutState = clone(next);
 }
 
 // -- DB Disk Usage --
@@ -486,26 +501,14 @@ export function getDbDiskUsageState(): DbDiskUsage {
   return clone(dbDiskUsageState);
 }
 
-export function setDbDiskUsageState(next: DbDiskUsage) {
-  dbDiskUsageState = clone(next);
-}
-
 // -- Sort Modes --
 
 export function getSortModesState(): SortModeSummary[] {
   return clone(sortModesState);
 }
 
-export function setSortModesState(next: SortModeSummary[]) {
-  sortModesState = clone(next);
-}
-
 export function getSortModeActiveState(): SortModeActiveRow[] {
   return clone(sortModeActiveState);
-}
-
-export function setSortModeActiveState(next: SortModeActiveRow[]) {
-  sortModeActiveState = clone(next);
 }
 
 // -- Workspaces --
@@ -514,11 +517,7 @@ export function getWorkspacesState(cliKey: CliKey): WorkspacesListResult {
   return clone(workspacesState.get(cliKey) ?? { active_id: null, items: [] });
 }
 
-export function setWorkspacesState(cliKey: CliKey, next: WorkspacesListResult) {
-  workspacesState.set(cliKey, clone(next));
-}
-
-export function setCliProxyEnabledState(cliKey: CliKey, enabled: boolean): CliProxyStatus[] {
+function setCliProxyEnabledState(cliKey: CliKey, enabled: boolean): CliProxyStatus[] {
   const rowIndex = cliProxyStatusAllState.findIndex((row) => row.cli_key === cliKey);
   const baseOrigin = enabled ? DEFAULT_BASE_ORIGIN : null;
   if (rowIndex < 0) {

@@ -2,6 +2,7 @@
 
 use crate::app_state::{ensure_db_ready, DbInitState};
 use crate::commands::limit::normalize_limit;
+use crate::gateway_runtime_access::app_gateway_active_requests_snapshot;
 use crate::{blocking, request_attempt_logs, request_logs};
 
 const REQUEST_LOGS_DEFAULT_LIMIT: u32 = 50;
@@ -163,6 +164,34 @@ pub(crate) async fn request_logs_codex_reasoning_guard_stats(
     })
     .await
     .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn active_request_logs_snapshot(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+) -> Result<Vec<crate::gateway::active_requests::ActiveRequestSnapshotItem>, String> {
+    let snapshot = app_gateway_active_requests_snapshot(&app);
+    if snapshot.is_empty() {
+        return Ok(snapshot);
+    }
+
+    let trace_ids = snapshot
+        .iter()
+        .map(|item| item.trace_id.clone())
+        .collect::<Vec<_>>();
+    let db = ensure_db_ready(app, db_state.inner()).await?;
+    let terminal_trace_ids =
+        blocking::run("active_request_logs_snapshot_terminal_filter", move || {
+            request_logs::terminal_trace_ids(&db, &trace_ids)
+        })
+        .await?;
+
+    Ok(snapshot
+        .into_iter()
+        .filter(|item| !terminal_trace_ids.contains(item.trace_id.as_str()))
+        .collect())
 }
 
 #[cfg(test)]

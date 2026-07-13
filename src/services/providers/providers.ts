@@ -4,8 +4,10 @@ import {
   type DailyResetMode as GeneratedDailyResetMode,
   type ModelMapping as GeneratedModelMapping,
   type ProviderAuthMode as GeneratedProviderAuthMode,
+  type ProviderAccountUsageResult,
   type ProviderAvailabilityResult,
   type ProviderBaseUrlMode as GeneratedProviderBaseUrlMode,
+  type ProviderExtensionValuesInput,
   type ProviderOAuthDeviceCodeCancelResult as GeneratedProviderOAuthDeviceCodeCancelResult,
   type ProviderOAuthDeviceCodePollResult as GeneratedProviderOAuthDeviceCodePollResult,
   type ProviderOAuthDeviceCodeStartResult as GeneratedProviderOAuthDeviceCodeStartResult,
@@ -35,6 +37,8 @@ import { createRiskyIpcConfirm } from "../ipcConfirm";
 
 export type {
   ProviderAvailabilityResult,
+  ProviderAccountUsageResult,
+  ProviderExtensionValuesInput,
   GeneratedProviderOAuthDeviceCodePollResult as ProviderOAuthDeviceCodePollResult,
   GeneratedProviderOAuthDeviceCodeStartResult as ProviderOAuthDeviceCodeStartResult,
   GeneratedProviderOAuthDeviceCodeCancelResult as ProviderOAuthDeviceCodeCancelResult,
@@ -107,6 +111,7 @@ type ProviderUpsertFieldMap = {
   sourceProviderId: "sourceProviderId";
   bridgeType: "bridgeType";
   streamIdleTimeoutSeconds: "streamIdleTimeoutSeconds";
+  extensionValues: "extensionValues";
   upstreamRetryPolicyOverride: "upstreamRetryPolicyOverride";
   upstreamRetryPolicyOverrideSpecified: "upstreamRetryPolicyOverrideSpecified";
 };
@@ -200,6 +205,7 @@ function toProviderUpsertPayload(input: ProviderUpsertInput): ProviderUpsertTran
     note: input.note ?? null,
     sourceProviderId,
     bridgeType: input.bridgeType ?? null,
+    extensionValues: input.extensionValues ?? null,
     upstreamRetryPolicyOverride: null,
   } satisfies Omit<GeneratedProviderUpsertInput, "streamIdleTimeoutSeconds">;
 
@@ -571,6 +577,22 @@ export async function providerOAuthFetchLimits(
     invoke: () =>
       commands.providerOauthFetchLimits(normalizedProviderId) as Promise<
         GeneratedCommandResult<OAuthLimitsResult>
+      >,
+  });
+}
+
+export async function providerAccountUsageFetch(
+  providerId: number
+): Promise<ProviderAccountUsageResult | null> {
+  const normalizedProviderId = validateProviderId(providerId);
+
+  return invokeGeneratedIpc<ProviderAccountUsageResult>({
+    title: "读取账户用量失败",
+    cmd: "provider_account_usage_fetch",
+    args: { providerId: normalizedProviderId },
+    invoke: () =>
+      commands.providerAccountUsageFetch(normalizedProviderId) as Promise<
+        GeneratedCommandResult<ProviderAccountUsageResult>
       >,
   });
 }

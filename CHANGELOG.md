@@ -1,5 +1,227 @@
 # Changelog
 
+## [0.60.24](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.23...aio-coding-hub-v0.60.24) (2026-07-13)
+
+
+### Features
+
+* **codex:** integrate installed model catalog and dynamic reasoning capabilities ([50db2a1](https://github.com/FingerCaster/aio-coding-hub/commit/50db2a181af685c6342d3c7d3e0e425352b172d0))
+* **usage:** unify cache, CX2CC, and request-cost semantics ([50db2a1](https://github.com/FingerCaster/aio-coding-hub/commit/50db2a181af685c6342d3c7d3e0e425352b172d0))
+
+
+### Bug Fixes
+
+* **codex:** preserve continuation usage accounting across the upstream merge ([0943e70](https://github.com/FingerCaster/aio-coding-hub/commit/0943e708526e67a798d57361ea944915627b9011))
+
+
+### Code Refactoring
+
+* **cli-manager:** streamline reasoning effort controls and descriptions ([3db9a55](https://github.com/FingerCaster/aio-coding-hub/commit/3db9a553bc7188b0cc25e502673041d6cdc6fc14))
+* **home:** consolidate cost views into usage and request activity surfaces ([50db2a1](https://github.com/FingerCaster/aio-coding-hub/commit/50db2a181af685c6342d3c7d3e0e425352b172d0))
+
+## [0.60.23](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.22...aio-coding-hub-v0.60.23) (2026-07-11)
+
+
+### Bug Fixes
+
+* **codex:** remove unsupported minimal reasoning effort ([236c656](https://github.com/FingerCaster/aio-coding-hub/commit/236c65658e4a9fc49fe8c04be3c8db0f820650fb))
+* **gateway:** 为后台请求保留尝试进度 ([57198a0](https://github.com/FingerCaster/aio-coding-hub/commit/57198a00937d1991923c832294d81e3d61b2221c))
+* **home:** 收敛请求日志生命周期投影 ([5860eda](https://github.com/FingerCaster/aio-coding-hub/commit/5860edad6950c49421c62aaac6da463c3a397aa1))
+
+## [0.60.22](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.21...aio-coding-hub-v0.60.22) (2026-07-10)
+
+
+### Bug Fixes
+
+* **codex:** stream responses when guard disabled ([0dbfcf9](https://github.com/FingerCaster/aio-coding-hub/commit/0dbfcf9b9ccedcf56f4a910f2ed0ab9ba4ca6a51))
+
+## [0.60.21](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.20...aio-coding-hub-v0.60.21) (2026-07-09)
+
+
+### Features
+
+* **ui:** 增加用量总耗时展示 ([#334](https://github.com/FingerCaster/aio-coding-hub/issues/334)) ([5a67eb2](https://github.com/FingerCaster/aio-coding-hub/commit/5a67eb2a2e0048204a56d0396c171bdc24aed525))
+
+
+### Bug Fixes
+
+* **codex:** reload raw config from disk ([8b9731b](https://github.com/FingerCaster/aio-coding-hub/commit/8b9731be7734ac518a4ff252f520a34d3c8d7772))
+* **gateway:** ignore terminal stale active requests ([012d70f](https://github.com/FingerCaster/aio-coding-hub/commit/012d70f3ac323b29eb6ab17634d60c5737dc1005))
+* **plugins:** stabilize extension host process CI ([ea4001a](https://github.com/FingerCaster/aio-coding-hub/commit/ea4001a5e7ff92f6e204322b3340d0427d014632))
+* **settings:** serialize settings writes ([3f54494](https://github.com/FingerCaster/aio-coding-hub/commit/3f54494d0b8230fca05534c4c97d5d82f44bb35d))
+
+
+### Styles
+
+* format release validation files ([5b2b722](https://github.com/FingerCaster/aio-coding-hub/commit/5b2b7227c4232d3627a36aa64cbc5bb28ae192ed))
+
+## [0.60.20](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.19...aio-coding-hub-v0.60.20) (2026-07-09)
+
+
+### Features
+
+* **providers:** add optional automatic balance refresh for enabled providers ([2fa0a48](https://github.com/FingerCaster/aio-coding-hub/commit/2fa0a48268d56528e841f403de42ffc4489f4fa2))
+
+
+### Bug Fixes
+
+* **codex:** harden stable continuation folding and usage accounting ([650b31b](https://github.com/FingerCaster/aio-coding-hub/commit/650b31b1fa00da38b8272b0da1a492c39c99cc71))
+* **codex:** remove experimental continuation repair surface ([a3c8f2f](https://github.com/FingerCaster/aio-coding-hub/commit/a3c8f2fd554217a7f2f24cc9c7d399a2f211d067))
+* **providers:** adapt segmented controls to dark theme ([de78962](https://github.com/FingerCaster/aio-coding-hub/commit/de789628be6b5742f56b9ae0e9744e78d5fd97b1))
+* **providers:** show sub2api plan remaining alongside balance ([8984bba](https://github.com/FingerCaster/aio-coding-hub/commit/8984bbabbad7ce57a720d203d60a17ace23e2007))
+
+## [0.60.11](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.10...aio-coding-hub-v0.60.11) (2026-07-09)
+
+
+### Bug Fixes
+
+* **plugins:** stabilize extension host process CI ([ea4001a](https://github.com/dyndynjyxa/aio-coding-hub/commit/ea4001a5e7ff92f6e204322b3340d0427d014632))
+
+## [0.60.10](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.9...aio-coding-hub-v0.60.10) (2026-07-09)
+
+
+### Bug Fixes
+
+* **gateway:** arm request abort guard before active-request registration ([49d590c](https://github.com/dyndynjyxa/aio-coding-hub/commit/49d590c4df63a4cd9a1428cb5cbacb58b1d0f080))
+* **home:** keep freshness watchdog alive while a recent log row lacks terminal state ([46ce59e](https://github.com/dyndynjyxa/aio-coding-hub/commit/46ce59eebce5ad962592db6121c9e77ae8cc0044))
+* **home:** keep signal-driven request log refresh alive while backgrounded ([4ed3b4b](https://github.com/dyndynjyxa/aio-coding-hub/commit/4ed3b4b4d89ef840813e3f32e2ccc0a6ccd1e432))
+
+## [0.60.9](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.8...aio-coding-hub-v0.60.9) (2026-07-07)
+
+
+### Bug Fixes
+
+* **home:** refresh stale request log activity ([dc30559](https://github.com/dyndynjyxa/aio-coding-hub/commit/dc30559e63ed37d3946ca2f6b8061bc5d3cc6c33))
+
+## [0.60.19](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.18...aio-coding-hub-v0.60.19) (2026-07-06)
+
+
+### Bug Fixes
+
+* **codex:** restore continuation repair timeout policy ([4dc3401](https://github.com/FingerCaster/aio-coding-hub/commit/4dc3401d785e8a2887253e98e59c7998d9cb49d5))
+* **providers:** compact account usage display ([bda1fad](https://github.com/FingerCaster/aio-coding-hub/commit/bda1fadb61a7b8af0838f5196776e755ccca1a1f))
+
+## [0.60.8](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.7...aio-coding-hub-v0.60.8) (2026-07-05)
+
+
+### Features
+
+* **gateway:** 熔断跳过归因落库并在日志详情展示原因与冷却时间 ([530e6d3](https://github.com/dyndynjyxa/aio-coding-hub/commit/530e6d3b16815b67bf5fe036fc356cfab267b2c8))
+* **settings:** 请求日志留存策略可见并提供数据库压缩入口 ([c23e4bd](https://github.com/dyndynjyxa/aio-coding-hub/commit/c23e4bd7f19355dba75afa63bec19666ae613c7f))
+
+
+### Bug Fixes
+
+* **gateway:** 流式空闲超时在流式转发路径真正生效 ([6197e81](https://github.com/dyndynjyxa/aio-coding-hub/commit/6197e81046867e229f0e1dfe0a98f1bf311a484a))
+* **ui:** failover 徽章推导与落库语义收敛并清理状态死代码 ([5b5eae8](https://github.com/dyndynjyxa/aio-coding-hub/commit/5b5eae8ee0088b0be407e64acd2a36426768976b))
+
+
+### Code Refactoring
+
+* **gateway:** 熔断通知文案迁移前端渲染并删除后端文本构造 ([5cd4915](https://github.com/dyndynjyxa/aio-coding-hub/commit/5cd49151d1ea93034d0e371a3d68aa09800f10f7))
+* **ui:** 拆分 HomeLogShared 杂物间为三个单一职责模块 ([8590f3f](https://github.com/dyndynjyxa/aio-coding-hub/commit/8590f3f04fdbfc2529d754ac90e93c189af81540))
+* **ui:** 清理 review 发现的 P2 项并移除 traceRoute skipped 死分支 ([ddf131f](https://github.com/dyndynjyxa/aio-coding-hub/commit/ddf131fe735a4459d4ed0e177dd1b4c82063bb93))
+* **ui:** 网关事件 payload 类型改由 Specta 生成派生 ([85b4007](https://github.com/dyndynjyxa/aio-coding-hub/commit/85b40072327181f00e2efe7020353dbcf4fbe9ab))
+
+## [0.60.7](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.6...aio-coding-hub-v0.60.7) (2026-07-05)
+
+
+### Features
+
+* **ui:** 请求日志错误卡片展示失败尝试归因摘要 ([bdca955](https://github.com/dyndynjyxa/aio-coding-hub/commit/bdca955f9ce48c2abfd1a1ae33a29aeace322f2b))
+
+
+### Bug Fixes
+
+* **gateway:** 识别 compact 请求并放宽首字节超时至 300 秒 ([bbbdeaf](https://github.com/dyndynjyxa/aio-coding-hub/commit/bbbdeaf019f93b3069d8a554647c24ef5813fd8c))
+
+## [0.60.6](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.5...aio-coding-hub-v0.60.6) (2026-07-03)
+
+## [0.60.18](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.17...aio-coding-hub-v0.60.18) (2026-07-05)
+
+
+### Features
+
+* **providers:** add account usage display ([6396d35](https://github.com/FingerCaster/aio-coding-hub/commit/6396d35a84ed7fe2babac99d93105014e1012911))
+
+
+### Bug Fixes
+
+* repair codex continuation response contract ([d508a4e](https://github.com/FingerCaster/aio-coding-hub/commit/d508a4eae5e64a22d06c048967b5bd1c94e2bba3))
+
+## [0.60.17](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.16...aio-coding-hub-v0.60.17) (2026-07-05)
+
+
+### Features
+
+* merge upstream main through 0.60.6 with WebView watchdog recovery, gateway event contracts, request-log retention, usage cache-rate semantics, and release pipeline updates ([6855df8](https://github.com/FingerCaster/aio-coding-hub/commit/6855df8441af73965164b148535c05ceb9085839))
+
+
+### Bug Fixes
+
+* preserve fork release identity and manual release gates after upstream reconciliation ([5e1e71e](https://github.com/FingerCaster/aio-coding-hub/commit/5e1e71e0ccd59c1272d89225609f33add608c015))
+* make request log retention purge portable ([72f825d](https://github.com/FingerCaster/aio-coding-hub/commit/72f825d35e9f6368c86f5431dac5b56de57151f0))
+* clean provider validation review findings ([fb47fe2](https://github.com/FingerCaster/aio-coding-hub/commit/fb47fe223d38412eefe890a945adb7aa728324dd))
+
+## [0.60.16](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.15...aio-coding-hub-v0.60.16) (2026-07-04)
+
+
+### Features
+
+* unify Codex reasoning guard ([9918684](https://github.com/FingerCaster/aio-coding-hub/commit/99186846e232056437830f18b21e63b3f038bf35))
+
+
+### Bug Fixes
+
+* clarify unified reasoning guard legacy paths ([d219fd3](https://github.com/FingerCaster/aio-coding-hub/commit/d219fd365fae11765c2393c7b6123bafba4d8bb6))
+* repair request logs schema and dialog ACL ([476c4b1](https://github.com/FingerCaster/aio-coding-hub/commit/476c4b124d97d48b4867d5df7deea61e7d327a4b))
+* satisfy release validation after reasoning guard merge ([d6f68f5](https://github.com/FingerCaster/aio-coding-hub/commit/d6f68f5e7c9ea7e2cd0c3c6ca34f148f519e8bcc))
+
+## [0.60.15](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.14...aio-coding-hub-v0.60.15) (2026-07-03)
+
+
+### Features
+
+* **codex:** sync degradation intercept update branch ([8b8d01c](https://github.com/FingerCaster/aio-coding-hub/commit/8b8d01c3578e85772f50d24d5688678edcd5ff0f))
+* sync degradation intercept update branch ([7088dcf](https://github.com/FingerCaster/aio-coding-hub/commit/7088dcf45e7b8d07a26e1e63a20b9f3e3967b75f))
+
+
+### Bug Fixes
+
+* keep plugin wasm sdk for ci compatibility ([b53ca12](https://github.com/FingerCaster/aio-coding-hub/commit/b53ca123a9272dde862626b8058856fbd3c3f888))
+* satisfy ci contract and cargo audit ([7491e1a](https://github.com/FingerCaster/aio-coding-hub/commit/7491e1aeee449bf4b66df377c20524099d58076e))
+* unblock degradation intercept pr ci ([3dcb062](https://github.com/FingerCaster/aio-coding-hub/commit/3dcb062d34c7756b6d43b06b0b6b31cbe39fdf4a))
+
+## [0.60.14](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.13...aio-coding-hub-v0.60.14) (2026-07-01)
+
+
+### Bug Fixes
+
+* avoid requiring Codex to be closed when saving non-provider Codex config fields
+* keep the custom Codex reasoning guard hit label inside the guard details dialog
+* call `tasklist` directly when checking for a running Codex process on Windows
+
+
+### Tests
+
+* add regression coverage for non-provider Codex config saves while Codex is running
+* update Codex tab coverage for the guard hit label dialog placement
+
+## [0.60.13](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.12...aio-coding-hub-v0.60.13) (2026-07-01)
+
+
+### Bug Fixes
+
+* add customizable Codex reasoning guard hit labels across settings, logs, and request details
+* show `预算耗尽后切换模型` when Codex reasoning guard fallback switches models, and prefer the actual fallback model in success request logs
+* fix Codex bridge provider availability and bridge revert flows after the earlier 0.60.12 merge drift
+
+
+### Tests
+
+* lock the Codex reasoning guard fallback log visibility with frontend and Rust regression coverage
+* rerun the full verification matrix: front-end unit shards, Tauri tests, lint, typecheck, formatting, generated bindings, cargo check, and clippy
+
 ## [0.60.12](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.11...aio-coding-hub-v0.60.12) (2026-07-01)
 
 

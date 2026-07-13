@@ -136,6 +136,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
         stream_idle_timeout_seconds: parse_positive_optional_u32(
             row.get("stream_idle_timeout_seconds").unwrap_or(None),
         ),
+        extension_values: Vec::new(),
         upstream_retry_policy_override: decoded.upstream_retry_policy_override,
         api_key_configured: row
             .get::<_, Option<i64>>("api_key_configured")
@@ -145,12 +146,125 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
     })
 }
 
+fn list_extension_values(
+    conn: &Connection,
+    provider_id: i64,
+) -> crate::shared::error::AppResult<Vec<ProviderExtensionValues>> {
+    let mut stmt = conn
+        .prepare_cached(
+            r#"
+SELECT
+  plugin_id,
+  namespace,
+  values_json,
+  updated_at
+FROM provider_extension_values
+WHERE provider_id = ?1
+ORDER BY plugin_id ASC, namespace ASC
+"#,
+        )
+        .map_err(|e| db_err!("failed to prepare provider extension values query: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![provider_id], |row| {
+            let values_json: String = row.get("values_json")?;
+            let values = serde_json::from_str::<serde_json::Value>(&values_json)
+                .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+
+            Ok(ProviderExtensionValues {
+                plugin_id: row.get("plugin_id")?,
+                namespace: row.get("namespace")?,
+                values,
+                updated_at: row.get("updated_at")?,
+            })
+        })
+        .map_err(|e| db_err!("failed to list provider extension values: {e}"))?;
+
+    let mut values = Vec::new();
+    for row in rows {
+        values.push(row.map_err(|e| db_err!("failed to read provider extension value: {e}"))?);
+    }
+    Ok(values)
+}
+
+fn fill_summary_extension_values(
+    conn: &Connection,
+    summary: &mut ProviderSummary,
+) -> crate::shared::error::AppResult<()> {
+    summary.extension_values = list_extension_values(conn, summary.id)?;
+    Ok(())
+}
+
+fn fill_gateway_extension_values(
+    conn: &Connection,
+    provider: &mut ProviderForGateway,
+) -> crate::shared::error::AppResult<()> {
+    provider.extension_values = list_extension_values(conn, provider.id)?;
+    Ok(())
+}
+
+fn replace_extension_values(
+    conn: &Connection,
+    provider_id: i64,
+    values: Option<&[ProviderExtensionValuesInput]>,
+) -> crate::shared::error::AppResult<bool> {
+    let Some(values) = values else {
+        return Ok(false);
+    };
+
+    conn.execute(
+        "DELETE FROM provider_extension_values WHERE provider_id = ?1",
+        params![provider_id],
+    )
+    .map_err(|e| db_err!("failed to clear provider extension values: {e}"))?;
+
+    let now = now_unix_seconds();
+    for value in values {
+        let plugin_id = value.plugin_id.trim();
+        if plugin_id.is_empty() {
+            return Err("SEC_INVALID_INPUT: extension_values.plugin_id is required"
+                .to_string()
+                .into());
+        }
+
+        let namespace = value.namespace.trim();
+        if namespace.is_empty() {
+            return Err("SEC_INVALID_INPUT: extension_values.namespace is required"
+                .to_string()
+                .into());
+        }
+
+        let values_json =
+            serde_json::to_string(&value.values).map_err(|e| format!("SYSTEM_ERROR: {e}"))?;
+
+        conn.execute(
+            r#"
+INSERT INTO provider_extension_values(
+  provider_id,
+  plugin_id,
+  namespace,
+  values_json,
+  updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5)
+ON CONFLICT(provider_id, plugin_id, namespace) DO UPDATE SET
+  values_json = excluded.values_json,
+  updated_at = excluded.updated_at
+"#,
+            params![provider_id, plugin_id, namespace, values_json, now],
+        )
+        .map_err(|e| db_err!("failed to save provider extension values: {e}"))?;
+    }
+
+    Ok(true)
+}
+
 pub(crate) fn get_by_id(
     conn: &Connection,
     provider_id: i64,
 ) -> crate::shared::error::AppResult<ProviderSummary> {
-    conn.query_row(
-        r#"
+    let mut summary = conn
+        .query_row(
+            r#"
 SELECT
   id,
   cli_key,
@@ -188,12 +302,14 @@ SELECT
 FROM providers
 WHERE id = ?1
 "#,
-        params![provider_id],
-        row_to_summary,
-    )
-    .optional()
-    .map_err(|e| db_err!("failed to query provider: {e}"))?
-    .ok_or_else(|| crate::shared::error::AppError::from("DB_NOT_FOUND: provider not found"))
+            params![provider_id],
+            row_to_summary,
+        )
+        .optional()
+        .map_err(|e| db_err!("failed to query provider: {e}"))?
+        .ok_or_else(|| crate::shared::error::AppError::from("DB_NOT_FOUND: provider not found"))?;
+    fill_summary_extension_values(conn, &mut summary)?;
+    Ok(summary)
 }
 
 pub(crate) fn claude_terminal_launch_context(
@@ -467,7 +583,9 @@ ORDER BY
 
     let mut items = Vec::new();
     for row in rows {
-        items.push(row.map_err(|e| db_err!("failed to read provider row: {e}"))?);
+        let mut item = row.map_err(|e| db_err!("failed to read provider row: {e}"))?;
+        fill_summary_extension_values(&conn, &mut item)?;
+        items.push(item);
     }
 
     Ok(items)
@@ -503,6 +621,7 @@ fn map_gateway_provider_row(
         stream_idle_timeout_seconds: parse_positive_optional_u32(
             row.get("stream_idle_timeout_seconds").unwrap_or(None),
         ),
+        extension_values: Vec::new(),
         upstream_retry_policy_override: decoded.upstream_retry_policy_override,
     })
 }
@@ -558,7 +677,9 @@ ORDER BY mp.sort_order ASC
 
     let mut items = Vec::new();
     for row in rows {
-        items.push(row.map_err(|e| db_err!("failed to read gateway provider row: {e}"))?);
+        let mut item = row.map_err(|e| db_err!("failed to read gateway provider row: {e}"))?;
+        fill_gateway_extension_values(conn, &mut item)?;
+        items.push(item);
     }
     Ok(items)
 }
@@ -620,7 +741,9 @@ ORDER BY
 
     let mut items = Vec::new();
     for row in rows {
-        items.push(row.map_err(|e| db_err!("failed to read gateway provider row: {e}"))?);
+        let mut item = row.map_err(|e| db_err!("failed to read gateway provider row: {e}"))?;
+        fill_gateway_extension_values(conn, &mut item)?;
+        items.push(item);
     }
     Ok(items)
 }
@@ -693,8 +816,7 @@ pub(crate) fn list_enabled_for_gateway_in_mode(
 /// Resolve a source provider by ID for CX2CC chaining.
 fn source_cli_key_for_bridge_type(bridge_type: &str) -> Option<&'static str> {
     match bridge_type {
-        CX2CC_BRIDGE_TYPE | CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE => Some("codex"),
-        CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE => Some("claude"),
+        CX2CC_BRIDGE_TYPE => Some("codex"),
         _ => None,
     }
 }
@@ -705,11 +827,6 @@ pub(crate) fn get_source_provider_for_gateway(
     bridge_type: &str,
 ) -> crate::shared::error::AppResult<(ProviderForGateway, String)> {
     let conn = db.open_connection()?;
-    let expected_cli_key = source_cli_key_for_bridge_type(bridge_type).ok_or_else(|| {
-        crate::shared::error::AppError::from(format!(
-            "SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}"
-        ))
-    })?;
     let cli_key_owned = conn
         .query_row(
             "SELECT cli_key FROM providers WHERE id = ?1",
@@ -721,10 +838,25 @@ pub(crate) fn get_source_provider_for_gateway(
         .ok_or_else(|| {
             crate::shared::error::AppError::from("DB_NOT_FOUND: source provider not found")
         })?;
+    if let Some(expected_cli_key) = source_cli_key_for_bridge_type(bridge_type) {
+        if cli_key_owned != expected_cli_key {
+            return Err(crate::shared::error::AppError::from(
+                "DB_NOT_FOUND: source provider not found",
+            ));
+        }
+    } else if !is_codex_bridge_type(bridge_type) {
+        return Err(crate::shared::error::AppError::from(format!(
+            "SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}"
+        )));
+    }
 
-    let provider = conn
-        .query_row(
-            r#"
+    let enabled_filter = if is_codex_bridge_type(bridge_type) {
+        ""
+    } else {
+        " AND enabled = 1"
+    };
+    let sql = format!(
+        r#"
 SELECT
   id,
   name,
@@ -749,17 +881,161 @@ SELECT
   stream_idle_timeout_seconds,
   upstream_retry_policy_json
 FROM providers
-WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND bridge_type IS NULL AND cli_key = ?2
+WHERE id = ?1{enabled_filter} AND source_provider_id IS NULL AND bridge_type IS NULL
 "#,
-            params![source_provider_id, expected_cli_key],
-            |row| map_gateway_provider_row(row, &cli_key_owned),
-        )
+    );
+
+    let mut provider = conn
+        .query_row(&sql, params![source_provider_id], |row| {
+            map_gateway_provider_row(row, &cli_key_owned)
+        })
         .optional()
         .map_err(|e| db_err!("failed to query source provider: {e}"))?
         .ok_or_else(|| {
             crate::shared::error::AppError::from("DB_NOT_FOUND: source provider not found")
         })?;
+    fill_gateway_extension_values(&conn, &mut provider)?;
     Ok((provider, cli_key_owned))
+}
+
+/// Resolve the effective API credential for a provider.
+/// For `api_key` mode, returns the plaintext key.
+/// For `oauth` mode, checks token freshness and refreshes inline if needed.
+pub(crate) async fn resolve_effective_credential(
+    db: &db::Db,
+    client: &reqwest::Client,
+    cli_key: &str,
+    provider: &ProviderForGateway,
+) -> crate::shared::error::AppResult<String> {
+    resolve_effective_transport_credential(db, client, cli_key, &provider.transport_context()).await
+}
+
+pub(crate) async fn resolve_effective_transport_credential(
+    db: &db::Db,
+    client: &reqwest::Client,
+    cli_key: &str,
+    transport: &ProviderTransportContext,
+) -> crate::shared::error::AppResult<String> {
+    if transport.auth_mode != "oauth" {
+        let api_key = transport.api_key_plaintext.trim();
+        if api_key.is_empty() {
+            return Err("SEC_INVALID_INPUT: provider api_key is empty"
+                .to_string()
+                .into());
+        }
+        return Ok(api_key.to_string());
+    }
+
+    let details = get_oauth_details(db, transport.provider_id)?;
+    if details.cli_key != cli_key {
+        return Err(format!(
+            "SEC_INVALID_STATE: oauth details cli_key mismatch for provider_id={} (expected={cli_key}, actual={})",
+            transport.provider_id, details.cli_key
+        )
+        .into());
+    }
+
+    let oauth_adapter = crate::gateway::oauth::registry::resolve_oauth_adapter(
+        cli_key,
+        transport.provider_id,
+        Some(details.oauth_provider_type.as_str()),
+    )
+    .map_err(crate::shared::error::AppError::from)?;
+
+    let raw_token = details.oauth_access_token.trim().to_string();
+    if raw_token.is_empty() {
+        return Err("SEC_INVALID_INPUT: oauth access_token is empty"
+            .to_string()
+            .into());
+    }
+
+    let token = raw_token;
+    let now_unix = crate::shared::time::now_unix_seconds();
+    if crate::gateway::oauth::refresh::should_refresh_now(
+        details.oauth_expires_at,
+        details.oauth_refresh_lead_s,
+    ) {
+        if let (Some(ref refresh_token), Some(ref token_uri)) =
+            (&details.oauth_refresh_token, &details.oauth_token_uri)
+        {
+            if !refresh_token.trim().is_empty() && !token_uri.trim().is_empty() {
+                match crate::gateway::oauth::refresh::refresh_provider_token_with_retry(
+                    client,
+                    token_uri,
+                    details.oauth_client_id.as_deref().unwrap_or(""),
+                    details.oauth_client_secret.as_deref(),
+                    refresh_token,
+                )
+                .await
+                {
+                    Ok(refreshed) => {
+                        let new_token = refreshed.access_token.trim().to_string();
+                        if !new_token.is_empty() {
+                            match update_oauth_tokens_if_last_refreshed_matches(
+                                db,
+                                transport.provider_id,
+                                "oauth",
+                                oauth_adapter.provider_type(),
+                                &new_token,
+                                refreshed.refresh_token.as_deref().or(Some(refresh_token)),
+                                refreshed
+                                    .id_token
+                                    .as_deref()
+                                    .or(details.oauth_id_token.as_deref()),
+                                token_uri,
+                                details.oauth_client_id.as_deref().unwrap_or(""),
+                                details.oauth_client_secret.as_deref(),
+                                refreshed.expires_at.or(details.oauth_expires_at),
+                                details.oauth_email.as_deref(),
+                                details.oauth_last_refreshed_at,
+                            ) {
+                                Ok(true) => {}
+                                Ok(false) => {
+                                    tracing::info!(
+                                        cli_key = %cli_key,
+                                        provider_id = transport.provider_id,
+                                        "OAuth inline refresh CAS conflict: skipped stale token write"
+                                    );
+                                }
+                                Err(persist_err) => {
+                                    tracing::warn!(
+                                        cli_key = %cli_key,
+                                        provider_id = transport.provider_id,
+                                        "OAuth token refresh persisted failed: {}",
+                                        persist_err
+                                    );
+                                }
+                            }
+                            tracing::info!(
+                                cli_key = %cli_key,
+                                provider_id = transport.provider_id,
+                                "OAuth token refreshed inline successfully"
+                            );
+                            return Ok(new_token);
+                        }
+                    }
+                    Err(err) => {
+                        let still_valid = details
+                            .oauth_expires_at
+                            .map(|exp| exp > now_unix)
+                            .unwrap_or(false);
+                        if still_valid {
+                            tracing::warn!(
+                                provider_id = transport.provider_id,
+                                cli_key = %cli_key,
+                                "oauth inline refresh failed; fallback to existing token: {}",
+                                err
+                            );
+                            return Ok(token);
+                        }
+                        return Err(format!("OAUTH_REFRESH_FAILED: {err}").into());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(token)
 }
 
 fn next_sort_order(conn: &Connection, cli_key: &str) -> crate::shared::error::AppResult<i64> {
@@ -801,6 +1077,7 @@ pub fn upsert(
         source_provider_id,
         bridge_type,
         stream_idle_timeout_seconds,
+        extension_values,
         upstream_retry_policy_override,
         upstream_retry_policy_override_specified,
     } = input;
@@ -872,13 +1149,16 @@ pub fn upsert(
                             .into(),
                     );
                 };
-                let expected_source_cli =
-                    source_cli_key_for_bridge_type(bridge_type).ok_or_else(|| {
-                        format!("SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}")
-                    })?;
-                if src_cli != expected_source_cli {
+                if let Some(expected_source_cli) = source_cli_key_for_bridge_type(bridge_type) {
+                    if src_cli != expected_source_cli {
+                        return Err(format!(
+                            "SEC_INVALID_INPUT: source provider must belong to {expected_source_cli} CLI for bridge_type={bridge_type}"
+                        )
+                        .into());
+                    }
+                } else if !is_codex_bridge_type(bridge_type) {
                     return Err(format!(
-                        "SEC_INVALID_INPUT: source provider must belong to {expected_source_cli} CLI for bridge_type={bridge_type}"
+                        "SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}"
                     )
                     .into());
                 }
@@ -960,6 +1240,9 @@ pub fn upsert(
 
     match provider_id {
         None => {
+            let tx = conn
+                .transaction()
+                .map_err(|e| db_err!("failed to start transaction: {e}"))?;
             let priority = priority.unwrap_or(DEFAULT_PRIORITY);
             let api_key = if is_bridge_provider {
                 ""
@@ -968,10 +1251,12 @@ pub fn upsert(
             } else {
                 api_key.ok_or_else(|| "SEC_INVALID_INPUT: api_key is required".to_string())?
             };
-            let sort_order = next_sort_order(&conn, cli_key)?;
+            let sort_order = next_sort_order(&tx, cli_key)?;
 
             let claude_models = if cli_key == "claude" {
-                claude_models.unwrap_or_default().normalized()
+                let models = claude_models.unwrap_or_default();
+                validate_claude_models(&models)?;
+                models.normalized()
             } else {
                 ClaudeModels::default()
             };
@@ -1006,7 +1291,7 @@ pub fn upsert(
                 .map_err(|e| format!("SYSTEM_ERROR: {e}"))?;
             let note_value = normalize_note(note.as_deref())?;
 
-            conn.execute(
+            tx.execute(
                 r#"
 INSERT INTO providers(
   cli_key,
@@ -1084,7 +1369,13 @@ INSERT INTO providers(
                 other => db_err!("failed to insert provider: {other}"),
             })?;
 
-            let id = conn.last_insert_rowid();
+            let id = tx.last_insert_rowid();
+            crate::domain::provider_account_usage::ensure_account_usage_extension_owner_with_tx(
+                &tx,
+                extension_values.as_deref(),
+            )?;
+            replace_extension_values(&tx, id, extension_values.as_deref())?;
+            tx.commit().map_err(|e| db_err!("failed to commit: {e}"))?;
             Ok(get_by_id(&conn, id)?)
         }
         Some(id) => {
@@ -1162,7 +1453,10 @@ INSERT INTO providers(
             };
 
             let next_claude_models = match claude_models {
-                Some(v) if cli_key == "claude" => Some(v.normalized()),
+                Some(v) if cli_key == "claude" => {
+                    validate_claude_models(&v)?;
+                    Some(v.normalized())
+                }
                 _ => None,
             };
 
@@ -1319,6 +1613,11 @@ WHERE id = ?27
                 other => db_err!("failed to update provider: {other}"),
             })?;
 
+            crate::domain::provider_account_usage::ensure_account_usage_extension_owner_with_tx(
+                &tx,
+                extension_values.as_deref(),
+            )?;
+            replace_extension_values(&tx, id, extension_values.as_deref())?;
             tx.commit().map_err(|e| db_err!("failed to commit: {e}"))?;
 
             get_by_id(&conn, id)

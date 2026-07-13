@@ -13,12 +13,11 @@ import type {
   CliSessionsFolderLookupInput,
   CliSessionsSource,
 } from "../../services/cli/cliSessions";
-import {
-  isPersistedRequestLogInProgress,
-  requestLogCreatedAtMs,
-} from "../../services/gateway/requestLogState";
+import { type PersistedRequestLogActivityState } from "../../services/gateway/requestLogState";
 import {
   buildRequestActivityProjection,
+  shouldTickRequestActivityClock,
+  type ActiveRequestSnapshotItem,
   type ProjectedRealtimeCard,
   type ProjectedRequestLogRow,
 } from "../../services/gateway/requestActivityProjection";
@@ -44,29 +43,18 @@ import {
 import {
   buildRequestLogAuditMeta,
   buildRequestRouteMeta,
-  computeEffectiveInputTokens,
   computeStatusBadge,
-  FastModeBadge,
-  FolderBadge,
-  FreeBadge,
-  getErrorCodeLabel,
   hasCodexReasoningGuardSpecialSetting,
+  resolveCacheCreationDisplay,
+  resolveRequestLogModelDisplayMeta,
+} from "./requestLogPresentation";
+import { FastModeBadge, FolderBadge, FreeBadge, SessionReuseBadge } from "./LogBadges";
+import {
   hasPriorityServiceTierSpecialSetting,
   resolveClaudeModelMappingFromSpecialSettings,
-  resolveLiveTraceDurationMs,
-  resolveLiveTraceProvider,
-  resolveRequestLogModelDisplayMeta,
-  SessionReuseBadge,
-} from "./HomeLogShared";
-import {
-  Clock,
-  CheckCircle2,
-  XCircle,
-  Server,
-  RefreshCw,
-  ArrowUpRight,
-  Loader2,
-} from "lucide-react";
+} from "./requestLogSpecialSettings";
+import { getErrorCodeLabel } from "./requestLogErrorLabels";
+import { Clock, CheckCircle2, XCircle, Server, RefreshCw, ArrowUpRight } from "lucide-react";
 import { RealtimeTraceCards } from "./RealtimeTraceCards";
 import { CliBrandIcon } from "./CliBrandIcon";
 import {
@@ -98,49 +86,45 @@ function sessionFolderLookupKey(cliKey: string, sessionId: string | null | undef
 type RequestLogCardProps = {
   compactMode: boolean;
   log: RequestLogSummary;
-  liveTrace?: TraceSession;
-  nowMs: number;
+  activityState: PersistedRequestLogActivityState;
   isSelected: boolean;
   sessionFolder?: CliSessionsFolderLookupEntry | null;
   showCustomTooltip: boolean;
   onSelectLogId: (id: number | null) => void;
   formatUnixSeconds: (ts: number) => string;
+  codexReasoningGuardHitLabel?: string;
 };
 
 const RequestLogCard = memo(function RequestLogCard({
   compactMode,
   log,
-  liveTrace,
-  nowMs,
+  activityState,
   isSelected,
   sessionFolder,
   showCustomTooltip,
   onSelectLogId,
   formatUnixSeconds,
+  codexReasoningGuardHitLabel,
 }: RequestLogCardProps) {
-  const auditMeta = buildRequestLogAuditMeta(log);
-  const isInProgress = isPersistedRequestLogInProgress(log);
-  const liveProvider = resolveLiveTraceProvider(liveTrace);
-  const persistedRunningMs = (() => {
-    const createdAtMs = requestLogCreatedAtMs(log);
-    if (createdAtMs <= 0) return log.duration_ms;
-    return Math.max(0, nowMs - createdAtMs);
-  })();
-  const displayDurationMs =
-    isInProgress && liveTrace
-      ? (resolveLiveTraceDurationMs(liveTrace, nowMs) ?? persistedRunningMs)
-      : isInProgress
-        ? persistedRunningMs
-        : log.duration_ms;
-  const statusBadge = computeStatusBadge({
-    status: log.status,
-    errorCode: log.error_code,
-    inProgress: isInProgress,
-    hasFailover: log.has_failover,
-  });
+  const auditMeta = buildRequestLogAuditMeta(log, { codexReasoningGuardHitLabel });
+  const isInterrupted = activityState === "interrupted";
+  const statusBadge = isInterrupted
+    ? {
+        text: "未完成",
+        semanticText: "请求未完成",
+        tone: "bg-amber-50 text-amber-600 ring-1 ring-inset ring-amber-500/15 dark:bg-amber-500/15 dark:text-amber-400 dark:ring-amber-400/25",
+        title: "请求未完成：历史日志缺少终态，当前网关没有对应的进行中请求",
+        isError: false,
+        isClientAbort: false,
+        hasFailover: log.has_failover,
+      }
+    : computeStatusBadge({
+        status: log.status,
+        errorCode: log.error_code,
+        hasFailover: log.has_failover,
+      });
 
   const providerText =
-    (isInProgress && liveProvider ? liveProvider.providerName : null) ??
     auditMeta.providerFallbackText ??
     (log.final_provider_id === 0 ||
     !log.final_provider_name ||
@@ -177,13 +161,13 @@ const RequestLogCard = memo(function RequestLogCard({
   const ttfbMetrics = resolveTtfbDisplayMetrics(
     log.ttfb_ms,
     log.visible_ttfb_ms ?? null,
-    displayDurationMs,
+    log.duration_ms,
     hasCodexReasoningGuardSpecialSetting(log.special_settings_json)
   );
   const ttfbMs = ttfbMetrics.providerTtfbMs;
   const outputTokensPerSecond = computeOutputTokensPerSecond(
     log.output_tokens,
-    displayDurationMs,
+    log.duration_ms,
     ttfbMs
   );
 
@@ -198,37 +182,16 @@ const RequestLogCard = memo(function RequestLogCard({
   const isPriorityServiceTier =
     log.cli_key === "codex" && hasPriorityServiceTierSpecialSetting(log.special_settings_json);
 
-  const cacheWrite = (() => {
-    // 优先展示有值的 TTL 桶；若都为 0，则仍展示 0 而不是 "—"。
-    if (log.cache_creation_5m_input_tokens != null && log.cache_creation_5m_input_tokens > 0) {
-      return { tokens: log.cache_creation_5m_input_tokens, ttl: "5m" as const };
-    }
-    if (log.cache_creation_1h_input_tokens != null && log.cache_creation_1h_input_tokens > 0) {
-      return { tokens: log.cache_creation_1h_input_tokens, ttl: "1h" as const };
-    }
-    if (log.cache_creation_input_tokens != null && log.cache_creation_input_tokens > 0) {
-      return { tokens: log.cache_creation_input_tokens, ttl: null };
-    }
-    if (log.cache_creation_5m_input_tokens != null) {
-      return { tokens: log.cache_creation_5m_input_tokens, ttl: "5m" as const };
-    }
-    if (log.cache_creation_1h_input_tokens != null) {
-      return { tokens: log.cache_creation_1h_input_tokens, ttl: "1h" as const };
-    }
-    if (log.cache_creation_input_tokens != null) {
-      return { tokens: log.cache_creation_input_tokens, ttl: null };
-    }
-    return { tokens: null as number | null, ttl: null as "5m" | "1h" | null };
-  })();
+  const cacheWrite = resolveCacheCreationDisplay(log);
 
-  const effectiveInputTokens = computeEffectiveInputTokens(
-    log.cli_key,
-    log.input_tokens,
-    log.cache_read_input_tokens
-  );
+  const effectiveInputTokens = log.effective_input_tokens ?? null;
 
   return (
-    <button type="button" onClick={() => onSelectLogId(log.id)} className="w-full text-left group">
+    <button
+      type="button"
+      onClick={() => onSelectLogId(log.id > 0 ? log.id : null)}
+      className="w-full text-left group"
+    >
       <div
         className={cn(
           "relative transition-all duration-300 ease-out group/item mx-2 my-1.5 rounded-lg border",
@@ -270,8 +233,8 @@ const RequestLogCard = memo(function RequestLogCard({
                 )}
                 title={statusBadge.title}
               >
-                {isInProgress ? (
-                  <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                {isInterrupted ? (
+                  <Clock className="h-3 w-3 shrink-0" />
                 ) : statusBadge.isError ? (
                   <XCircle className="h-3 w-3 shrink-0" />
                 ) : (
@@ -411,27 +374,21 @@ const RequestLogCard = memo(function RequestLogCard({
                     {formatInteger(effectiveInputTokens)}
                   </span>
                 </div>
-                <div className="flex items-center gap-1 h-4" title="Cache Write">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/75 select-none shrink-0">
-                    缓存创建
-                  </span>
-                  {cacheWrite.tokens != null ? (
-                    <>
-                      <span className="font-mono tabular-nums text-xs font-semibold text-foreground/90 truncate">
-                        {formatInteger(cacheWrite.tokens)}
-                      </span>
-                      {cacheWrite.ttl && cacheWrite.tokens > 0 && (
-                        <span className="text-[10px] font-medium text-muted-foreground/60">
-                          ({cacheWrite.ttl})
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground/40 text-xs font-mono select-none">
-                      —
+                {cacheWrite ? (
+                  <div className="flex items-center gap-1 h-4" title="Cache Write">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/75 select-none shrink-0">
+                      缓存创建
                     </span>
-                  )}
-                </div>
+                    <span className="font-mono tabular-nums text-xs font-semibold text-foreground/90 truncate">
+                      {formatInteger(cacheWrite.tokens)}
+                    </span>
+                    {cacheWrite.ttl && cacheWrite.tokens > 0 ? (
+                      <span className="text-[10px] font-medium text-muted-foreground/60">
+                        ({cacheWrite.ttl})
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="flex items-center gap-1 h-4" title="TTFB">
                   <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/75 select-none shrink-0">
                     首字
@@ -493,7 +450,7 @@ const RequestLogCard = memo(function RequestLogCard({
                     耗时
                   </span>
                   <span className="font-mono tabular-nums text-xs font-semibold text-foreground/90 truncate">
-                    {formatDurationMs(displayDurationMs)}
+                    {formatDurationMs(log.duration_ms)}
                   </span>
                 </div>
                 <div
@@ -526,19 +483,32 @@ const RequestLogCard = memo(function RequestLogCard({
   );
 });
 
+export type HomeRequestLogsDisplayOptions = {
+  customTooltip: boolean;
+  summaryText: boolean;
+  openLogsPageButton: boolean;
+  refreshButton: boolean;
+  compactModeToggle: boolean;
+};
+
+const DEFAULT_HOME_REQUEST_LOGS_DISPLAY_OPTIONS: HomeRequestLogsDisplayOptions = {
+  customTooltip: false,
+  summaryText: true,
+  openLogsPageButton: true,
+  refreshButton: true,
+  compactModeToggle: true,
+};
+
 export type HomeRequestLogsPanelProps = {
-  showCustomTooltip: boolean;
+  displayOptions?: Partial<HomeRequestLogsDisplayOptions>;
   title?: string;
-  showSummaryText?: boolean;
   summaryTextOverride?: string;
-  showOpenLogsPageButton?: boolean;
-  showRefreshButton?: boolean;
-  showCompactModeToggle?: boolean;
   compactModeOverride?: boolean;
   emptyStateTitle?: string;
   devPreviewEnabled?: boolean;
 
   traces: TraceSession[];
+  activeRequests?: ActiveRequestSnapshotItem[];
 
   requestLogs: RequestLogSummary[];
   requestLogsLoading: boolean;
@@ -548,20 +518,18 @@ export type HomeRequestLogsPanelProps = {
 
   selectedLogId: number | null;
   onSelectLogId: (id: number | null) => void;
+  codexReasoningGuardHitLabel?: string;
 };
 
 export function HomeRequestLogsPanel({
-  showCustomTooltip,
+  displayOptions,
   title,
-  showSummaryText = true,
   summaryTextOverride,
-  showOpenLogsPageButton = true,
-  showRefreshButton = true,
-  showCompactModeToggle = true,
   compactModeOverride,
   emptyStateTitle = "当前没有最近使用记录",
   devPreviewEnabled = false,
   traces,
+  activeRequests = [],
   requestLogs,
   requestLogsLoading,
   requestLogsRefreshing,
@@ -569,8 +537,13 @@ export function HomeRequestLogsPanel({
   onRefreshRequestLogs,
   selectedLogId,
   onSelectLogId,
+  codexReasoningGuardHitLabel,
 }: HomeRequestLogsPanelProps) {
   const navigate = useNavigate();
+  const resolvedDisplayOptions = {
+    ...DEFAULT_HOME_REQUEST_LOGS_DISPLAY_OPTIONS,
+    ...displayOptions,
+  };
   const [compactMode, setCompactMode] = useState(() => {
     try {
       const stored = localStorage.getItem("home_request_logs_compact");
@@ -600,25 +573,45 @@ export function HomeRequestLogsPanel({
     () => (devPreviewEnabled ? buildPreviewSessionFolderLookups() : []),
     [devPreviewEnabled]
   );
+  const previewActiveRequests = useMemo<ActiveRequestSnapshotItem[]>(
+    () =>
+      previewTraces.map((trace) => ({
+        trace_id: trace.trace_id,
+        cli_key: trace.cli_key,
+        session_id: trace.session_id ?? null,
+        method: trace.method,
+        path: trace.path,
+        query: trace.query,
+        requested_model: trace.requested_model ?? null,
+        created_at_ms: trace.first_seen_ms,
+        last_activity_ms: trace.last_seen_ms,
+        current_attempt: null,
+      })),
+    [previewTraces]
+  );
   const displayedTraces = traces.length > 0 ? traces : previewTraces;
   const displayedRequestLogs = requestLogs.length > 0 ? requestLogs : previewRequestLogs;
-  const clockEnabled = useMemo(
-    () =>
-      displayedTraces.length > 0 ||
-      displayedRequestLogs.some((log) => isPersistedRequestLogInProgress(log)),
-    [displayedRequestLogs, displayedTraces.length]
-  );
-  const nowMs = useNowMs(clockEnabled, 250);
+  const displayedActiveRequests =
+    activeRequests.length > 0 ? activeRequests : previewActiveRequests;
+  const wallClockNowMs = Date.now();
+  const clockEnabled = shouldTickRequestActivityClock({
+    requestLogs: displayedRequestLogs,
+    activeRequests: displayedActiveRequests,
+    traces: displayedTraces,
+    nowMs: wallClockNowMs,
+  });
+  const tickingNowMs = useNowMs(clockEnabled, 250);
+  const nowMs = clockEnabled ? tickingNowMs : wallClockNowMs;
   const activityProjection = useMemo(
     () =>
       buildRequestActivityProjection({
         requestLogs: displayedRequestLogs,
+        activeRequests: displayedActiveRequests,
         traces: displayedTraces,
         nowMs,
         realtimeCardLimit: 5,
-        realtimeCandidateLimit: 20,
       }),
-    [displayedRequestLogs, displayedTraces, nowMs]
+    [displayedActiveRequests, displayedRequestLogs, displayedTraces, nowMs]
   );
   const summaryText =
     summaryTextOverride ??
@@ -676,10 +669,10 @@ export function HomeRequestLogsPanel({
         </div>
 
         <div className="flex items-center gap-2">
-          {showSummaryText ? (
+          {resolvedDisplayOptions.summaryText ? (
             <div className="text-xs text-muted-foreground">{summaryText}</div>
           ) : null}
-          {showOpenLogsPageButton && (
+          {resolvedDisplayOptions.openLogsPageButton && (
             <Button
               onClick={() => navigate("/logs")}
               variant="ghost"
@@ -692,7 +685,7 @@ export function HomeRequestLogsPanel({
               <ArrowUpRight className="h-3.5 w-3.5" />
             </Button>
           )}
-          {showRefreshButton ? (
+          {resolvedDisplayOptions.refreshButton ? (
             <Button
               onClick={onRefreshRequestLogs}
               variant="ghost"
@@ -711,7 +704,7 @@ export function HomeRequestLogsPanel({
               />
             </Button>
           ) : null}
-          {showCompactModeToggle ? (
+          {resolvedDisplayOptions.compactModeToggle ? (
             <div className="flex items-center gap-1.5 pl-1">
               <span className="text-xs text-muted-foreground">简洁模式</span>
               <Switch
@@ -729,7 +722,7 @@ export function HomeRequestLogsPanel({
         <RequestLogsList
           realtimeCards={activityProjection.realtimeCards}
           formatUnixSeconds={formatUnixSecondsStable}
-          showCustomTooltip={showCustomTooltip}
+          showCustomTooltip={resolvedDisplayOptions.customTooltip}
           compactMode={effectiveCompactMode}
           folderLookupBySessionKey={sessionFolderLookupBySessionKey}
           nowMs={nowMs}
@@ -739,6 +732,7 @@ export function HomeRequestLogsPanel({
           emptyStateTitle={emptyStateTitle}
           selectedLogId={selectedLogId}
           onSelectLogId={onSelectLogId}
+          codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
         />
       </div>
     </Card>
@@ -759,6 +753,7 @@ type RequestLogsListProps = {
   emptyStateTitle: string;
   selectedLogId: number | null;
   onSelectLogId: (id: number | null) => void;
+  codexReasoningGuardHitLabel?: string;
 };
 
 const RequestLogsList = memo(function RequestLogsList({
@@ -774,6 +769,7 @@ const RequestLogsList = memo(function RequestLogsList({
   emptyStateTitle,
   selectedLogId,
   onSelectLogId,
+  codexReasoningGuardHitLabel,
 }: RequestLogsListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasRealtimeCards = realtimeCards.length > 0;
@@ -794,7 +790,6 @@ const RequestLogsList = memo(function RequestLogsList({
     <>
       {requestRows.map((row) => {
         const { log, liveTrace: trace } = row;
-        const liveNow = isPersistedRequestLogInProgress(log) ? nowMs : 0;
         const sessionFolder = (() => {
           const key = sessionFolderLookupKey(log.cli_key, log.session_id ?? trace?.session_id);
           return key ? (folderLookupBySessionKey.get(key) ?? null) : null;
@@ -804,13 +799,13 @@ const RequestLogsList = memo(function RequestLogsList({
             compactMode={compactMode}
             key={log.id}
             log={log}
-            liveTrace={trace ?? undefined}
-            nowMs={liveNow}
+            activityState={row.activityState}
             isSelected={selectedLogId === log.id}
             sessionFolder={sessionFolder}
             showCustomTooltip={showCustomTooltip}
             onSelectLogId={onSelectLogId}
             formatUnixSeconds={formatUnixSeconds}
+            codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
           />
         );
       })}
@@ -863,7 +858,6 @@ const RequestLogsList = memo(function RequestLogsList({
               const vRow = requestRows[virtualRow.index];
               const vLog = vRow.log;
               const vTrace = vRow.liveTrace;
-              const vNow = isPersistedRequestLogInProgress(vLog) ? nowMs : 0;
               const sessionFolder = (() => {
                 const key = sessionFolderLookupKey(
                   vLog.cli_key,
@@ -876,13 +870,13 @@ const RequestLogsList = memo(function RequestLogsList({
                   <RequestLogCard
                     compactMode={compactMode}
                     log={vLog}
-                    liveTrace={vTrace ?? undefined}
-                    nowMs={vNow}
+                    activityState={vRow.activityState}
                     isSelected={selectedLogId === vLog.id}
                     sessionFolder={sessionFolder}
                     showCustomTooltip={showCustomTooltip}
                     onSelectLogId={onSelectLogId}
                     formatUnixSeconds={formatUnixSeconds}
+                    codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
                   />
                 </div>
               );

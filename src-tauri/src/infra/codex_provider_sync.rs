@@ -368,8 +368,8 @@ fn codex_app_is_running() -> AppResult<bool> {
 
     #[cfg(windows)]
     {
-        let output = std::process::Command::new("cmd")
-            .args(["/C", "tasklist /FI \"IMAGENAME eq Codex.exe\" /NH"])
+        let output = std::process::Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq Codex.exe", "/NH"])
             .output()
             .map_err(|err| codex_process_check_failed_message("tasklist", err.to_string()))?;
         if !output.status.success() {
@@ -406,7 +406,7 @@ fn codex_app_is_running_from_ps() -> AppResult<bool> {
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
-    Ok(text.lines().any(|line| process_name_is_codex_app(line)))
+    Ok(text.lines().any(process_name_is_codex_app))
 }
 
 #[cfg(not(windows))]
@@ -991,14 +991,11 @@ fn apply_global_state_change(change: &GlobalStateChange) -> AppResult<()> {
         Some(Some(bytes)) => {
             let _ = write_file_atomic_if_changed(&change.bak_path, bytes)?;
         }
-        Some(None) => {
-            if change.bak_path.exists() {
-                fs::remove_file(&change.bak_path).map_err(|e| {
-                    format!("failed to remove bak {}: {e}", change.bak_path.display())
-                })?;
-            }
+        Some(None) if change.bak_path.exists() => {
+            fs::remove_file(&change.bak_path)
+                .map_err(|e| format!("failed to remove bak {}: {e}", change.bak_path.display()))?;
         }
-        None => {}
+        Some(None) | None => {}
     }
     Ok(())
 }

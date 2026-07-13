@@ -3,7 +3,12 @@
 use super::defaults::*;
 use super::types::{
     AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, CodexReasoningGuardExhaustedAction,
-    CodexReasoningGuardModelRule, UpstreamRetryPolicy,
+    CodexReasoningGuardModelRule, CodexReasoningGuardPostMatchStrategy,
+    CodexReasoningGuardRuleMode, CodexReasoningGuardRuleTemplate,
+    CodexReasoningGuardTemplateFilter, CodexReasoningGuardTemplateFilterField,
+    CodexReasoningGuardTemplateFilterOperator, CodexReasoningGuardTemplateRule,
+    CodexReasoningGuardTemplateRuleAction, CodexReasoningGuardTemplateRuleLogic,
+    UpstreamRetryPolicy,
 };
 use crate::shared::error::AppResult;
 use std::collections::HashSet;
@@ -93,6 +98,18 @@ pub(super) fn sanitize_codex_provider_test_model(settings: &mut AppSettings) -> 
     changed
 }
 
+pub(super) fn sanitize_codex_reasoning_guard_hit_label(settings: &mut AppSettings) -> bool {
+    let normalized = settings.codex_reasoning_guard_hit_label.trim();
+    let next = if normalized.is_empty() {
+        DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string()
+    } else {
+        normalized.to_string()
+    };
+    let changed = settings.codex_reasoning_guard_hit_label != next;
+    settings.codex_reasoning_guard_hit_label = next;
+    changed
+}
+
 pub(super) fn sanitize_codex_reasoning_guard_model_rules(settings: &mut AppSettings) -> bool {
     let mut changed = false;
     let mut seen_models = HashSet::new();
@@ -141,6 +158,20 @@ pub(super) fn sanitize_codex_reasoning_guard_model_rules(settings: &mut AppSetti
 pub(super) fn sanitize_codex_reasoning_guard_runtime_settings(settings: &mut AppSettings) -> bool {
     let mut changed = false;
 
+    let active_template_id = settings
+        .codex_reasoning_guard_active_template_id
+        .trim()
+        .to_string();
+    let active_template_id = if active_template_id.is_empty() {
+        CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID.to_string()
+    } else {
+        active_template_id
+    };
+    if settings.codex_reasoning_guard_active_template_id != active_template_id {
+        settings.codex_reasoning_guard_active_template_id = active_template_id;
+        changed = true;
+    }
+
     if settings.codex_reasoning_guard_concurrent_max == 0 {
         settings.codex_reasoning_guard_concurrent_max =
             DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX;
@@ -162,6 +193,25 @@ pub(super) fn sanitize_codex_reasoning_guard_runtime_settings(settings: &mut App
     {
         settings.codex_reasoning_guard_concurrent_max_attempts =
             MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS;
+        changed = true;
+    }
+    if settings.codex_reasoning_guard_continuation_max_rounds == 0 {
+        settings.codex_reasoning_guard_continuation_max_rounds =
+            DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS;
+        changed = true;
+    }
+    if settings.codex_reasoning_guard_continuation_max_rounds
+        > MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS
+    {
+        settings.codex_reasoning_guard_continuation_max_rounds =
+            MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS;
+        changed = true;
+    }
+    if settings.codex_reasoning_guard_continuation_max_output_tokens
+        > MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+    {
+        settings.codex_reasoning_guard_continuation_max_output_tokens =
+            MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS;
         changed = true;
     }
 
@@ -189,6 +239,544 @@ pub(super) fn sanitize_codex_reasoning_guard_runtime_settings(settings: &mut App
     }
 
     changed
+}
+
+fn legacy_equals_custom_template(values: &[i64]) -> CodexReasoningGuardRuleTemplate {
+    let mut seen_tokens = HashSet::new();
+    CodexReasoningGuardRuleTemplate {
+        id: "custom-legacy-reasoning-tokens".to_string(),
+        name: "Legacy custom reasoning tokens".to_string(),
+        description: "Migrated from the legacy global equals token list.".to_string(),
+        rules: values
+            .iter()
+            .copied()
+            .filter(|value| seen_tokens.insert(*value))
+            .enumerate()
+            .map(|(index, value)| CodexReasoningGuardTemplateRule {
+                id: format!("legacy-token-{value}-{index}"),
+                name: format!("reasoning_tokens == {value}"),
+                reasoning_tokens: Some(value),
+                reasoning_tokens_formula: None,
+                action: CodexReasoningGuardTemplateRuleAction::Intercept,
+                logic: CodexReasoningGuardTemplateRuleLogic::And,
+                filters: Vec::new(),
+            })
+            .collect(),
+    }
+}
+
+fn legacy_reasoning_token_values(values: &[i64]) -> Vec<i64> {
+    let source = if values.is_empty() {
+        DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
+    } else {
+        values
+    };
+    let mut seen_tokens = HashSet::new();
+    source
+        .iter()
+        .copied()
+        .filter(|value| seen_tokens.insert(*value))
+        .collect()
+}
+
+fn legacy_less_than_or_equal_thresholds(values: &[i64]) -> Vec<i64> {
+    let mut thresholds = legacy_reasoning_token_values(values);
+    thresholds.sort_unstable();
+    thresholds
+}
+
+fn legacy_number_filter(
+    id: String,
+    operator: CodexReasoningGuardTemplateFilterOperator,
+    value: i64,
+) -> CodexReasoningGuardTemplateFilter {
+    CodexReasoningGuardTemplateFilter {
+        id,
+        field: CodexReasoningGuardTemplateFilterField::ReasoningTokens,
+        operator,
+        number_value: Some(value as f64),
+        bool_value: None,
+        string_value: None,
+        string_values: Vec::new(),
+    }
+}
+
+fn legacy_requested_model_filter(model: &str) -> CodexReasoningGuardTemplateFilter {
+    CodexReasoningGuardTemplateFilter {
+        id: format!("requested-model-{}", sanitize_template_id_part(model)),
+        field: CodexReasoningGuardTemplateFilterField::RequestedModel,
+        operator: CodexReasoningGuardTemplateFilterOperator::Equals,
+        number_value: None,
+        bool_value: None,
+        string_value: Some(model.to_string()),
+        string_values: Vec::new(),
+    }
+}
+
+fn legacy_requested_model_filter_for_models(
+    models: Vec<String>,
+) -> CodexReasoningGuardTemplateFilter {
+    if models.len() == 1 {
+        return legacy_requested_model_filter(&models[0]);
+    }
+
+    let id_suffix = sanitize_template_id_parts(&models);
+    CodexReasoningGuardTemplateFilter {
+        id: format!("requested-models-{id_suffix}"),
+        field: CodexReasoningGuardTemplateFilterField::RequestedModel,
+        operator: CodexReasoningGuardTemplateFilterOperator::In,
+        number_value: None,
+        bool_value: None,
+        string_value: None,
+        string_values: models,
+    }
+}
+
+fn legacy_requested_model_exclusion_filter_for_models(
+    models: Vec<String>,
+) -> CodexReasoningGuardTemplateFilter {
+    if models.len() == 1 {
+        return CodexReasoningGuardTemplateFilter {
+            id: format!(
+                "requested-model-not-{}",
+                sanitize_template_id_part(&models[0])
+            ),
+            field: CodexReasoningGuardTemplateFilterField::RequestedModel,
+            operator: CodexReasoningGuardTemplateFilterOperator::NotEquals,
+            number_value: None,
+            bool_value: None,
+            string_value: Some(models[0].clone()),
+            string_values: Vec::new(),
+        };
+    }
+
+    let id_suffix = sanitize_template_id_parts(&models);
+    CodexReasoningGuardTemplateFilter {
+        id: format!("requested-models-not-{id_suffix}"),
+        field: CodexReasoningGuardTemplateFilterField::RequestedModel,
+        operator: CodexReasoningGuardTemplateFilterOperator::NotIn,
+        number_value: None,
+        bool_value: None,
+        string_value: None,
+        string_values: models,
+    }
+}
+
+fn sanitize_template_id_parts(values: &[String]) -> String {
+    let mut output = String::new();
+    for value in values {
+        let part = sanitize_template_id_part(value);
+        let separator_len = usize::from(!output.is_empty());
+        if output.len() + separator_len + part.len() > 48 {
+            break;
+        }
+        if !output.is_empty() {
+            output.push('-');
+        }
+        output.push_str(&part);
+    }
+    if output.is_empty() {
+        "models".to_string()
+    } else {
+        output
+    }
+}
+
+fn legacy_bounded_rule_name(prefix: &str, suffix: &str) -> String {
+    let max_prefix_len = MAX_CODEX_REASONING_GUARD_TEMPLATE_NAME_LEN.saturating_sub(suffix.len());
+    let prefix = prefix.chars().take(max_prefix_len).collect::<String>();
+    format!("{prefix}{suffix}")
+}
+
+fn legacy_token_rule_filters(
+    exact_models: Vec<String>,
+    model_specific_models: &[String],
+    includes_global_fallback: bool,
+) -> (
+    CodexReasoningGuardTemplateRuleLogic,
+    Vec<CodexReasoningGuardTemplateFilter>,
+) {
+    let mut filters = Vec::new();
+    if !exact_models.is_empty() {
+        filters.push(legacy_requested_model_filter_for_models(exact_models));
+    }
+    if includes_global_fallback && !model_specific_models.is_empty() {
+        filters.push(legacy_requested_model_exclusion_filter_for_models(
+            model_specific_models.to_vec(),
+        ));
+    }
+    let logic = if filters.len() > 1 {
+        CodexReasoningGuardTemplateRuleLogic::Or
+    } else {
+        CodexReasoningGuardTemplateRuleLogic::And
+    };
+    (logic, filters)
+}
+
+fn sanitize_template_id_part(value: &str) -> String {
+    let mut output = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            output.push(ch.to_ascii_lowercase());
+        } else if !output.ends_with('-') {
+            output.push('-');
+        }
+        if output.len() >= 48 {
+            break;
+        }
+    }
+    let output = output.trim_matches('-');
+    if output.is_empty() {
+        "model".to_string()
+    } else {
+        output.to_string()
+    }
+}
+
+fn legacy_less_than_or_equal_custom_template(values: &[i64]) -> CodexReasoningGuardRuleTemplate {
+    let thresholds = legacy_less_than_or_equal_thresholds(values);
+    CodexReasoningGuardRuleTemplate {
+        id: "custom-legacy-reasoning-tokens".to_string(),
+        name: "Legacy custom reasoning tokens".to_string(),
+        description: "Migrated from the legacy global less-than-or-equal token rule.".to_string(),
+        rules: thresholds
+            .into_iter()
+            .map(|value| CodexReasoningGuardTemplateRule {
+                id: format!("legacy-reasoning-tokens-threshold-{value}"),
+                name: format!("legacy reasoning_tokens <= {value}"),
+                reasoning_tokens: None,
+                reasoning_tokens_formula: None,
+                action: CodexReasoningGuardTemplateRuleAction::Intercept,
+                logic: CodexReasoningGuardTemplateRuleLogic::And,
+                filters: vec![legacy_number_filter(
+                    format!("reasoning-tokens-lte-{value}"),
+                    CodexReasoningGuardTemplateFilterOperator::LessThanOrEqual,
+                    value,
+                )],
+            })
+            .collect(),
+    }
+}
+
+fn push_legacy_token_rule(
+    rules: &mut Vec<CodexReasoningGuardTemplateRule>,
+    value: i64,
+    models: Vec<String>,
+    includes_global_fallback: bool,
+    model_specific_models: &[String],
+) {
+    let model_id = sanitize_template_id_parts(&models);
+    let model_name = if models.len() == 1 {
+        models[0].clone()
+    } else if models.is_empty() {
+        "global".to_string()
+    } else {
+        models.join(", ")
+    };
+    let (logic, filters) =
+        legacy_token_rule_filters(models, model_specific_models, includes_global_fallback);
+    rules.push(CodexReasoningGuardTemplateRule {
+        id: if includes_global_fallback && model_id == "models" {
+            format!("legacy-global-token-{value}")
+        } else {
+            format!("legacy-model-{model_id}-token-{value}")
+        },
+        name: legacy_bounded_rule_name(&model_name, &format!(" reasoning_tokens == {value}")),
+        reasoning_tokens: Some(value),
+        reasoning_tokens_formula: None,
+        action: CodexReasoningGuardTemplateRuleAction::Intercept,
+        logic,
+        filters,
+    });
+}
+
+fn push_legacy_threshold_rule(
+    rules: &mut Vec<CodexReasoningGuardTemplateRule>,
+    value: i64,
+    models: Vec<String>,
+    includes_global_fallback: bool,
+    model_specific_models: &[String],
+) {
+    let model_id = sanitize_template_id_parts(&models);
+    let model_name = if models.len() == 1 {
+        models[0].clone()
+    } else if models.is_empty() {
+        "global".to_string()
+    } else {
+        models.join(", ")
+    };
+
+    let mut filters = Vec::new();
+    if !models.is_empty() {
+        filters.push(legacy_requested_model_filter_for_models(models));
+    }
+    if includes_global_fallback && !model_specific_models.is_empty() {
+        filters.push(legacy_requested_model_exclusion_filter_for_models(
+            model_specific_models.to_vec(),
+        ));
+    }
+    filters.push(legacy_number_filter(
+        format!("reasoning-tokens-lte-{value}"),
+        CodexReasoningGuardTemplateFilterOperator::LessThanOrEqual,
+        value,
+    ));
+
+    rules.push(CodexReasoningGuardTemplateRule {
+        id: if includes_global_fallback && model_id == "models" {
+            format!("legacy-global-reasoning-tokens-threshold-{value}")
+        } else {
+            format!("legacy-model-{model_id}-threshold-{value}")
+        },
+        name: legacy_bounded_rule_name(&model_name, &format!(" reasoning_tokens <= {value}")),
+        reasoning_tokens: None,
+        reasoning_tokens_formula: None,
+        action: CodexReasoningGuardTemplateRuleAction::Intercept,
+        logic: CodexReasoningGuardTemplateRuleLogic::And,
+        filters,
+    });
+}
+
+fn legacy_model_rule_custom_template(
+    settings: &AppSettings,
+) -> Option<CodexReasoningGuardRuleTemplate> {
+    let mut rules = Vec::new();
+    let mut exact_model_groups: Vec<(i64, Vec<String>)> = Vec::new();
+    let mut threshold_model_groups: Vec<(i64, Vec<String>)> = Vec::new();
+    let mut model_specific_models: Vec<String> = Vec::new();
+
+    for model_rule in &settings.codex_reasoning_guard_model_rules {
+        let requested_model = model_rule.requested_model.trim();
+        if requested_model.is_empty() {
+            return None;
+        }
+        if !model_specific_models
+            .iter()
+            .any(|model| model == requested_model)
+        {
+            model_specific_models.push(requested_model.to_string());
+        }
+        let values = legacy_reasoning_token_values(&model_rule.reasoning_equals);
+        match model_rule.compare_mode {
+            CodexReasoningGuardCompareMode::Equals => {
+                for value in values {
+                    if let Some((_, models)) = exact_model_groups
+                        .iter_mut()
+                        .find(|(group_value, _)| *group_value == value)
+                    {
+                        if !models.iter().any(|model| model == requested_model) {
+                            models.push(requested_model.to_string());
+                        }
+                    } else {
+                        exact_model_groups.push((value, vec![requested_model.to_string()]));
+                    }
+                }
+            }
+            CodexReasoningGuardCompareMode::LessThanOrEqual => {
+                for value in legacy_less_than_or_equal_thresholds(&model_rule.reasoning_equals) {
+                    if let Some((_, models)) = threshold_model_groups
+                        .iter_mut()
+                        .find(|(group_value, _)| *group_value == value)
+                    {
+                        if !models.iter().any(|model| model == requested_model) {
+                            models.push(requested_model.to_string());
+                        }
+                    } else {
+                        threshold_model_groups.push((value, vec![requested_model.to_string()]));
+                    }
+                }
+            }
+        }
+    }
+
+    threshold_model_groups.sort_by_key(|(value, _)| *value);
+
+    if settings.codex_reasoning_guard_compare_mode
+        == CodexReasoningGuardCompareMode::LessThanOrEqual
+    {
+        for (value, models) in exact_model_groups {
+            push_legacy_token_rule(&mut rules, value, models, false, &model_specific_models);
+        }
+        for (value, models) in threshold_model_groups {
+            push_legacy_threshold_rule(&mut rules, value, models, false, &model_specific_models);
+        }
+        for value in
+            legacy_less_than_or_equal_thresholds(&settings.codex_reasoning_guard_reasoning_equals)
+        {
+            push_legacy_threshold_rule(&mut rules, value, Vec::new(), true, &model_specific_models);
+        }
+
+        if rules.len() > MAX_CODEX_REASONING_GUARD_TEMPLATE_RULES {
+            return None;
+        }
+
+        return (!rules.is_empty()).then(|| CodexReasoningGuardRuleTemplate {
+            id: "custom-legacy-reasoning-tokens".to_string(),
+            name: "Legacy custom reasoning tokens".to_string(),
+            description: "Migrated from legacy model-specific token rules.".to_string(),
+            rules,
+        });
+    }
+
+    if settings.codex_reasoning_guard_compare_mode != CodexReasoningGuardCompareMode::Equals {
+        return None;
+    }
+
+    for (value, models) in threshold_model_groups {
+        push_legacy_threshold_rule(&mut rules, value, models, false, &model_specific_models);
+    }
+
+    let mut token_groups: Vec<(i64, Vec<String>, bool)> = exact_model_groups
+        .into_iter()
+        .map(|(value, models)| (value, models, false))
+        .collect();
+    for value in legacy_reasoning_token_values(&settings.codex_reasoning_guard_reasoning_equals) {
+        if let Some((_, _, includes_global_fallback)) = token_groups
+            .iter_mut()
+            .find(|(group_value, _, _)| *group_value == value)
+        {
+            *includes_global_fallback = true;
+        } else {
+            token_groups.push((value, Vec::new(), true));
+        }
+    }
+
+    for (value, models, includes_global_fallback) in token_groups {
+        push_legacy_token_rule(
+            &mut rules,
+            value,
+            models,
+            includes_global_fallback,
+            &model_specific_models,
+        );
+    }
+
+    if rules.len() > MAX_CODEX_REASONING_GUARD_TEMPLATE_RULES {
+        return None;
+    }
+
+    (!rules.is_empty()).then(|| CodexReasoningGuardRuleTemplate {
+        id: "custom-legacy-reasoning-tokens".to_string(),
+        name: "Legacy custom reasoning tokens".to_string(),
+        description: "Migrated from legacy model-specific token rules.".to_string(),
+        rules,
+    })
+}
+
+fn upsert_codex_reasoning_guard_custom_template(
+    settings: &mut AppSettings,
+    template: CodexReasoningGuardRuleTemplate,
+) -> bool {
+    settings.codex_reasoning_guard_active_template_id = template.id.clone();
+    if let Some(existing) = settings
+        .codex_reasoning_guard_custom_templates
+        .iter_mut()
+        .find(|item| item.id == template.id)
+    {
+        *existing = template;
+        true
+    } else if settings.codex_reasoning_guard_custom_templates.len()
+        < MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES
+    {
+        settings
+            .codex_reasoning_guard_custom_templates
+            .push(template);
+        true
+    } else if let Some(last_template) = settings.codex_reasoning_guard_custom_templates.last_mut() {
+        *last_template = template;
+        true
+    } else {
+        settings.codex_reasoning_guard_active_template_id =
+            CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string();
+        false
+    }
+}
+
+fn apply_codex_reasoning_guard_rule_template_migration(settings: &mut AppSettings) -> bool {
+    let previous_active_template_id = settings.codex_reasoning_guard_active_template_id.clone();
+    let previous_custom_templates = settings.codex_reasoning_guard_custom_templates.clone();
+
+    match settings.codex_reasoning_guard_rule_mode {
+        CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh => {
+            settings.codex_reasoning_guard_active_template_id =
+                CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID.to_string();
+        }
+        CodexReasoningGuardRuleMode::ReasoningTokens
+            if settings.codex_reasoning_guard_compare_mode
+                == CodexReasoningGuardCompareMode::Equals
+                && settings.codex_reasoning_guard_model_rules.is_empty()
+                && settings.codex_reasoning_guard_reasoning_equals.as_slice()
+                    != DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS =>
+        {
+            let migrated =
+                legacy_equals_custom_template(&settings.codex_reasoning_guard_reasoning_equals);
+            upsert_codex_reasoning_guard_custom_template(settings, migrated);
+        }
+        CodexReasoningGuardRuleMode::ReasoningTokens
+            if settings.codex_reasoning_guard_compare_mode
+                == CodexReasoningGuardCompareMode::LessThanOrEqual
+                && settings.codex_reasoning_guard_model_rules.is_empty() =>
+        {
+            let migrated = legacy_less_than_or_equal_custom_template(
+                &settings.codex_reasoning_guard_reasoning_equals,
+            );
+            upsert_codex_reasoning_guard_custom_template(settings, migrated);
+        }
+        CodexReasoningGuardRuleMode::ReasoningTokens
+            if !settings.codex_reasoning_guard_model_rules.is_empty() =>
+        {
+            if let Some(migrated) = legacy_model_rule_custom_template(settings) {
+                upsert_codex_reasoning_guard_custom_template(settings, migrated);
+            } else {
+                settings.codex_reasoning_guard_active_template_id =
+                    CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string();
+            }
+        }
+        CodexReasoningGuardRuleMode::ReasoningTokens
+            if settings.codex_reasoning_guard_compare_mode
+                == CodexReasoningGuardCompareMode::Equals
+                && settings.codex_reasoning_guard_model_rules.is_empty() =>
+        {
+            settings.codex_reasoning_guard_active_template_id =
+                CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string();
+        }
+        CodexReasoningGuardRuleMode::ReasoningTokens => {
+            settings.codex_reasoning_guard_active_template_id =
+                CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string();
+        }
+    }
+
+    settings.codex_reasoning_guard_active_template_id != previous_active_template_id
+        || settings.codex_reasoning_guard_custom_templates != previous_custom_templates
+}
+
+fn raw_schema_version(raw_settings_json: &serde_json::Value) -> Option<u32> {
+    raw_settings_json
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn repair_codex_reasoning_guard_rule_template_selection(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+    raw_settings_json: &serde_json::Value,
+) -> bool {
+    let active_template_id = settings.codex_reasoning_guard_active_template_id.trim();
+    match active_template_id {
+        "" | CODEX_REASONING_GUARD_TEMPLATE_LEGACY_COMPATIBILITY_ID => {}
+        CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID => {
+            let legacy_schema = !schema_version_present
+                || raw_schema_version(raw_settings_json).is_some_and(|version| {
+                    version < SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_TEMPLATES
+                });
+            if !legacy_schema {
+                return false;
+            }
+        }
+        _ => return false,
+    }
+
+    apply_codex_reasoning_guard_rule_template_migration(settings)
 }
 
 pub(super) fn sanitize_failover_settings(settings: &mut AppSettings) -> bool {
@@ -301,6 +889,14 @@ pub(super) fn sanitize_circuit_breaker_settings(settings: &mut AppSettings) -> b
 pub(super) fn sanitize_log_retention_days(settings: &mut AppSettings) -> bool {
     if settings.log_retention_days > MAX_LOG_RETENTION_DAYS {
         settings.log_retention_days = MAX_LOG_RETENTION_DAYS;
+        return true;
+    }
+    false
+}
+
+pub(super) fn sanitize_request_log_retention_days(settings: &mut AppSettings) -> bool {
+    if settings.request_log_retention_days > MAX_REQUEST_LOG_RETENTION_DAYS {
+        settings.request_log_retention_days = MAX_REQUEST_LOG_RETENTION_DAYS;
         return true;
     }
     false
@@ -978,9 +1574,104 @@ fn migrate_add_codex_reasoning_guard_retry_policy(
     true
 }
 
+fn migrate_add_codex_reasoning_guard_hit_label(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_HIT_LABEL,
+    ) {
+        return false;
+    }
+
+    if settings.codex_reasoning_guard_hit_label.trim().is_empty() {
+        settings.codex_reasoning_guard_hit_label =
+            DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string();
+        return true;
+    }
+
+    false
+}
+
+fn migrate_add_codex_reasoning_guard_rule_mode(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+    ) {
+        return false;
+    }
+
+    settings.codex_reasoning_guard_rule_mode = CodexReasoningGuardRuleMode::ReasoningTokens;
+    true
+}
+
+fn migrate_add_codex_reasoning_guard_rule_templates(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_TEMPLATES,
+    ) {
+        return false;
+    }
+
+    apply_codex_reasoning_guard_rule_template_migration(settings);
+    true
+}
+
+fn migrate_add_codex_reasoning_guard_continuation_repair(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_CONTINUATION_REPAIR,
+    )
+}
+
+fn migrate_unify_codex_reasoning_guard(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD,
+    ) {
+        return false;
+    }
+
+    settings.codex_reasoning_guard_rule_mode = CodexReasoningGuardRuleMode::ReasoningTokens;
+    settings.codex_reasoning_guard_compare_mode = CodexReasoningGuardCompareMode::Equals;
+    settings.codex_reasoning_guard_reasoning_equals =
+        DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.to_vec();
+    // Schema 48 intentionally replaces the pre-unification guard rule surface
+    // with the 518*n-2 continuation-repair template. Older custom templates
+    // and model rules used incompatible legacy semantics, so they are reset
+    // only for users that have not already reached this schema.
+    settings.codex_reasoning_guard_model_rules.clear();
+    settings.codex_reasoning_guard_active_template_id =
+        CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID.to_string();
+    settings.codex_reasoning_guard_custom_templates.clear();
+    settings.codex_reasoning_guard_post_match_strategy =
+        CodexReasoningGuardPostMatchStrategy::ContinuationRepair;
+    settings.codex_reasoning_guard_exhausted_action =
+        CodexReasoningGuardExhaustedAction::ReturnError;
+    true
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
-const SETTINGS_MIGRATIONS: [SettingsMigration; 37] = [
+const SETTINGS_MIGRATIONS: [SettingsMigration; 42] = [
     migrate_disable_upstream_timeouts,
     migrate_add_gateway_rectifiers,
     migrate_add_circuit_breaker_notice,
@@ -1018,6 +1709,11 @@ const SETTINGS_MIGRATIONS: [SettingsMigration; 37] = [
     migrate_update_codex_reasoning_guard_defaults,
     migrate_add_codex_reasoning_guard_budget,
     migrate_add_codex_reasoning_guard_retry_policy,
+    migrate_add_codex_reasoning_guard_hit_label,
+    migrate_add_codex_reasoning_guard_rule_mode,
+    migrate_add_codex_reasoning_guard_rule_templates,
+    migrate_add_codex_reasoning_guard_continuation_repair,
+    migrate_unify_codex_reasoning_guard,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1035,6 +1731,7 @@ pub(super) fn repair_settings(
 ) -> AppResult<bool> {
     let mut repaired = apply_settings_migrations(settings, schema_version_present);
     repaired |= sanitize_log_retention_days(settings);
+    repaired |= sanitize_request_log_retention_days(settings);
     repaired |= sanitize_failover_settings(settings);
     repaired |= sanitize_upstream_retry_policy(&mut settings.upstream_retry_policy);
     repaired |= sanitize_circuit_breaker_settings(settings);
@@ -1044,7 +1741,13 @@ pub(super) fn repair_settings(
     repaired |= sanitize_response_fixer_limits(settings);
     repaired |= sanitize_codex_home_override(settings);
     repaired |= sanitize_codex_provider_test_model(settings);
+    repaired |= sanitize_codex_reasoning_guard_hit_label(settings);
     repaired |= sanitize_codex_reasoning_guard_model_rules(settings);
+    repaired |= repair_codex_reasoning_guard_rule_template_selection(
+        settings,
+        schema_version_present,
+        raw_settings_json,
+    );
     repaired |= sanitize_codex_reasoning_guard_runtime_settings(settings);
     repaired |= sanitize_cli_priority_order(settings);
     let canonical = super::persistence::canonical_settings_json(settings)?;
@@ -1099,6 +1802,26 @@ mod tests {
             s.failover_max_attempts_per_provider,
             MAX_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER
         );
+    }
+
+    #[test]
+    fn sanitize_codex_reasoning_guard_hit_label_trims_and_defaults_blank() {
+        let mut blank = AppSettings {
+            codex_reasoning_guard_hit_label: "   ".to_string(),
+            ..Default::default()
+        };
+        assert!(sanitize_codex_reasoning_guard_hit_label(&mut blank));
+        assert_eq!(
+            blank.codex_reasoning_guard_hit_label,
+            DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL
+        );
+
+        let mut custom = AppSettings {
+            codex_reasoning_guard_hit_label: "  守卫命中  ".to_string(),
+            ..Default::default()
+        };
+        assert!(sanitize_codex_reasoning_guard_hit_label(&mut custom));
+        assert_eq!(custom.codex_reasoning_guard_hit_label, "守卫命中");
     }
 
     #[test]
@@ -1755,6 +2478,920 @@ mod tests {
             s.codex_reasoning_guard_exhausted_action,
             CodexReasoningGuardExhaustedAction::ReturnError
         );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_hit_label_bumps_schema_and_fills_default() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RETRY_POLICY,
+            codex_reasoning_guard_hit_label: String::new(),
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_hit_label(&mut s, true));
+        assert_eq!(
+            s.schema_version,
+            SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_HIT_LABEL
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_hit_label,
+            DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_maps_default_legacy_template() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut s, true
+        ));
+        assert_eq!(
+            s.codex_reasoning_guard_active_template_id,
+            CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID
+        );
+        assert!(s.codex_reasoning_guard_custom_templates.is_empty());
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_continuation_repair_bumps_schema_and_defaults_disabled() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_TEMPLATES,
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_continuation_repair(
+            &mut s, true
+        ));
+
+        assert_eq!(
+            s.schema_version,
+            SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_CONTINUATION_REPAIR
+        );
+        assert!(!s.codex_reasoning_guard_continuation_repair_enabled);
+        assert_eq!(
+            s.codex_reasoning_guard_continuation_max_rounds,
+            DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_continuation_max_output_tokens,
+            DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+        );
+    }
+
+    #[test]
+    fn migrate_unify_codex_reasoning_guard_resets_legacy_rules_before_schema_48() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_CONTINUATION_REPAIR,
+            codex_reasoning_guard_rule_mode: CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh,
+            codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+            codex_reasoning_guard_reasoning_equals: vec![700],
+            codex_reasoning_guard_active_template_id: "custom-old".to_string(),
+            codex_reasoning_guard_custom_templates: vec![CodexReasoningGuardRuleTemplate {
+                id: "custom-old".to_string(),
+                name: "Old custom".to_string(),
+                description: "legacy custom rule".to_string(),
+                rules: vec![CodexReasoningGuardTemplateRule {
+                    id: "rule-old".to_string(),
+                    name: "Old <=700".to_string(),
+                    reasoning_tokens: Some(700),
+                    ..Default::default()
+                }],
+            }],
+            codex_reasoning_guard_model_rules: vec![CodexReasoningGuardModelRule {
+                requested_model: "gpt-old".to_string(),
+                compare_mode: CodexReasoningGuardCompareMode::Equals,
+                reasoning_equals: vec![700],
+            }],
+            codex_reasoning_guard_post_match_strategy:
+                CodexReasoningGuardPostMatchStrategy::RetrySameProvider,
+            codex_reasoning_guard_exhausted_action:
+                CodexReasoningGuardExhaustedAction::SwitchProvider,
+            ..Default::default()
+        };
+
+        assert!(migrate_unify_codex_reasoning_guard(&mut s, true));
+
+        assert_eq!(s.schema_version, SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD);
+        assert_eq!(
+            s.codex_reasoning_guard_rule_mode,
+            CodexReasoningGuardRuleMode::ReasoningTokens
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_compare_mode,
+            CodexReasoningGuardCompareMode::Equals
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_reasoning_equals,
+            DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
+        );
+        assert!(s.codex_reasoning_guard_model_rules.is_empty());
+        assert_eq!(
+            s.codex_reasoning_guard_active_template_id,
+            CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
+        );
+        assert!(s.codex_reasoning_guard_custom_templates.is_empty());
+        assert_eq!(
+            s.codex_reasoning_guard_post_match_strategy,
+            CodexReasoningGuardPostMatchStrategy::ContinuationRepair
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_exhausted_action,
+            CodexReasoningGuardExhaustedAction::ReturnError
+        );
+    }
+
+    #[test]
+    fn migrate_unify_codex_reasoning_guard_does_not_overwrite_schema_48_settings() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD,
+            codex_reasoning_guard_active_template_id: "custom-current".to_string(),
+            codex_reasoning_guard_custom_templates: vec![CodexReasoningGuardRuleTemplate {
+                id: "custom-current".to_string(),
+                name: "Current custom".to_string(),
+                description: "user edited after upgrade".to_string(),
+                ..Default::default()
+            }],
+            codex_reasoning_guard_model_rules: vec![CodexReasoningGuardModelRule {
+                requested_model: "gpt-current".to_string(),
+                compare_mode: CodexReasoningGuardCompareMode::Equals,
+                reasoning_equals: vec![1552],
+            }],
+            codex_reasoning_guard_post_match_strategy:
+                CodexReasoningGuardPostMatchStrategy::RetrySameProvider,
+            codex_reasoning_guard_exhausted_action:
+                CodexReasoningGuardExhaustedAction::SwitchProvider,
+            ..Default::default()
+        };
+
+        assert!(!migrate_unify_codex_reasoning_guard(&mut s, true));
+
+        assert_eq!(s.codex_reasoning_guard_active_template_id, "custom-current");
+        assert_eq!(s.codex_reasoning_guard_custom_templates.len(), 1);
+        assert_eq!(s.codex_reasoning_guard_model_rules.len(), 1);
+        assert_eq!(
+            s.codex_reasoning_guard_post_match_strategy,
+            CodexReasoningGuardPostMatchStrategy::RetrySameProvider
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_exhausted_action,
+            CodexReasoningGuardExhaustedAction::SwitchProvider
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_maps_feature_mode_template() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_rule_mode: CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh,
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut s, true
+        ));
+        assert_eq!(
+            s.codex_reasoning_guard_active_template_id,
+            CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID
+        );
+        assert!(s.codex_reasoning_guard_custom_templates.is_empty());
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_converts_custom_global_equals() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_reasoning_equals: vec![777, 888],
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut s, true
+        ));
+        assert_eq!(
+            s.codex_reasoning_guard_active_template_id,
+            "custom-legacy-reasoning-tokens"
+        );
+        assert_eq!(s.codex_reasoning_guard_custom_templates.len(), 1);
+        assert_eq!(
+            s.codex_reasoning_guard_custom_templates[0]
+                .rules
+                .iter()
+                .filter_map(|rule| rule.reasoning_tokens)
+                .collect::<Vec<_>>(),
+            vec![777, 888]
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_deduplicates_custom_global_equals() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_reasoning_equals: vec![777, 777, 888, 777],
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut s, true
+        ));
+        assert_eq!(
+            s.codex_reasoning_guard_active_template_id,
+            "custom-legacy-reasoning-tokens"
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_custom_templates[0]
+                .rules
+                .iter()
+                .filter_map(|rule| rule.reasoning_tokens)
+                .collect::<Vec<_>>(),
+            vec![777, 888]
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_converts_global_less_than_or_equal() {
+        let mut less_equal = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+            codex_reasoning_guard_reasoning_equals: vec![700, 900],
+            ..Default::default()
+        };
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut less_equal,
+            true
+        ));
+        assert_eq!(
+            less_equal.codex_reasoning_guard_active_template_id,
+            "custom-legacy-reasoning-tokens"
+        );
+        let template = &less_equal.codex_reasoning_guard_custom_templates[0];
+        assert_eq!(
+            template
+                .rules
+                .iter()
+                .flat_map(|rule| {
+                    assert_eq!(rule.reasoning_tokens, None);
+                    rule.filters.iter()
+                })
+                .map(|filter| {
+                    assert_eq!(
+                        filter.field,
+                        CodexReasoningGuardTemplateFilterField::ReasoningTokens
+                    );
+                    assert_eq!(
+                        filter.operator,
+                        CodexReasoningGuardTemplateFilterOperator::LessThanOrEqual
+                    );
+                    filter.number_value
+                })
+                .collect::<Vec<_>>(),
+            vec![Some(700.0), Some(900.0)]
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_converts_model_equals_rules() {
+        let mut model_rule = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_reasoning_equals: vec![516],
+            codex_reasoning_guard_model_rules: vec![CodexReasoningGuardModelRule {
+                requested_model: "gpt-5.5".to_string(),
+                compare_mode: CodexReasoningGuardCompareMode::Equals,
+                reasoning_equals: vec![256],
+            }],
+            ..Default::default()
+        };
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut model_rule,
+            true
+        ));
+        assert_eq!(
+            model_rule.codex_reasoning_guard_active_template_id,
+            "custom-legacy-reasoning-tokens"
+        );
+        let template = &model_rule.codex_reasoning_guard_custom_templates[0];
+        let model_specific = template
+            .rules
+            .iter()
+            .find(|rule| rule.reasoning_tokens == Some(256))
+            .expect("model-specific token rule should be generated");
+        assert_eq!(
+            model_specific.filters[0].field,
+            CodexReasoningGuardTemplateFilterField::RequestedModel
+        );
+        assert_eq!(
+            model_specific.filters[0].operator,
+            CodexReasoningGuardTemplateFilterOperator::Equals
+        );
+        assert_eq!(
+            model_specific.filters[0].string_value.as_deref(),
+            Some("gpt-5.5")
+        );
+        let global_fallback = template
+            .rules
+            .iter()
+            .find(|rule| rule.reasoning_tokens == Some(516))
+            .expect("global fallback token rule should be generated");
+        assert_eq!(
+            global_fallback.filters[0].field,
+            CodexReasoningGuardTemplateFilterField::RequestedModel
+        );
+        assert_eq!(
+            global_fallback.filters[0].operator,
+            CodexReasoningGuardTemplateFilterOperator::NotEquals
+        );
+        assert_eq!(
+            global_fallback.filters[0].string_value.as_deref(),
+            Some("gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_groups_model_equals_rules_by_token() {
+        let mut model_rule = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_reasoning_equals: vec![516],
+            codex_reasoning_guard_model_rules: vec![
+                CodexReasoningGuardModelRule {
+                    requested_model: "gpt-5.5".to_string(),
+                    compare_mode: CodexReasoningGuardCompareMode::Equals,
+                    reasoning_equals: vec![256],
+                },
+                CodexReasoningGuardModelRule {
+                    requested_model: "gpt-5.4".to_string(),
+                    compare_mode: CodexReasoningGuardCompareMode::Equals,
+                    reasoning_equals: vec![256],
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut model_rule,
+            true
+        ));
+
+        let template = &model_rule.codex_reasoning_guard_custom_templates[0];
+        let model_specific = template
+            .rules
+            .iter()
+            .find(|rule| rule.reasoning_tokens == Some(256))
+            .expect("same-token model-specific rule should be generated");
+        assert_eq!(model_specific.filters.len(), 1);
+        assert_eq!(
+            model_specific.filters[0].field,
+            CodexReasoningGuardTemplateFilterField::RequestedModel
+        );
+        assert_eq!(
+            model_specific.filters[0].operator,
+            CodexReasoningGuardTemplateFilterOperator::In
+        );
+        assert_eq!(
+            model_specific.filters[0].string_values,
+            vec!["gpt-5.5".to_string(), "gpt-5.4".to_string()]
+        );
+        let global_fallback = template
+            .rules
+            .iter()
+            .find(|rule| rule.reasoning_tokens == Some(516))
+            .expect("global fallback token rule should be generated");
+        assert_eq!(
+            global_fallback.filters[0].operator,
+            CodexReasoningGuardTemplateFilterOperator::NotIn
+        );
+        assert_eq!(
+            global_fallback.filters[0].string_values,
+            vec!["gpt-5.5".to_string(), "gpt-5.4".to_string()]
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_merges_overlapping_global_and_model_tokens()
+    {
+        let mut model_rule = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_reasoning_equals: vec![516, 1034],
+            codex_reasoning_guard_model_rules: vec![CodexReasoningGuardModelRule {
+                requested_model: "gpt-5.5".to_string(),
+                compare_mode: CodexReasoningGuardCompareMode::Equals,
+                reasoning_equals: vec![516],
+            }],
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut model_rule,
+            true
+        ));
+        let template = &model_rule.codex_reasoning_guard_custom_templates[0];
+        assert_eq!(
+            template
+                .rules
+                .iter()
+                .filter(|rule| rule.reasoning_tokens == Some(516))
+                .count(),
+            1
+        );
+        let overlapping_rule = template
+            .rules
+            .iter()
+            .find(|rule| rule.reasoning_tokens == Some(516))
+            .expect("overlapping token rule should be generated");
+        assert_eq!(
+            overlapping_rule.logic,
+            CodexReasoningGuardTemplateRuleLogic::Or
+        );
+        assert!(overlapping_rule.filters.iter().any(|filter| {
+            filter.operator == CodexReasoningGuardTemplateFilterOperator::Equals
+                && filter.string_value.as_deref() == Some("gpt-5.5")
+        }));
+        assert!(overlapping_rule.filters.iter().any(|filter| {
+            filter.operator == CodexReasoningGuardTemplateFilterOperator::NotEquals
+                && filter.string_value.as_deref() == Some("gpt-5.5")
+        }));
+
+        let global_only = template
+            .rules
+            .iter()
+            .find(|rule| rule.reasoning_tokens == Some(1034))
+            .expect("global fallback token rule should be generated");
+        assert_eq!(
+            global_only.filters[0].operator,
+            CodexReasoningGuardTemplateFilterOperator::NotEquals
+        );
+        assert_eq!(
+            global_only.filters[0].string_value.as_deref(),
+            Some("gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_mixes_single_model_lte_with_exact_rules() {
+        let mut model_rule = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_reasoning_equals: vec![516],
+            codex_reasoning_guard_model_rules: vec![
+                CodexReasoningGuardModelRule {
+                    requested_model: "gpt-lte".to_string(),
+                    compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+                    reasoning_equals: vec![700, 900],
+                },
+                CodexReasoningGuardModelRule {
+                    requested_model: "gpt-exact".to_string(),
+                    compare_mode: CodexReasoningGuardCompareMode::Equals,
+                    reasoning_equals: vec![256],
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut model_rule,
+            true
+        ));
+        let template = &model_rule.codex_reasoning_guard_custom_templates[0];
+        let wildcard_thresholds = template
+            .rules
+            .iter()
+            .filter(|rule| {
+                rule.reasoning_tokens.is_none()
+                    && rule.filters.iter().any(|filter| {
+                        filter.field == CodexReasoningGuardTemplateFilterField::RequestedModel
+                            && filter.operator == CodexReasoningGuardTemplateFilterOperator::Equals
+                            && filter.string_value.as_deref() == Some("gpt-lte")
+                    })
+            })
+            .map(|rule| {
+                rule.filters
+                    .iter()
+                    .find(|filter| {
+                        filter.field == CodexReasoningGuardTemplateFilterField::ReasoningTokens
+                    })
+                    .and_then(|filter| filter.number_value)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(wildcard_thresholds, vec![Some(700.0), Some(900.0)]);
+
+        let global_fallback = template
+            .rules
+            .iter()
+            .find(|rule| rule.reasoning_tokens == Some(516))
+            .expect("global fallback token rule should be generated");
+        assert_eq!(
+            global_fallback.filters[0].operator,
+            CodexReasoningGuardTemplateFilterOperator::NotIn
+        );
+        assert_eq!(
+            global_fallback.filters[0].string_values,
+            vec!["gpt-lte".to_string(), "gpt-exact".to_string()]
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_converts_global_lte_with_exact_model_rules()
+    {
+        let mut model_rule = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+            codex_reasoning_guard_reasoning_equals: vec![700, 900],
+            codex_reasoning_guard_model_rules: vec![CodexReasoningGuardModelRule {
+                requested_model: "gpt-exact".to_string(),
+                compare_mode: CodexReasoningGuardCompareMode::Equals,
+                reasoning_equals: vec![256],
+            }],
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut model_rule,
+            true
+        ));
+        let template = &model_rule.codex_reasoning_guard_custom_templates[0];
+        let model_exact = template
+            .rules
+            .iter()
+            .find(|rule| rule.reasoning_tokens == Some(256))
+            .expect("model exact rule should be generated");
+        assert_eq!(
+            model_exact.filters[0].operator,
+            CodexReasoningGuardTemplateFilterOperator::Equals
+        );
+        assert_eq!(
+            model_exact.filters[0].string_value.as_deref(),
+            Some("gpt-exact")
+        );
+
+        let global_thresholds = template
+            .rules
+            .iter()
+            .filter(|rule| {
+                rule.reasoning_tokens.is_none()
+                    && rule.filters.iter().any(|filter| {
+                        filter.field == CodexReasoningGuardTemplateFilterField::RequestedModel
+                            && filter.operator
+                                == CodexReasoningGuardTemplateFilterOperator::NotEquals
+                            && filter.string_value.as_deref() == Some("gpt-exact")
+                    })
+            })
+            .map(|rule| {
+                rule.filters
+                    .iter()
+                    .find(|filter| {
+                        filter.field == CodexReasoningGuardTemplateFilterField::ReasoningTokens
+                    })
+                    .and_then(|filter| filter.number_value)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(global_thresholds, vec![Some(700.0), Some(900.0)]);
+    }
+
+    #[test]
+    fn repair_settings_unifies_schema_46_global_lte_with_exact_model_rule() {
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_TEMPLATES,
+            "codex_reasoning_guard_active_template_id": CODEX_REASONING_GUARD_TEMPLATE_LEGACY_COMPATIBILITY_ID,
+            "codex_reasoning_guard_rule_mode": "reasoning_tokens",
+            "codex_reasoning_guard_compare_mode": "less_than_or_equal",
+            "codex_reasoning_guard_reasoning_equals": [700, 900],
+            "codex_reasoning_guard_model_rules": [
+                {
+                    "requested_model": "gpt-exact",
+                    "compare_mode": "equals",
+                    "reasoning_equals": [256]
+                }
+            ]
+        });
+        let mut settings: AppSettings = serde_json::from_value(raw.clone()).unwrap();
+
+        assert!(repair_settings(&mut settings, true, &raw).unwrap());
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD
+        );
+        assert_eq!(
+            settings.codex_reasoning_guard_active_template_id,
+            CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
+        );
+        assert!(settings.codex_reasoning_guard_custom_templates.is_empty());
+        assert!(settings.codex_reasoning_guard_model_rules.is_empty());
+        assert_eq!(
+            settings.codex_reasoning_guard_reasoning_equals,
+            DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_preserves_legacy_rules_when_old_template_slots_full(
+    ) {
+        const LEGACY_CUSTOM_TEMPLATE_CAP: usize = 16;
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_reasoning_equals: vec![777],
+            codex_reasoning_guard_custom_templates: (0..LEGACY_CUSTOM_TEMPLATE_CAP)
+                .map(|index| CodexReasoningGuardRuleTemplate {
+                    id: format!("custom-template-{index}"),
+                    name: format!("Custom template {index}"),
+                    description: String::new(),
+                    rules: vec![CodexReasoningGuardTemplateRule {
+                        id: format!("rule-{index}"),
+                        name: format!("rule {index}"),
+                        reasoning_tokens: Some(index as i64),
+                        reasoning_tokens_formula: None,
+                        action: CodexReasoningGuardTemplateRuleAction::Intercept,
+                        logic: CodexReasoningGuardTemplateRuleLogic::And,
+                        filters: Vec::new(),
+                    }],
+                })
+                .collect(),
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut settings,
+            true
+        ));
+        assert_eq!(
+            settings.codex_reasoning_guard_active_template_id,
+            "custom-legacy-reasoning-tokens"
+        );
+        assert_eq!(
+            settings.codex_reasoning_guard_custom_templates.len(),
+            LEGACY_CUSTOM_TEMPLATE_CAP + 1
+        );
+        assert!(settings
+            .codex_reasoning_guard_custom_templates
+            .iter()
+            .any(|template| template.id == "custom-legacy-reasoning-tokens"
+                && template
+                    .rules
+                    .iter()
+                    .any(|rule| rule.reasoning_tokens == Some(777))));
+        super::super::persistence::validate_bounds(&settings).unwrap();
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_preserves_rules_above_old_template_cap() {
+        const LEGACY_TEMPLATE_RULE_CAP: usize = 64;
+        let values = (0..=LEGACY_TEMPLATE_RULE_CAP)
+            .map(|value| value as i64 + 10)
+            .collect::<Vec<_>>();
+        let mut model_rule = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_reasoning_equals: vec![516],
+            codex_reasoning_guard_model_rules: values
+                .chunks(MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN)
+                .enumerate()
+                .map(|(index, chunk)| CodexReasoningGuardModelRule {
+                    requested_model: format!("gpt-many-{index}"),
+                    compare_mode: CodexReasoningGuardCompareMode::Equals,
+                    reasoning_equals: chunk.to_vec(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut model_rule,
+            true
+        ));
+        assert_eq!(
+            model_rule.codex_reasoning_guard_active_template_id,
+            "custom-legacy-reasoning-tokens"
+        );
+        let template = &model_rule.codex_reasoning_guard_custom_templates[0];
+        assert!(template.rules.len() > LEGACY_TEMPLATE_RULE_CAP);
+        assert!(template
+            .rules
+            .iter()
+            .any(|rule| rule.reasoning_tokens == Some(10)));
+        assert!(template
+            .rules
+            .iter()
+            .any(|rule| rule.reasoning_tokens == Some(74)));
+        super::super::persistence::validate_bounds(&model_rule).unwrap();
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_keeps_generated_model_rules_valid() {
+        let long_model_a = format!("gpt-{}", "a".repeat(120));
+        let long_model_b = format!("gpt-{}", "b".repeat(120));
+        let mut model_rule = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_reasoning_equals: vec![516],
+            codex_reasoning_guard_model_rules: vec![
+                CodexReasoningGuardModelRule {
+                    requested_model: long_model_a,
+                    compare_mode: CodexReasoningGuardCompareMode::Equals,
+                    reasoning_equals: vec![256],
+                },
+                CodexReasoningGuardModelRule {
+                    requested_model: long_model_b,
+                    compare_mode: CodexReasoningGuardCompareMode::Equals,
+                    reasoning_equals: vec![256],
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut model_rule,
+            true
+        ));
+        super::super::persistence::validate_bounds(&model_rule).unwrap();
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_converts_single_model_less_than_or_equal_rule(
+    ) {
+        let mut model_rule = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_model_rules: vec![CodexReasoningGuardModelRule {
+                requested_model: "gpt-5.5".to_string(),
+                compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+                reasoning_equals: vec![700, 900],
+            }],
+            ..Default::default()
+        };
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut model_rule,
+            true
+        ));
+        assert_eq!(
+            model_rule.codex_reasoning_guard_active_template_id,
+            "custom-legacy-reasoning-tokens"
+        );
+        let template = &model_rule.codex_reasoning_guard_custom_templates[0];
+        let wildcard_thresholds = template
+            .rules
+            .iter()
+            .filter(|rule| {
+                rule.reasoning_tokens.is_none()
+                    && rule.filters.iter().any(|filter| {
+                        filter.field == CodexReasoningGuardTemplateFilterField::RequestedModel
+                            && filter.string_value.as_deref() == Some("gpt-5.5")
+                    })
+            })
+            .map(|rule| {
+                rule.filters
+                    .iter()
+                    .find(|filter| {
+                        filter.field == CodexReasoningGuardTemplateFilterField::ReasoningTokens
+                    })
+                    .and_then(|filter| filter.number_value)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(wildcard_thresholds, vec![Some(700.0), Some(900.0)]);
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_rule_templates_groups_model_lte_rules_by_threshold() {
+        let mut model_rule = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
+            codex_reasoning_guard_reasoning_equals: vec![516],
+            codex_reasoning_guard_model_rules: vec![
+                CodexReasoningGuardModelRule {
+                    requested_model: "gpt-lte-a".to_string(),
+                    compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+                    reasoning_equals: vec![700],
+                },
+                CodexReasoningGuardModelRule {
+                    requested_model: "gpt-lte-b".to_string(),
+                    compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+                    reasoning_equals: vec![700],
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(migrate_add_codex_reasoning_guard_rule_templates(
+            &mut model_rule,
+            true
+        ));
+        assert_eq!(
+            model_rule.codex_reasoning_guard_active_template_id,
+            "custom-legacy-reasoning-tokens"
+        );
+        let template = &model_rule.codex_reasoning_guard_custom_templates[0];
+        let threshold_rule = template
+            .rules
+            .iter()
+            .find(|rule| {
+                rule.reasoning_tokens.is_none()
+                    && rule.filters.iter().any(|filter| {
+                        filter.field == CodexReasoningGuardTemplateFilterField::ReasoningTokens
+                            && filter.operator
+                                == CodexReasoningGuardTemplateFilterOperator::LessThanOrEqual
+                            && filter.number_value == Some(700.0)
+                    })
+            })
+            .expect("grouped model LTE threshold rule should be generated");
+        let model_filter = threshold_rule
+            .filters
+            .iter()
+            .find(|filter| filter.field == CodexReasoningGuardTemplateFilterField::RequestedModel)
+            .expect("grouped threshold should keep a requested-model filter");
+        assert_eq!(
+            model_filter.operator,
+            CodexReasoningGuardTemplateFilterOperator::In
+        );
+        assert_eq!(
+            model_filter.string_values,
+            vec!["gpt-lte-a".to_string(), "gpt-lte-b".to_string()]
+        );
+
+        let global_fallback = template
+            .rules
+            .iter()
+            .find(|rule| rule.reasoning_tokens == Some(516))
+            .expect("global fallback token rule should be generated");
+        assert_eq!(
+            global_fallback.filters[0].operator,
+            CodexReasoningGuardTemplateFilterOperator::NotIn
+        );
+        assert_eq!(
+            global_fallback.filters[0].string_values,
+            vec!["gpt-lte-a".to_string(), "gpt-lte-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn repair_settings_unifies_schema_46_legacy_rule_template_selection() {
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_TEMPLATES,
+            "codex_reasoning_guard_active_template_id": CODEX_REASONING_GUARD_TEMPLATE_LEGACY_COMPATIBILITY_ID,
+            "codex_reasoning_guard_rule_mode": "reasoning_tokens",
+            "codex_reasoning_guard_compare_mode": "less_than_or_equal",
+            "codex_reasoning_guard_reasoning_equals": [700]
+        });
+        let mut settings: AppSettings = serde_json::from_value(raw.clone()).unwrap();
+
+        assert!(repair_settings(&mut settings, true, &raw).unwrap());
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD
+        );
+        assert_eq!(
+            settings.codex_reasoning_guard_active_template_id,
+            CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
+        );
+        assert!(settings.codex_reasoning_guard_custom_templates.is_empty());
+        assert_eq!(
+            settings.codex_reasoning_guard_reasoning_equals,
+            DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
+        );
+    }
+
+    #[test]
+    fn repair_rule_template_selection_preserves_active_custom_template() {
+        let mut settings = AppSettings {
+            codex_reasoning_guard_active_template_id: "custom-current".to_string(),
+            codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+            codex_reasoning_guard_reasoning_equals: vec![700],
+            ..Default::default()
+        };
+
+        assert!(!repair_codex_reasoning_guard_rule_template_selection(
+            &mut settings,
+            true,
+            &serde_json::json!({"schema_version": SCHEMA_VERSION})
+        ));
+        assert_eq!(
+            settings.codex_reasoning_guard_active_template_id,
+            "custom-current"
+        );
+        assert!(settings.codex_reasoning_guard_custom_templates.is_empty());
+    }
+
+    #[test]
+    fn repair_settings_unifies_schema_46_builtin_legacy_selection() {
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_TEMPLATES,
+            "codex_reasoning_guard_active_template_id": CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
+            "codex_reasoning_guard_rule_mode": "reasoning_tokens",
+            "codex_reasoning_guard_compare_mode": "less_than_or_equal",
+            "codex_reasoning_guard_reasoning_equals": [700],
+            "codex_reasoning_guard_model_rules": [
+                {
+                    "requested_model": "gpt-stale",
+                    "compare_mode": "equals",
+                    "reasoning_equals": [256]
+                }
+            ]
+        });
+        let mut settings: AppSettings = serde_json::from_value(raw.clone()).unwrap();
+
+        assert!(repair_settings(&mut settings, true, &raw).unwrap());
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD
+        );
+        assert_eq!(
+            settings.codex_reasoning_guard_active_template_id,
+            CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
+        );
+        assert!(settings.codex_reasoning_guard_custom_templates.is_empty());
+        assert!(settings.codex_reasoning_guard_model_rules.is_empty());
     }
 
     #[test]

@@ -41,13 +41,14 @@ export const GatewayErrorCodes = {
   REQUEST_LOG_DROPPED: "GW_REQUEST_LOG_DROPPED",
   FAKE_200: "GW_FAKE_200",
   EMPTY_RESPONSE: "GW_EMPTY_RESPONSE",
+  RESPONSES_DELTA_FINAL_MISMATCH: "GW_RESPONSES_DELTA_FINAL_MISMATCH",
 } as const;
 
 export type GatewayErrorCode = (typeof GatewayErrorCodes)[keyof typeof GatewayErrorCodes];
 
 export type GatewayErrorDescription = { desc: string; suggestion: string };
 
-export const GatewayErrorShortLabels = {
+const GatewayErrorShortLabels = {
   [GatewayErrorCodes.ALL_PROVIDERS_UNAVAILABLE]: "全部不可用",
   [GatewayErrorCodes.UPSTREAM_ALL_FAILED]: "全部失败",
   [GatewayErrorCodes.NO_ENABLED_PROVIDER]: "无供应商",
@@ -86,6 +87,7 @@ export const GatewayErrorShortLabels = {
   [GatewayErrorCodes.REQUEST_LOG_DROPPED]: "请求日志丢弃",
   [GatewayErrorCodes.FAKE_200]: "假200",
   [GatewayErrorCodes.EMPTY_RESPONSE]: "空回",
+  [GatewayErrorCodes.RESPONSES_DELTA_FINAL_MISMATCH]: "响应流不一致",
 } satisfies Record<GatewayErrorCode, string>;
 
 export function getGatewayErrorShortLabel(errorCode: string) {
@@ -108,7 +110,8 @@ export const GatewayErrorDescriptions = {
   },
   GW_UPSTREAM_TIMEOUT: {
     desc: "上游服务响应超时",
-    suggestion: "Provider 响应时间过长。请检查 Provider 服务状态，或考虑在设置中增加超时时间。",
+    suggestion:
+      "Provider 在配置的首字节超时内未返回响应。若上游响应普遍偏慢（大上下文、冷缓存），请调大：设置 → 通用 → 首字节超时（0=禁用）；若上游为自建网关，请检查其反代是否缓冲了流式响应。",
   },
   GW_UPSTREAM_CONNECT_FAILED: {
     desc: "无法连接到上游服务",
@@ -250,5 +253,10 @@ export const GatewayErrorDescriptions = {
     desc: "上游返回空成功响应",
     suggestion:
       "上游 Provider 返回了成功状态但没有有效输出。已自动标记为 Provider 失败并尝试切换到其他 Provider。",
+  },
+  GW_RESPONSES_DELTA_FINAL_MISMATCH: {
+    desc: "Responses 流式增量与最终消息不一致",
+    suggestion:
+      "上游 Provider 返回的 response.output_text.delta 与最终 message 内容不一致。已在拦截路径中阻止该响应，不会自动切换 Provider。",
   },
 } satisfies Record<GatewayErrorCode, GatewayErrorDescription>;

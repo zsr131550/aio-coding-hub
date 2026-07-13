@@ -50,6 +50,7 @@ macro_rules! generated_command_registry {
             // ── cli_manager ──
             cli_manager_claude_info_get => crate::commands::cli_manager::cli_manager_claude_info_get,
             cli_manager_codex_info_get => crate::commands::cli_manager::cli_manager_codex_info_get,
+            cli_manager_codex_model_catalog_get => crate::commands::cli_manager::cli_manager_codex_model_catalog_get,
             cli_manager_codex_config_get => crate::commands::cli_manager::cli_manager_codex_config_get,
             cli_manager_codex_config_set => crate::commands::cli_manager::cli_manager_codex_config_set,
             cli_manager_codex_config_toml_get => crate::commands::cli_manager::cli_manager_codex_config_toml_get,
@@ -109,6 +110,7 @@ macro_rules! generated_command_registry {
             provider_oauth_disconnect => crate::commands::providers::provider_oauth_disconnect,
             provider_oauth_status => crate::commands::providers::provider_oauth_status,
             provider_oauth_fetch_limits => crate::commands::providers::provider_oauth_fetch_limits,
+            provider_account_usage_fetch => crate::commands::providers::provider_account_usage_fetch,
             provider_oauth_reset_codex_quota => crate::commands::providers::provider_oauth_reset_codex_quota,
             // ── claude_model_validation ──
             claude_provider_validate_model => crate::commands::claude_model_validation::claude_provider_validate_model,
@@ -167,11 +169,17 @@ macro_rules! generated_command_registry {
             // ── plugins ──
             plugin_list => crate::commands::plugins::plugin_list,
             plugin_get => crate::commands::plugins::plugin_get,
+            plugin_active_contributions => crate::commands::plugins::plugin_active_contributions,
+            plugin_execute_command => crate::commands::plugins::plugin_execute_command,
+            plugin_preview_from_file => crate::commands::plugins::plugin_preview_from_file,
+            plugin_preview_update_from_file => crate::commands::plugins::plugin_preview_update_from_file,
+            plugin_preview_remote_update => crate::commands::plugins::plugin_preview_remote_update,
             plugin_install_from_file => crate::commands::plugins::plugin_install_from_file,
             plugin_update_from_file => crate::commands::plugins::plugin_update_from_file,
             plugin_rollback => crate::commands::plugins::plugin_rollback,
             plugin_parse_market_index => crate::commands::plugins::plugin_parse_market_index,
             plugin_install_remote => crate::commands::plugins::plugin_install_remote,
+            plugin_update_remote => crate::commands::plugins::plugin_update_remote,
             plugin_install_official => crate::commands::plugins::plugin_install_official,
             plugin_quarantine_revoked => crate::commands::plugins::plugin_quarantine_revoked,
             plugin_enable => crate::commands::plugins::plugin_enable,
@@ -181,6 +189,9 @@ macro_rules! generated_command_registry {
             plugin_grant_permissions => crate::commands::plugins::plugin_grant_permissions,
             plugin_revoke_permission => crate::commands::plugins::plugin_revoke_permission,
             plugin_list_audit_logs => crate::commands::plugins::plugin_list_audit_logs,
+            plugin_list_runtime_reports => crate::commands::plugins::plugin_list_runtime_reports,
+            plugin_list_extension_runtime_reports => crate::commands::plugins::plugin_list_extension_runtime_reports,
+            plugin_export_replay_fixture => crate::commands::plugins::plugin_export_replay_fixture,
             // ── request_logs ──
             request_logs_list => crate::commands::request_logs::request_logs_list,
             request_logs_list_all => crate::commands::request_logs::request_logs_list_all,
@@ -190,9 +201,11 @@ macro_rules! generated_command_registry {
             request_log_get_by_trace_id => crate::commands::request_logs::request_log_get_by_trace_id,
             request_attempt_logs_by_trace_id => crate::commands::request_logs::request_attempt_logs_by_trace_id,
             request_logs_codex_reasoning_guard_stats => crate::commands::request_logs::request_logs_codex_reasoning_guard_stats,
+            active_request_logs_snapshot => crate::commands::request_logs::active_request_logs_snapshot,
             cli_sessions_folder_lookup_by_ids => crate::commands::cli_sessions::cli_sessions_folder_lookup_by_ids,
             // ── data_management ──
             db_disk_usage_get => crate::commands::data_management::db_disk_usage_get,
+            db_compact => crate::commands::data_management::db_compact,
             request_logs_clear_all => crate::commands::data_management::request_logs_clear_all,
             app_data_reset => crate::commands::data_management::app_data_reset,
             // ── usage ──
@@ -201,18 +214,11 @@ macro_rules! generated_command_registry {
             usage_leaderboard_provider => crate::commands::usage::usage_leaderboard_provider,
             usage_leaderboard_day => crate::commands::usage::usage_leaderboard_day,
             usage_leaderboard_v2 => crate::commands::usage::usage_leaderboard_v2,
+            usage_leaderboard_csv_export => crate::commands::usage::usage_leaderboard_csv_export,
             usage_hourly_series => crate::commands::usage::usage_hourly_series,
             usage_day_detail_v1 => crate::commands::usage::usage_day_detail_v1,
             usage_folder_options_v1 => crate::commands::usage::usage_folder_options_v1,
             usage_provider_cache_rate_trend_v1 => crate::commands::usage::usage_provider_cache_rate_trend_v1,
-            // ── cost ──
-            cost_summary_v1 => crate::commands::cost::cost_summary_v1,
-            cost_trend_v1 => crate::commands::cost::cost_trend_v1,
-            cost_breakdown_provider_v1 => crate::commands::cost::cost_breakdown_provider_v1,
-            cost_breakdown_model_v1 => crate::commands::cost::cost_breakdown_model_v1,
-            cost_scatter_cli_provider_model_v1 => crate::commands::cost::cost_scatter_cli_provider_model_v1,
-            cost_top_requests_v1 => crate::commands::cost::cost_top_requests_v1,
-            cost_backfill_missing_v1 => crate::commands::cost::cost_backfill_missing_v1,
             // ── env_conflicts ──
             env_conflicts_check => crate::commands::env_conflicts::env_conflicts_check,
             // ── cli_proxy ──
@@ -257,18 +263,38 @@ pub(crate) fn export_typescript_bindings(output_path: &str) -> Result<(), String
         };
     }
 
-    let builder = generated_command_registry!(collect_exported_commands);
+    // Gateway event payload types (gateway:* wire contract). Registered on the
+    // export builder only; runtime emit paths are untouched (no tauri_specta
+    // Event mechanism, event names stay guarded by constants + contract tests).
+    let builder = generated_command_registry!(collect_exported_commands)
+        .typ::<crate::gateway::events::GatewayRequestEvent>()
+        .typ::<crate::gateway::events::GatewayRequestStartEvent>()
+        .typ::<crate::gateway::events::GatewayRequestSignalEvent>()
+        .typ::<crate::gateway::events::GatewayAttemptEvent>()
+        .typ::<crate::gateway::events::GatewayLogEvent>()
+        .typ::<crate::gateway::events::GatewayCircuitEvent>();
 
     builder
         .export(
             specta_typescript::Typescript::default()
                 .header(
-                    "/* eslint-disable */\n// @ts-nocheck\n// NOTE: Generated IPC contract for settings, config migration, desktop, app management, gateway, request-log, CLI update, CLI proxy, provider, WSL, sort-mode, provider-limit, usage, cost, model-price, prompt, workspace, skills, MCP, CLI manager, CLI sessions, Claude validation, notice, and env-conflict command families.",
+                    "/* eslint-disable */\n// @ts-nocheck\n// NOTE: Generated IPC contract for settings, config migration, desktop, app management, gateway, request-log, CLI update, CLI proxy, provider, WSL, sort-mode, provider-limit, usage, model-price, prompt, workspace, skills, MCP, CLI manager, CLI sessions, Claude validation, notice, and env-conflict command families.",
                 )
                 .bigint(specta_typescript::BigIntExportBehavior::Number),
             output_path,
         )
-        .map_err(|error| format!("failed to export specta TypeScript bindings: {error}"))
+        .map_err(|error| format!("failed to export specta TypeScript bindings: {error}"))?;
+
+    let source = std::fs::read_to_string(output_path)
+        .map_err(|error| format!("failed to read generated TypeScript bindings: {error}"))?;
+    let normalized = source.replace("error: e  as any", "error: e as any");
+    if normalized != source {
+        std::fs::write(output_path, normalized).map_err(|error| {
+            format!("failed to normalize generated TypeScript bindings: {error}")
+        })?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -317,11 +343,16 @@ mod tests {
         for command in [
             "plugin_list",
             "plugin_get",
+            "plugin_active_contributions",
+            "plugin_preview_from_file",
+            "plugin_preview_update_from_file",
+            "plugin_preview_remote_update",
             "plugin_install_from_file",
             "plugin_update_from_file",
             "plugin_rollback",
             "plugin_parse_market_index",
             "plugin_install_remote",
+            "plugin_update_remote",
             "plugin_install_official",
             "plugin_quarantine_revoked",
             "plugin_enable",

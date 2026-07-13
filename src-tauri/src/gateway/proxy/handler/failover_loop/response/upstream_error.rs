@@ -117,13 +117,13 @@ async fn read_response_body_with_limit(
     let mut out = Vec::with_capacity(limit.min(16 * 1024));
 
     loop {
-        let Some(chunk) = resp.chunk().await? else {
-            break;
-        };
-
         if out.len() >= limit {
             break;
         }
+
+        let Some(chunk) = resp.chunk().await? else {
+            break;
+        };
 
         let remaining = limit - out.len();
         if chunk.len() > remaining {
@@ -323,8 +323,10 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         provider_id,
         provider_name_base,
         provider_base_url_base,
+        active_requested_model: _,
         auth_mode,
         provider_index,
+        provider_bridged,
         session_reuse,
         provider_max_attempts,
         upstream_retry_policy,
@@ -345,6 +347,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         attempts,
         failed_provider_ids,
         last_outcome,
+        active_requested_model,
         circuit_snapshot,
         abort_guard,
     } = loop_state;
@@ -526,7 +529,8 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                 provider_name_base.as_str(),
                 provider_base_url_base.as_str(),
                 now_unix,
-            ),
+            )
+            .with_trigger(Some(error_code), Some(ctx.upstream_first_byte_timeout_secs)),
         );
         *circuit_snapshot = change.after.clone();
         circuit_state_before = Some(change.before.state.as_str());
@@ -587,6 +591,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         provider_index: Some(provider_index),
         retry_index: Some(retry_index),
         session_reuse,
+        provider_bridged: Some(provider_bridged),
         error_category: Some(category.as_str()),
         error_code: Some(error_code),
         decision: Some(decision.as_str()),
@@ -599,6 +604,9 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         circuit_state_after,
         circuit_failure_count,
         circuit_failure_threshold,
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        timeout_secs: None,
     });
 
     emit_attempt_event_and_log(
@@ -650,6 +658,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                 response_fixer_non_stream_config,
                 ..
             } = CommonCtxOwned::from(ctx);
+            let requested_model_for_log = active_requested_model.clone().or(requested_model);
 
             if let (Some(mut response_headers), Some(mut body_bytes)) =
                 (abort_response_headers, abort_body_bytes)
@@ -683,6 +692,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                             &state.db,
                             &state.log_tx,
                             &state.plugin_pipeline,
+                            &state.active_requests,
                         ),
                         trace_id: trace_id.as_str(),
                         cli_key: cli_key.as_str(),
@@ -695,7 +705,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                         attempts: attempts.as_slice(),
                         special_settings_json,
                         session_id,
-                        requested_model,
+                        requested_model: requested_model_for_log.clone(),
                         created_at_ms,
                         created_at,
                     })
@@ -728,6 +738,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                         &state.db,
                         &state.log_tx,
                         &state.plugin_pipeline,
+                        &state.active_requests,
                     ),
                     trace_id: trace_id.as_str(),
                     cli_key: cli_key.as_str(),
@@ -740,7 +751,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                     attempts: attempts.as_slice(),
                     special_settings_json,
                     session_id,
-                    requested_model,
+                    requested_model: requested_model_for_log,
                     created_at_ms,
                     created_at,
                 })
@@ -844,6 +855,7 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
             outcome,
             reason: reason.clone(),
             record_circuit_failure: true,
+            timeout_secs: None,
         })
         .await;
     }
@@ -862,6 +874,7 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
             provider_ctx.upstream_retry_policy,
             configured_retry,
         ),
+        timeout_secs: None,
     })
     .await
 }

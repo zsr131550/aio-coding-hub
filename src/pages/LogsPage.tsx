@@ -2,12 +2,13 @@
 // - Entry: Home "代理记录" button -> `/#/logs`.
 // - Backend commands: `request_logs_list_all`, `request_logs_list_after_id_all`, `request_log_get`, `request_attempt_logs_by_trace_id`.
 
-import { useMemo, useState } from "react";
+import { useMemo, useReducer } from "react";
 import { HomeRequestLogsPanel } from "../components/home/HomeRequestLogsPanel";
 import { RequestLogDetailDialog } from "../components/home/RequestLogDetailDialog";
 import { CLI_FILTER_ITEMS, type CliFilterKey } from "../constants/clis";
 import { GatewayErrorCodes } from "../constants/gatewayErrorCodes";
 import { useRequestLogsFeed } from "../hooks/useRequestLogsFeed";
+import { useSettingsQuery } from "../query/settings";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Input } from "../ui/Input";
@@ -20,6 +21,58 @@ const LOGS_PAGE_LIMIT = 200;
 const AUTO_REFRESH_INTERVAL_MS = 2000;
 
 type StatusPredicate = (status: number | null) => boolean;
+
+type LogsPageState = {
+  cliKey: CliFilterKey;
+  statusFilter: string;
+  errorCodeFilter: string;
+  pathFilter: string;
+  autoRefresh: boolean;
+  selectedLogId: number | null;
+};
+
+type LogsPageAction =
+  | { type: "setCliKey"; cliKey: CliFilterKey }
+  | { type: "setStatusFilter"; statusFilter: string }
+  | { type: "setErrorCodeFilter"; errorCodeFilter: string }
+  | { type: "setPathFilter"; pathFilter: string }
+  | { type: "setAutoRefresh"; autoRefresh: boolean }
+  | { type: "setSelectedLogId"; selectedLogId: number | null }
+  | { type: "resetFilters" };
+
+const initialLogsPageState: LogsPageState = {
+  cliKey: "all",
+  statusFilter: "",
+  errorCodeFilter: "",
+  pathFilter: "",
+  autoRefresh: true,
+  selectedLogId: null,
+};
+
+function logsPageReducer(state: LogsPageState, action: LogsPageAction): LogsPageState {
+  switch (action.type) {
+    case "setCliKey":
+      return { ...state, cliKey: action.cliKey };
+    case "setStatusFilter":
+      return { ...state, statusFilter: action.statusFilter };
+    case "setErrorCodeFilter":
+      return { ...state, errorCodeFilter: action.errorCodeFilter };
+    case "setPathFilter":
+      return { ...state, pathFilter: action.pathFilter };
+    case "setAutoRefresh":
+      return { ...state, autoRefresh: action.autoRefresh };
+    case "setSelectedLogId":
+      return { ...state, selectedLogId: action.selectedLogId };
+    case "resetFilters":
+      return {
+        ...state,
+        cliKey: "all",
+        statusFilter: "",
+        errorCodeFilter: "",
+        pathFilter: "",
+      };
+  }
+}
 
 function buildStatusPredicate(query: string): StatusPredicate | null {
   const raw = query.trim();
@@ -55,16 +108,17 @@ function buildStatusPredicate(query: string): StatusPredicate | null {
 export function LogsPage() {
   const { traces } = useTraceStore();
   const showCustomTooltip = true;
+  const settingsQuery = useSettingsQuery();
+  const codexReasoningGuardHitLabel =
+    settingsQuery.data?.codex_reasoning_guard_hit_label?.trim() || "降智命中";
 
-  const [cliKey, setCliKey] = useState<CliFilterKey>("all");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [errorCodeFilter, setErrorCodeFilter] = useState("");
-  const [pathFilter, setPathFilter] = useState("");
-  const [autoRefresh, setAutoRefresh] = useState(true);
-
-  const [selectedLogId, setSelectedLogId] = useState<number | null>(null);
+  const [state, dispatch] = useReducer(logsPageReducer, initialLogsPageState);
+  const { cliKey, statusFilter, errorCodeFilter, pathFilter, autoRefresh, selectedLogId } = state;
+  const setSelectedLogId = (selectedLogId: number | null) =>
+    dispatch({ type: "setSelectedLogId", selectedLogId });
   const {
     requestLogs,
+    activeRequests,
     requestLogsLoading,
     requestLogsRefreshing,
     requestLogsAvailable,
@@ -103,6 +157,42 @@ export function LogsPage() {
       return true;
     });
   }, [cliKey, errorCodeFilter, pathFilter, requestLogs, statusPredicate]);
+  const filteredActiveRequests = useMemo(() => {
+    const errorNeedle = errorCodeFilter.trim().toLowerCase();
+    const pathNeedle = pathFilter.trim().toLowerCase();
+
+    return activeRequests.filter((request) => {
+      if (cliKey !== "all" && request.cli_key !== cliKey) return false;
+      if (statusPredicate) return false;
+      if (errorNeedle) return false;
+      if (pathNeedle) {
+        const haystack = `${request.method} ${request.path}`.toLowerCase();
+        if (!haystack.includes(pathNeedle)) return false;
+      }
+      return true;
+    });
+  }, [activeRequests, cliKey, errorCodeFilter, pathFilter, statusPredicate]);
+  const filteredTraces = useMemo(() => {
+    const errorNeedle = errorCodeFilter.trim().toLowerCase();
+    const pathNeedle = pathFilter.trim().toLowerCase();
+
+    return traces.filter((trace) => {
+      if (cliKey !== "all" && trace.cli_key !== cliKey) return false;
+      if (statusPredicate) {
+        if (!trace.summary) return false;
+        if (!statusPredicate(trace.summary.status)) return false;
+      }
+      if (errorNeedle) {
+        const raw = (trace.summary?.error_code ?? "").toLowerCase();
+        if (!raw.includes(errorNeedle)) return false;
+      }
+      if (pathNeedle) {
+        const haystack = `${trace.method} ${trace.path}`.toLowerCase();
+        if (!haystack.includes(pathNeedle)) return false;
+      }
+      return true;
+    });
+  }, [cliKey, errorCodeFilter, pathFilter, statusPredicate, traces]);
   const logsSummaryText =
     requestLogsAvailable === false
       ? undefined
@@ -113,10 +203,7 @@ export function LogsPage() {
           : `共 ${filteredLogs.length} / ${requestLogs.length} 条`;
 
   function resetFilters() {
-    setCliKey("all");
-    setStatusFilter("");
-    setErrorCodeFilter("");
-    setPathFilter("");
+    dispatch({ type: "resetFilters" });
   }
 
   return (
@@ -132,7 +219,7 @@ export function LogsPage() {
               <span>自动刷新</span>
               <Switch
                 checked={autoRefresh}
-                onCheckedChange={setAutoRefresh}
+                onCheckedChange={(autoRefresh) => dispatch({ type: "setAutoRefresh", autoRefresh })}
                 size="sm"
                 disabled={requestLogsAvailable === false}
               />
@@ -157,7 +244,7 @@ export function LogsPage() {
               ariaLabel="CLI 过滤"
               items={CLI_FILTER_ITEMS}
               value={cliKey}
-              onChange={setCliKey}
+              onChange={(cliKey) => dispatch({ type: "setCliKey", cliKey })}
               size="sm"
               className="w-full"
               buttonClassName="shrink-0 px-3 py-1.5 whitespace-nowrap"
@@ -170,7 +257,7 @@ export function LogsPage() {
             </div>
             <Input
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) => dispatch({ type: "setStatusFilter", statusFilter: e.target.value })}
               placeholder="例：499 / 524 / !200 / >=400"
               mono
               disabled={requestLogsAvailable === false}
@@ -191,7 +278,9 @@ export function LogsPage() {
             </div>
             <Input
               value={errorCodeFilter}
-              onChange={(e) => setErrorCodeFilter(e.target.value)}
+              onChange={(e) =>
+                dispatch({ type: "setErrorCodeFilter", errorCodeFilter: e.target.value })
+              }
               placeholder={`例：${GatewayErrorCodes.UPSTREAM_TIMEOUT}`}
               mono
               disabled={requestLogsAvailable === false}
@@ -207,7 +296,7 @@ export function LogsPage() {
             </div>
             <Input
               value={pathFilter}
-              onChange={(e) => setPathFilter(e.target.value)}
+              onChange={(e) => dispatch({ type: "setPathFilter", pathFilter: e.target.value })}
               placeholder="例：/v1/messages"
               mono
               disabled={requestLogsAvailable === false}
@@ -220,14 +309,17 @@ export function LogsPage() {
       </Card>
 
       <HomeRequestLogsPanel
-        showCustomTooltip={showCustomTooltip}
+        displayOptions={{
+          customTooltip: showCustomTooltip,
+          openLogsPageButton: false,
+          compactModeToggle: false,
+        }}
         title="代理记录列表"
         summaryTextOverride={logsSummaryText}
-        showOpenLogsPageButton={false}
-        showCompactModeToggle={false}
         compactModeOverride={false}
         emptyStateTitle={activeFilterCount > 0 ? "没有符合筛选条件的代理记录" : "当前没有代理记录"}
-        traces={traces}
+        traces={filteredTraces}
+        activeRequests={filteredActiveRequests}
         requestLogs={filteredLogs}
         requestLogsLoading={requestLogsLoading}
         requestLogsRefreshing={requestLogsRefreshing}
@@ -235,9 +327,14 @@ export function LogsPage() {
         onRefreshRequestLogs={() => void refreshRequestLogs()}
         selectedLogId={selectedLogId}
         onSelectLogId={setSelectedLogId}
+        codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
       />
 
-      <RequestLogDetailDialog selectedLogId={selectedLogId} onSelectLogId={setSelectedLogId} />
+      <RequestLogDetailDialog
+        selectedLogId={selectedLogId}
+        onSelectLogId={setSelectedLogId}
+        codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
+      />
     </div>
   );
 }

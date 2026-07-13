@@ -196,6 +196,10 @@ pub(crate) fn codex_config_patch_target_provider(
     crate::infra::codex_provider_sync::codex_provider_target_from_patch_config_text(toml)
 }
 
+fn patch_requires_provider_sync(patch: &CodexConfigPatch) -> bool {
+    patch.features_remote_compaction.is_some()
+}
+
 #[cfg(windows)]
 fn normalize_path_for_prefix_match(path: &Path) -> String {
     path.to_string_lossy()
@@ -298,11 +302,7 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
     let bytes = codex_config_normalize_raw_toml(toml)?;
     let backup_bytes = bytes.clone();
     let backup_snapshot = sync_codex_cli_proxy_backup_if_enabled(app, &backup_bytes)?;
-    if let Err(err) = crate::infra::codex_provider_sync::codex_provider_sync_from_config_bytes(
-        app,
-        "codex_config_toml_set_raw",
-        bytes,
-    ) {
+    if let Err(err) = write_file_atomic_if_changed(&path, &bytes) {
         if let Some(snapshot) = backup_snapshot.as_ref() {
             restore_codex_cli_proxy_backup_snapshot(snapshot)?;
         }
@@ -325,26 +325,36 @@ pub fn codex_config_set<R: tauri::Runtime>(
     }
 
     let current = read_optional_codex_config_file(&path)?;
+    let requires_provider_sync = patch_requires_provider_sync(&patch);
     let next = codex_config_next_bytes(current, patch)?;
     ensure_codex_config_len(&next, "codex config.toml")?;
-    let next_text = String::from_utf8(next.clone())
-        .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
-    let target_provider = codex_config_patch_target_provider(&next_text)?;
     let backup_bytes = next.clone();
     let backup_snapshot = sync_codex_cli_proxy_backup_if_enabled(app, &backup_bytes)?;
-    if let Err(err) = crate::infra::codex_provider_sync::codex_provider_sync(
-        app,
-        crate::infra::codex_provider_sync::CodexProviderSyncContext {
-            trigger: "codex_config_set".to_string(),
-            target_provider,
-            config_bytes: Some(next),
-        },
-    ) {
+
+    if requires_provider_sync {
+        let next_text = String::from_utf8(next.clone())
+            .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
+        let target_provider = codex_config_patch_target_provider(&next_text)?;
+        if let Err(err) = crate::infra::codex_provider_sync::codex_provider_sync(
+            app,
+            crate::infra::codex_provider_sync::CodexProviderSyncContext {
+                trigger: "codex_config_set".to_string(),
+                target_provider,
+                config_bytes: Some(next),
+            },
+        ) {
+            if let Some(snapshot) = backup_snapshot.as_ref() {
+                restore_codex_cli_proxy_backup_snapshot(snapshot)?;
+            }
+            return Err(err);
+        }
+    } else if let Err(err) = write_file_atomic_if_changed(&path, &next) {
         if let Some(snapshot) = backup_snapshot.as_ref() {
             restore_codex_cli_proxy_backup_snapshot(snapshot)?;
         }
         return Err(err);
     }
+
     codex_config_get(app)
 }
 

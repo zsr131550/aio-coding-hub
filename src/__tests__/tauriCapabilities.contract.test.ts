@@ -33,8 +33,15 @@ describe("tauri capabilities contract", () => {
     expect(coreCapability?.data.permissions).toEqual([
       "core:event:allow-listen",
       "core:event:allow-unlisten",
+      "dialog:allow-confirm",
       "core:window:allow-start-dragging",
       "core:window:allow-internal-toggle-maximize",
     ]);
+
+    const dialogPermissions = coreCapability?.data.permissions.filter(
+      (permission): permission is string =>
+        typeof permission === "string" && permission.startsWith("dialog:")
+    );
+    expect(dialogPermissions).toEqual(["dialog:allow-confirm"]);
   });
 });
