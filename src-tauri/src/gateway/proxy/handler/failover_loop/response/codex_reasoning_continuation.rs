@@ -416,7 +416,7 @@ pub(super) fn summed_provider_repair_usage(
 ) -> Option<crate::usage::UsageExtract> {
     let usage = strip_encrypted_content(summed_usage(responses)?);
     let body = serde_json::to_vec(&usage).ok()?;
-    crate::usage::parse_usage_from_json_bytes(&body)
+    crate::usage::parse_usage_from_json_bytes("codex", &body)
 }
 
 fn merge_usage_value(total: &mut Value, next: &Value) {

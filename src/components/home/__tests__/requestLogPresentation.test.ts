@@ -8,6 +8,7 @@ import {
   computeStatusBadge,
   formatRequestLogModelText,
   hasClaudeModelMappingSpecialSetting,
+  resolveCacheCreationDisplay,
   resolveLiveTraceDurationMs,
   resolveLiveTraceProvider,
   resolveRequestLogUsageReasoningTokens,
@@ -150,6 +151,54 @@ describe("components/home/requestLogPresentation", () => {
         JSON.stringify([{ type: "codex_service_tier_result", effectivePriority: false }])
       )
     ).toBe(false);
+  });
+
+  it("resolves cache creation priority without collapsing missing values into zero", () => {
+    expect(resolveCacheCreationDisplay({})).toBeNull();
+    expect(
+      resolveCacheCreationDisplay({
+        cache_creation_input_tokens: null,
+        cache_creation_5m_input_tokens: null,
+        cache_creation_1h_input_tokens: null,
+      })
+    ).toBeNull();
+
+    expect(resolveCacheCreationDisplay({ cache_creation_input_tokens: 0 })).toEqual({
+      tokens: 0,
+      ttl: null,
+    });
+    expect(resolveCacheCreationDisplay({ cache_creation_1h_input_tokens: 0 })).toEqual({
+      tokens: 0,
+      ttl: "1h",
+    });
+    expect(
+      resolveCacheCreationDisplay({
+        cache_creation_input_tokens: 30,
+        cache_creation_5m_input_tokens: 10,
+        cache_creation_1h_input_tokens: 20,
+      })
+    ).toEqual({ tokens: 10, ttl: "5m" });
+    expect(
+      resolveCacheCreationDisplay({
+        cache_creation_input_tokens: 30,
+        cache_creation_5m_input_tokens: 0,
+        cache_creation_1h_input_tokens: 20,
+      })
+    ).toEqual({ tokens: 20, ttl: "1h" });
+    expect(
+      resolveCacheCreationDisplay({
+        cache_creation_input_tokens: 30,
+        cache_creation_5m_input_tokens: 0,
+        cache_creation_1h_input_tokens: 0,
+      })
+    ).toEqual({ tokens: 30, ttl: null });
+    expect(
+      resolveCacheCreationDisplay({
+        cache_creation_input_tokens: 0,
+        cache_creation_5m_input_tokens: 0,
+        cache_creation_1h_input_tokens: 0,
+      })
+    ).toEqual({ tokens: 0, ttl: "5m" });
   });
 
   it("builds audit meta for muted request log categories", () => {

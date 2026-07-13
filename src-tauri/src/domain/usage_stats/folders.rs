@@ -6,8 +6,8 @@ use super::filters::{
     build_optional_range_cli_provider_filters, sql_exclude_cx2cc_gateway_bridge_clause,
 };
 use super::{
-    sql_effective_input_tokens_expr_with_alias, sql_effective_total_tokens_expr_with_alias,
-    ProviderAgg, UsageFolderOptionV1,
+    effective_total_from_buckets, sql_effective_input_tokens_expr_with_alias, ProviderAgg,
+    UsageFolderOptionV1,
 };
 
 pub(super) const UNKNOWN_FOLDER_KEY: &str = "__unknown__";
@@ -125,6 +125,14 @@ pub(super) fn folder_identity_for_row(
 }
 
 pub(super) fn row_to_agg(row: &Row<'_>) -> rusqlite::Result<ProviderAgg> {
+    let input_tokens = row.get::<_, Option<i64>>("input_tokens")?.unwrap_or(0);
+    let output_tokens = row.get::<_, Option<i64>>("output_tokens")?.unwrap_or(0);
+    let cache_creation_input_tokens = row
+        .get::<_, Option<i64>>("cache_creation_input_tokens")?
+        .unwrap_or(0);
+    let cache_read_input_tokens = row
+        .get::<_, Option<i64>>("cache_read_input_tokens")?
+        .unwrap_or(0);
     Ok(ProviderAgg {
         requests_total: row.get("requests_total")?,
         requests_success: row.get::<_, Option<i64>>("requests_success")?.unwrap_or(0),
@@ -147,15 +155,16 @@ pub(super) fn row_to_agg(row: &Row<'_>) -> rusqlite::Result<ProviderAgg> {
         success_output_tokens_for_rate_sum: row
             .get::<_, Option<i64>>("success_output_tokens_for_rate_sum")?
             .unwrap_or(0),
-        total_tokens: row.get::<_, Option<i64>>("total_tokens")?.unwrap_or(0),
-        input_tokens: row.get::<_, Option<i64>>("input_tokens")?.unwrap_or(0),
-        output_tokens: row.get::<_, Option<i64>>("output_tokens")?.unwrap_or(0),
-        cache_creation_input_tokens: row
-            .get::<_, Option<i64>>("cache_creation_input_tokens")?
-            .unwrap_or(0),
-        cache_read_input_tokens: row
-            .get::<_, Option<i64>>("cache_read_input_tokens")?
-            .unwrap_or(0),
+        total_tokens: effective_total_from_buckets(
+            input_tokens,
+            output_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        ),
+        input_tokens,
+        output_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
         cache_creation_5m_input_tokens: row
             .get::<_, Option<i64>>("cache_creation_5m_input_tokens")?
             .unwrap_or(0),
@@ -183,7 +192,6 @@ pub(super) fn usage_event_rows(
     exclude_cx2cc_gateway_bridge: bool,
 ) -> Result<Vec<UsageEventAgg>, String> {
     let effective_input_expr = sql_effective_input_tokens_expr_with_alias("r");
-    let effective_total_expr = sql_effective_total_tokens_expr_with_alias("r");
     let (where_clause, where_params) = build_optional_range_cli_provider_filters(
         "r.created_at",
         "r.cli_key",
@@ -242,7 +250,6 @@ SELECT
       r.error_code IS NOT NULL
     ) THEN 1 ELSE 0 END
   ) AS requests_failed,
-  SUM({effective_total_expr}) AS total_tokens,
   SUM({effective_input_expr}) AS input_tokens,
   SUM(COALESCE(r.output_tokens, 0)) AS output_tokens,
   SUM(COALESCE(r.cache_creation_input_tokens, 0)) AS cache_creation_input_tokens,
@@ -305,7 +312,6 @@ GROUP BY r.cli_key, session_id{bucket_group}{hour_group}
         bucket_select = bucket_select,
         hour_select = hour_select,
         effective_input_expr = effective_input_expr,
-        effective_total_expr = effective_total_expr.as_str(),
         where_clause = where_clause,
         cx2cc_filter_clause = cx2cc_filter_clause,
         bucket_group = bucket_group,

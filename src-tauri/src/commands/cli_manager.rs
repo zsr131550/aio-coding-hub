@@ -1,8 +1,8 @@
 //! Usage: CLI environment / integration related Tauri commands.
 
 use crate::{
-    blocking, claude_hooks, claude_settings, cli_manager, codex_config, codex_provider_sync,
-    gemini_config,
+    blocking, claude_hooks, claude_settings, cli_manager, codex_config, codex_model_catalog,
+    codex_provider_sync, gemini_config,
 };
 
 #[tauri::command]
@@ -24,6 +24,18 @@ pub(crate) async fn cli_manager_codex_info_get(
 ) -> Result<cli_manager::SimpleCliInfo, String> {
     blocking::run("cli_manager_codex_info_get", move || {
         cli_manager::codex_info_get(&app)
+    })
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn cli_manager_codex_model_catalog_get(
+    app: tauri::AppHandle,
+) -> Result<codex_model_catalog::CodexModelCatalogState, String> {
+    blocking::run("cli_manager_codex_model_catalog_get", move || {
+        codex_model_catalog::codex_model_catalog_get(&app)
     })
     .await
     .map_err(Into::into)

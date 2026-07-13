@@ -26,6 +26,7 @@ import {
   computeStatusBadge,
   formatRequestLogModelText,
   hasCodexReasoningGuardRetryAttempt,
+  resolveCacheCreationDisplay,
 } from "./requestLogPresentation";
 import { FolderBadge, FreeBadge, SessionReuseBadge } from "./LogBadges";
 import { CliBrandIcon } from "./CliBrandIcon";
@@ -196,34 +197,7 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
         );
         const cliLabel = cliShortLabel(trace.cli_key);
 
-        const cacheWrite = (() => {
-          const s = summary;
-          if (!s)
-            return {
-              tokens: null as number | null,
-              ttl: null as "5m" | "1h" | null,
-            };
-          // 优先 5m，其次 1h，最后用 cache_creation_input_tokens 汇总
-          if (s.cache_creation_5m_input_tokens != null && s.cache_creation_5m_input_tokens > 0) {
-            return { tokens: s.cache_creation_5m_input_tokens, ttl: "5m" as const };
-          }
-          if (s.cache_creation_1h_input_tokens != null && s.cache_creation_1h_input_tokens > 0) {
-            return { tokens: s.cache_creation_1h_input_tokens, ttl: "1h" as const };
-          }
-          if (s.cache_creation_input_tokens != null && s.cache_creation_input_tokens > 0) {
-            return { tokens: s.cache_creation_input_tokens, ttl: null };
-          }
-          if (s.cache_creation_5m_input_tokens != null) {
-            return { tokens: s.cache_creation_5m_input_tokens, ttl: "5m" as const };
-          }
-          if (s.cache_creation_1h_input_tokens != null) {
-            return { tokens: s.cache_creation_1h_input_tokens, ttl: "1h" as const };
-          }
-          if (s.cache_creation_input_tokens != null) {
-            return { tokens: s.cache_creation_input_tokens, ttl: null };
-          }
-          return { tokens: null as number | null, ttl: null as "5m" | "1h" | null };
-        })();
+        const cacheWrite = summary ? resolveCacheCreationDisplay(summary) : null;
 
         const ttfbMetrics = summary
           ? resolveTtfbDisplayMetrics(
@@ -244,7 +218,6 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
         const displayOutputTokens = summary?.output_tokens ?? (isClientAbort ? 0 : null);
         const displayCacheReadTokens =
           summary?.cache_read_input_tokens ?? (isClientAbort ? 0 : null);
-        const displayCacheWriteTokens = cacheWrite.tokens ?? (isClientAbort ? 0 : null);
         const displayCostUsd = summary?.cost_usd ?? (isClientAbort ? 0 : null);
         const displayCostText = displayCostUsd == null ? "—" : formatUsd(displayCostUsd);
         const costMultiplier =
@@ -490,25 +463,21 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                           {formatInteger(displayInputTokens)}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1 h-4" title="Cache Write">
-                        <span className="text-slate-400 dark:text-slate-500 font-medium shrink-0">
-                          缓存创建
-                        </span>
-                        {displayCacheWriteTokens != null ? (
-                          <>
-                            <span className="font-mono tabular-nums text-slate-700 dark:text-slate-200 font-semibold truncate">
-                              {formatInteger(displayCacheWriteTokens)}
+                      {cacheWrite ? (
+                        <div className="flex items-center gap-1 h-4" title="Cache Write">
+                          <span className="text-slate-400 dark:text-slate-500 font-medium shrink-0">
+                            缓存创建
+                          </span>
+                          <span className="font-mono tabular-nums text-slate-700 dark:text-slate-200 font-semibold truncate">
+                            {formatInteger(cacheWrite.tokens)}
+                          </span>
+                          {cacheWrite.ttl && cacheWrite.tokens > 0 ? (
+                            <span className="text-slate-400/70 dark:text-slate-500/70 text-[10px]">
+                              ({cacheWrite.ttl})
                             </span>
-                            {cacheWrite.ttl && displayCacheWriteTokens > 0 && (
-                              <span className="text-slate-400/70 dark:text-slate-500/70 text-[10px]">
-                                ({cacheWrite.ttl})
-                              </span>
-                            )}
-                          </>
-                        ) : (
-                          <span className="text-slate-300 dark:text-slate-700">—</span>
-                        )}
-                      </div>
+                          ) : null}
+                        </div>
+                      ) : null}
                       <div className="flex items-center gap-1 h-4" title="TTFB">
                         <span className="text-slate-400 dark:text-slate-500 font-medium shrink-0">
                           首字
