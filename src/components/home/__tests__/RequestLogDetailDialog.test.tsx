@@ -317,7 +317,7 @@ describe("home/RequestLogDetailDialog", () => {
             requestedReasoningEffortSource: "request",
             actualModel: "gpt-5.4-mini",
             actualReasoningEffort: "low",
-            actualReasoningEffortSource: "model_default",
+            actualReasoningEffortSource: "response",
             modelMismatch: true,
             effortMismatch: true,
             mismatch: true,

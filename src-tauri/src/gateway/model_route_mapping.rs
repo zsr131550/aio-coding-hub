@@ -6,7 +6,7 @@ const KNOWN_CODEX_MODEL_DEFAULT_REASONING_EFFORTS: &[(&str, &str)] = &[
     ("gpt-5.5", "medium"),
     ("gpt-5.5-pro", "high"),
     ("gpt-5.4", "none"),
-    ("gpt-5.4-mini", "low"),
+    ("gpt-5.4-mini", "none"),
     ("gpt-5.4-nano", "none"),
     ("gpt-5.4-pro", "medium"),
 ];
@@ -16,6 +16,7 @@ pub(in crate::gateway) struct ModelRouteSettingInput<'a> {
     pub(in crate::gateway) cli_key: &'a str,
     pub(in crate::gateway) requested_model: Option<&'a str>,
     pub(in crate::gateway) actual_model: Option<&'a str>,
+    pub(in crate::gateway) actual_reasoning_effort: Option<&'a str>,
     pub(in crate::gateway) special_settings: &'a [Value],
     pub(in crate::gateway) provider_id: i64,
     pub(in crate::gateway) provider_name: &'a str,
@@ -24,11 +25,19 @@ pub(in crate::gateway) struct ModelRouteSettingInput<'a> {
 pub(in crate::gateway) fn build_model_route_mapping_setting(
     input: ModelRouteSettingInput<'_>,
 ) -> Option<Value> {
+    if input.cli_key != "codex" {
+        return None;
+    }
+
     let requested_model = normalize_text(input.requested_model)?;
     let actual_model = normalize_text(input.actual_model)?;
     let requested_effort =
         resolve_requested_effort(input.cli_key, &requested_model, input.special_settings);
-    let actual_effort = resolve_actual_effort(input.cli_key, &actual_model);
+    let actual_effort = resolve_actual_effort(
+        &actual_model,
+        input.actual_reasoning_effort,
+        requested_effort.source == "model_default",
+    );
     let model_mismatch = !same_route_part(&requested_model, &actual_model);
     let effort_mismatch = match (&requested_effort.effort, &actual_effort.effort) {
         (Some(requested), Some(actual)) => !same_route_part(requested, actual),
@@ -60,6 +69,7 @@ pub(in crate::gateway) fn build_model_route_mapping_setting_from_shared(
     cli_key: &str,
     requested_model: Option<&str>,
     actual_model: Option<&str>,
+    actual_reasoning_effort: Option<&str>,
     special_settings: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
     provider_id: i64,
     provider_name: &str,
@@ -69,6 +79,7 @@ pub(in crate::gateway) fn build_model_route_mapping_setting_from_shared(
         cli_key,
         requested_model,
         actual_model,
+        actual_reasoning_effort,
         special_settings: settings.as_slice(),
         provider_id,
         provider_name,
@@ -118,17 +129,28 @@ fn resolve_requested_effort(
     }
 }
 
-fn resolve_actual_effort(cli_key: &str, actual_model: &str) -> EffortResolution {
-    if cli_key != "codex" {
+fn resolve_actual_effort(
+    actual_model: &str,
+    explicit_effort: Option<&str>,
+    infer_model_default: bool,
+) -> EffortResolution {
+    if let Some(explicit_effort) = explicit_effort {
         return EffortResolution {
-            effort: None,
-            source: "unknown",
+            effort: normalize_effort(explicit_effort),
+            source: "response",
+        };
+    }
+
+    if infer_model_default {
+        return EffortResolution {
+            effort: default_codex_reasoning_effort(actual_model).map(str::to_string),
+            source: "model_default",
         };
     }
 
     EffortResolution {
-        effort: default_codex_reasoning_effort(actual_model).map(str::to_string),
-        source: "model_default",
+        effort: None,
+        source: "unknown",
     }
 }
 
@@ -174,6 +196,7 @@ mod tests {
             cli_key: "codex",
             requested_model: Some(" gpt-5.5 "),
             actual_model: Some("gpt-5.4-mini"),
+            actual_reasoning_effort: Some("high"),
             special_settings: &[json!({
                 "type": "codex_reasoning_effort",
                 "effort": "high"
@@ -203,7 +226,13 @@ mod tests {
         );
         assert_eq!(
             setting.get("actualReasoningEffort").and_then(Value::as_str),
-            Some("low")
+            Some("high")
+        );
+        assert_eq!(
+            setting
+                .get("actualReasoningEffortSource")
+                .and_then(Value::as_str),
+            Some("response")
         );
         assert_eq!(
             setting.get("modelMismatch").and_then(Value::as_bool),
@@ -211,7 +240,7 @@ mod tests {
         );
         assert_eq!(
             setting.get("effortMismatch").and_then(Value::as_bool),
-            Some(true)
+            Some(false)
         );
     }
 
@@ -221,6 +250,7 @@ mod tests {
             cli_key: "codex",
             requested_model: Some("GPT-5.5"),
             actual_model: Some("gpt-5.5"),
+            actual_reasoning_effort: None,
             special_settings: &[],
             provider_id: 7,
             provider_name: "Provider A",
@@ -229,11 +259,41 @@ mod tests {
     }
 
     #[test]
-    fn builds_same_model_effort_mismatch_when_both_efforts_are_known() {
+    fn compares_model_defaults_when_neither_side_has_explicit_effort() {
+        let setting = build_model_route_mapping_setting(ModelRouteSettingInput {
+            cli_key: "codex",
+            requested_model: Some("gpt-5.5"),
+            actual_model: Some("gpt-5.4-mini"),
+            actual_reasoning_effort: None,
+            special_settings: &[],
+            provider_id: 7,
+            provider_name: "Provider A",
+        })
+        .expect("model and default effort mismatch");
+
+        assert_eq!(
+            setting.get("actualReasoningEffort").and_then(Value::as_str),
+            Some("none")
+        );
+        assert_eq!(
+            setting
+                .get("actualReasoningEffortSource")
+                .and_then(Value::as_str),
+            Some("model_default")
+        );
+        assert_eq!(
+            setting.get("effortMismatch").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn builds_same_model_effort_mismatch_from_explicit_response() {
         let setting = build_model_route_mapping_setting(ModelRouteSettingInput {
             cli_key: "codex",
             requested_model: Some("gpt-5.5"),
             actual_model: Some("gpt-5.5"),
+            actual_reasoning_effort: Some("medium"),
             special_settings: &[json!({
                 "type": "codex_reasoning_effort",
                 "effort": "high"
@@ -265,8 +325,39 @@ mod tests {
             setting
                 .get("actualReasoningEffortSource")
                 .and_then(Value::as_str),
-            Some("model_default")
+            Some("response")
         );
+    }
+
+    #[test]
+    fn skips_same_model_when_explicit_request_effort_has_no_response_effort() {
+        assert!(build_model_route_mapping_setting(ModelRouteSettingInput {
+            cli_key: "codex",
+            requested_model: Some("gpt-5.5"),
+            actual_model: Some("gpt-5.5"),
+            actual_reasoning_effort: None,
+            special_settings: &[json!({
+                "type": "codex_reasoning_effort",
+                "effort": "high"
+            })],
+            provider_id: 7,
+            provider_name: "Provider A",
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn skips_non_codex_routes() {
+        assert!(build_model_route_mapping_setting(ModelRouteSettingInput {
+            cli_key: "claude",
+            requested_model: Some("claude-sonnet"),
+            actual_model: Some("claude-sonnet-4-20250514"),
+            actual_reasoning_effort: Some("high"),
+            special_settings: &[],
+            provider_id: 7,
+            provider_name: "Provider A",
+        })
+        .is_none());
     }
 
     #[test]
@@ -275,6 +366,7 @@ mod tests {
             cli_key: "codex",
             requested_model: Some("gpt-future"),
             actual_model: Some("gpt-other"),
+            actual_reasoning_effort: None,
             special_settings: &[],
             provider_id: 7,
             provider_name: "Provider A",
@@ -311,6 +403,7 @@ mod tests {
                 cli_key: "codex",
                 requested_model: Some("gpt-5.5"),
                 actual_model: Some("gpt-5.5"),
+                actual_reasoning_effort: Some("medium"),
                 special_settings: &[setting],
                 provider_id: 7,
                 provider_name: "Provider A",
@@ -332,6 +425,7 @@ mod tests {
             cli_key: "codex",
             requested_model: Some("gpt-5.5"),
             actual_model: Some(&long_unicode_model),
+            actual_reasoning_effort: None,
             special_settings: &[],
             provider_id: 7,
             provider_name: &long_provider_name,

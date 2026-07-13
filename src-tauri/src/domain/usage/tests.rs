@@ -316,6 +316,73 @@ fn parse_model_nested_message() {
 }
 
 #[test]
+fn parse_model_truncates_at_utf8_character_boundary() {
+    let model = "模".repeat(67);
+    let body = serde_json::to_vec(&serde_json::json!({ "model": model })).expect("json body");
+
+    let parsed = parse_model_from_json_bytes(&body).expect("model");
+
+    assert_eq!(parsed, "模".repeat(66));
+    assert_eq!(parsed.len(), 198);
+}
+
+#[test]
+fn parse_reasoning_effort_from_common_json_shapes() {
+    assert_eq!(
+        parse_reasoning_effort_from_json_bytes(br#"{"reasoning":{"effort":" HIGH "}}"#).as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        parse_reasoning_effort_from_json_bytes(br#"{"response":{"reasoning":{"effort":"xhigh"}}}"#)
+            .as_deref(),
+        Some("xhigh")
+    );
+    assert_eq!(
+        parse_reasoning_effort_from_json_bytes(br#"{"reasoning_effort":"minimal"}"#).as_deref(),
+        Some("minimal")
+    );
+}
+
+#[test]
+fn parse_reasoning_effort_from_chunked_sse() {
+    let sse = b"event: response.completed\n\
+                data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.5\",\"reasoning\":{\"effort\":\"high\"}}}\n\n";
+    let split = sse.len() / 2;
+    let mut tracker = SseUsageTracker::new("codex");
+    tracker.ingest_chunk(&sse[..split]);
+    tracker.ingest_chunk(&sse[split..]);
+    let _ = tracker.finalize();
+
+    assert_eq!(tracker.best_effort_model().as_deref(), Some("gpt-5.5"));
+    assert_eq!(
+        tracker.best_effort_reasoning_effort().as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        parse_reasoning_effort_from_json_or_sse_bytes("codex", sse).as_deref(),
+        Some("high")
+    );
+}
+
+#[test]
+fn best_effort_route_reads_finalized_unterminated_event() {
+    let mut tracker = SseUsageTracker::new("codex");
+    tracker.ingest_chunk(
+        b"event: response.completed\ndata: {\"response\":{\"model\":\"gpt-5.5\",\"reasoning\":{\"effort\":\"high\"}}}",
+    );
+
+    assert_eq!(tracker.best_effort_route(), (None, None));
+    assert_eq!(tracker.event_json_parse_attempts(), 0);
+
+    let _ = tracker.finalize();
+    let (model, reasoning_effort) = tracker.best_effort_route();
+    assert_eq!(model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(tracker.event_json_parse_attempts(), 1);
+    assert!(tracker.completion_seen());
+}
+
+#[test]
 fn parse_generic_sse_usage_without_event_name() {
     let sse =
         b"data: {\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3}}\n\n";

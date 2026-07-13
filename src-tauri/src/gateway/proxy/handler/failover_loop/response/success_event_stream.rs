@@ -1773,6 +1773,16 @@ where
                 Bytes::from(raw)
             };
 
+            // Route auditing must use the upstream payload before response repair or plugins
+            // can rewrite client-visible fields.
+            let upstream_actual_model_before_mutation =
+                usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), raw.as_ref());
+            let upstream_actual_reasoning_effort_before_mutation =
+                usage::parse_reasoning_effort_from_json_or_sse_bytes(
+                    common.cli_key.as_str(),
+                    raw.as_ref(),
+                );
+
             let mut raw = if should_buffer_codex_responses_event_stream
                 && enable_response_fixer
                 && !has_non_identity_content_encoding(&response_headers)
@@ -2594,11 +2604,8 @@ where
                 common.cli_key.as_str(),
                 &raw,
             );
-            let actual_model = if raw.is_empty() {
-                None
-            } else {
-                usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &raw)
-            };
+            let actual_model = upstream_actual_model_before_mutation;
+            let actual_reasoning_effort = upstream_actual_reasoning_effort_before_mutation;
             if let Some(setting) =
                 crate::gateway::model_route_mapping::build_model_route_mapping_setting_from_shared(
                     common.cli_key.as_str(),
@@ -2608,6 +2615,7 @@ where
                         .or(retry_state.codex_reasoning_guard_current_model.as_deref())
                         .or(common.requested_model.as_deref()),
                     actual_model.as_deref(),
+                    actual_reasoning_effort.as_deref(),
                     &common.special_settings,
                     provider_id,
                     provider_ctx_owned.provider_name_base.as_str(),
@@ -2856,7 +2864,9 @@ where
         let plugin_pipeline = common.state.plugin_pipeline.clone();
         let plugin_db = common.state.db.clone();
         let trace_id = common.trace_id.clone();
+        let upstream_route_tracker = ctx.upstream_route_tracker.clone();
         let observed_upstream_model = ctx.observed_upstream_model.clone();
+        let observed_upstream_reasoning_effort = ctx.observed_upstream_reasoning_effort.clone();
         let active_requested_model_for_bridge = provider_ctx_owned
             .active_requested_model
             .clone()
@@ -2870,8 +2880,9 @@ where
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
                 let upstream = UpstreamModelObserverStream::new(
                     upstream,
-                    common.cli_key.as_str(),
+                    upstream_route_tracker.clone(),
                     observed_upstream_model.clone(),
+                    observed_upstream_reasoning_effort.clone(),
                 );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
                     upstream,
@@ -2915,8 +2926,9 @@ where
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
                 let upstream = UpstreamModelObserverStream::new(
                     upstream,
-                    common.cli_key.as_str(),
+                    upstream_route_tracker.clone(),
                     observed_upstream_model.clone(),
+                    observed_upstream_reasoning_effort.clone(),
                 );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
                     upstream,
@@ -2961,8 +2973,9 @@ where
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
                 let upstream = UpstreamModelObserverStream::new(
                     upstream,
-                    common.cli_key.as_str(),
+                    upstream_route_tracker.clone(),
                     observed_upstream_model.clone(),
+                    observed_upstream_reasoning_effort.clone(),
                 );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
                     upstream,
@@ -3001,8 +3014,9 @@ where
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
                 let upstream = UpstreamModelObserverStream::new(
                     upstream,
-                    common.cli_key.as_str(),
+                    upstream_route_tracker,
                     observed_upstream_model,
+                    observed_upstream_reasoning_effort,
                 );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
                     upstream,

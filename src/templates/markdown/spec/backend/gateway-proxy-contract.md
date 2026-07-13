@@ -282,11 +282,14 @@ Never include secrets (API keys, bearer tokens, refresh tokens) in any of these 
 the requested route and observed/inferred returned route differ. It includes
 `requestedModel`, `requestedReasoningEffort`, `requestedReasoningEffortSource`,
 `actualModel`, `actualReasoningEffort`, `actualReasoningEffortSource`,
-`modelMismatch`, `effortMismatch`, `providerId`, and `providerName`. Streaming
-bridge paths must observe the upstream model before protocol bridge mutation.
-When the upstream does not explicitly return a reasoning effort, the actual
-effort may be inferred from known model defaults and must be marked with
-`actualReasoningEffortSource: "model_default"`.
+`modelMismatch`, `effortMismatch`, `providerId`, and `providerName`. All response
+paths must observe the upstream route before protocol bridge, response fixer,
+or plugin mutation. When the upstream explicitly returns a reasoning effort,
+it must be marked with `actualReasoningEffortSource: "response"`. Otherwise,
+the actual effort may be inferred from known model defaults only when the
+request also relied on its model default; that inference must be marked with
+`actualReasoningEffortSource: "model_default"`. If the request used an explicit
+effort override and the response omits effort, the actual effort remains unknown.
 
 ### Provider Gates, Skipped Attempts, and Terminal Logs
 

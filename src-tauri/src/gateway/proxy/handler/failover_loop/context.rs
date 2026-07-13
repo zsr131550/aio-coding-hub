@@ -384,7 +384,11 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         provider_name: provider_ctx.provider_name_base.clone(),
         base_url: provider_ctx.provider_base_url_base.clone(),
         auth_mode: provider_ctx.auth_mode.clone(),
+        upstream_route_tracker: Arc::new(Mutex::new(crate::usage::SseUsageTracker::new(
+            &ctx.cli_key,
+        ))),
         observed_upstream_model: Arc::new(Mutex::new(None)),
+        observed_upstream_reasoning_effort: Arc::new(Mutex::new(None)),
         fake_200_detected: false,
         fake_200_quota_exhausted: false,
         activity: Arc::new(Mutex::new(

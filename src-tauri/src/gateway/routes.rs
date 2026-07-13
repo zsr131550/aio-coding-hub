@@ -2332,7 +2332,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn gateway_plugin_response_after_rewrites_non_stream_body() {
+    async fn gateway_plugin_response_after_cannot_inject_non_stream_route_mapping() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -2359,7 +2359,7 @@ mod tests {
             "test.response-after",
             |_ctx| GatewayHookResult {
                 response_body: Some(
-                    r#"{"id":"rewritten","object":"chat.completion","choices":[]}"#.to_string(),
+                    r#"{"id":"rewritten","object":"chat.completion","model":"gpt-injected","reasoning":{"effort":"medium"},"choices":[]}"#.to_string(),
                 ),
                 ..GatewayHookResult::continue_unchanged()
             },
@@ -2384,7 +2384,7 @@ mod tests {
             ))
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                r#"{"model":"gpt-plugin","messages":[{"role":"user","content":"hello"}]}"#,
+                r#"{"model":"gpt-plugin","reasoning":{"effort":"high"},"messages":[{"role":"user","content":"hello"}]}"#,
             ))
             .expect("request");
 
@@ -2395,9 +2395,17 @@ mod tests {
             .expect("response body");
         let payload: Value = serde_json::from_slice(&body).expect("json body");
         assert_eq!(payload.get("id").and_then(Value::as_str), Some("rewritten"));
+        assert_eq!(
+            payload.get("model").and_then(Value::as_str),
+            Some("gpt-injected")
+        );
 
         let log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(log.status, Some(200));
+        let special_settings = parse_special_settings(&log);
+        assert!(!special_settings.iter().any(|setting| {
+            setting.get("type").and_then(Value::as_str) == Some("model_route_mapping")
+        }));
         upstream_task.abort();
     }
 
@@ -2562,7 +2570,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn gateway_plugin_response_chunk_rewrites_stream_body() {
+    async fn gateway_plugin_response_chunk_rewrites_stream_body_without_hiding_upstream_route() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -2580,8 +2588,11 @@ mod tests {
         let db_dir = tempfile::tempdir().expect("db dir");
         let db = db::init_for_tests(&db_dir.path().join("gateway-plugin-stream-test.sqlite"))
             .expect("init test db");
-        let (upstream_base_url, upstream_task) =
-            spawn_sse_upstream("data: secret-stream\n\n").await;
+        let upstream_body = concat!(
+            "data: {\"id\":\"chatcmpl-route\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-5.4-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"secret-stream\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (upstream_base_url, upstream_task) = spawn_sse_upstream(upstream_body).await;
         let provider_id = insert_codex_provider(&db, upstream_base_url);
 
         let executor =
@@ -2589,7 +2600,11 @@ mod tests {
                 let chunk = ctx.stream.chunk.expect("visible stream chunk");
                 assert!(chunk.contains("secret-stream"));
                 GatewayHookResult {
-                    stream_chunk: Some(chunk.replace("secret-stream", "redacted-stream")),
+                    stream_chunk: Some(
+                        chunk
+                            .replace("secret-stream", "redacted-stream")
+                            .replace("gpt-5.4-mini", "gpt-5.5"),
+                    ),
                     ..GatewayHookResult::continue_unchanged()
                 }
             });
@@ -2613,7 +2628,7 @@ mod tests {
             ))
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                r#"{"model":"gpt-plugin","stream":true,"messages":[{"role":"user","content":"hello"}]}"#,
+                r#"{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"hello"}]}"#,
             ))
             .expect("request");
 
@@ -2636,9 +2651,33 @@ mod tests {
             !body.contains("secret-stream"),
             "stream body leaked secret: {body}"
         );
+        assert!(
+            body.contains("gpt-5.5"),
+            "stream model was not rewritten: {body}"
+        );
 
         let log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(log.status, Some(200));
+        let settings: Vec<Value> = serde_json::from_str(
+            log.special_settings_json
+                .as_deref()
+                .expect("route mapping settings"),
+        )
+        .expect("valid route mapping settings");
+        let mapping = settings
+            .iter()
+            .find(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("model_route_mapping")
+            })
+            .expect("model route mapping");
+        assert_eq!(
+            mapping.get("requestedModel").and_then(Value::as_str),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            mapping.get("actualModel").and_then(Value::as_str),
+            Some("gpt-5.4-mini")
+        );
         upstream_task.abort();
     }
 
@@ -6940,9 +6979,9 @@ mod tests {
         let db = db::init_for_tests(&db_dir.path().join("codex-guard-bridge-stream.sqlite"))
             .expect("init test db");
         let chat_sse_body = concat!(
-            "data: {\"id\":\"chatcmpl-bridge-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-bridge\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"bridge-stream-one \"}}]}\n\n",
-            "data: {\"id\":\"chatcmpl-bridge-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-bridge\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"bridge-stream-two\"}}]}\n\n",
-            "data: {\"id\":\"chatcmpl-bridge-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-bridge\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\n"
+            "data: {\"id\":\"chatcmpl-bridge-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-upstream-bridge\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"bridge-stream-one \"}}]}\n\n",
+            "data: {\"id\":\"chatcmpl-bridge-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-upstream-bridge\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"bridge-stream-two\"}}]}\n\n",
+            "data: {\"id\":\"chatcmpl-bridge-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-upstream-bridge\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\n"
         );
         let (source_base_url, source_task) = spawn_sse_upstream(chat_sse_body).await;
         let source_provider_id =
@@ -6983,6 +7022,18 @@ mod tests {
         assert!(!special_settings.iter().any(|entry| {
             entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
         }));
+        let route_mapping = special_settings
+            .iter()
+            .find(|entry| entry.get("type").and_then(Value::as_str) == Some("model_route_mapping"))
+            .expect("bridge stream route mapping");
+        assert_eq!(
+            route_mapping.get("requestedModel").and_then(Value::as_str),
+            Some("gpt-bridge")
+        );
+        assert_eq!(
+            route_mapping.get("actualModel").and_then(Value::as_str),
+            Some("gpt-upstream-bridge")
+        );
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
         assert_eq!(attempts.len(), 1);
@@ -7032,7 +7083,7 @@ mod tests {
         let db_dir = tempfile::tempdir().expect("db dir");
         let db = db::init_for_tests(&db_dir.path().join("codex-guard-bridge-non-stream.sqlite"))
             .expect("init test db");
-        let chat_body = r#"{"id":"chatcmpl-bridge-non-stream","object":"chat.completion","model":"gpt-bridge","choices":[{"index":0,"message":{"role":"assistant","content":"bridge non-stream final answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":5}}"#;
+        let chat_body = r#"{"id":"chatcmpl-bridge-non-stream","object":"chat.completion","model":"gpt-upstream-bridge","choices":[{"index":0,"message":{"role":"assistant","content":"bridge non-stream final answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":5}}"#;
         let (source_base_url, source_task) = spawn_json_upstream(chat_body).await;
         let source_provider_id = insert_codex_provider_with_priority(
             &db,
@@ -7077,6 +7128,18 @@ mod tests {
         assert!(!special_settings.iter().any(|entry| {
             entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
         }));
+        let route_mapping = special_settings
+            .iter()
+            .find(|entry| entry.get("type").and_then(Value::as_str) == Some("model_route_mapping"))
+            .expect("bridge non-stream route mapping");
+        assert_eq!(
+            route_mapping.get("requestedModel").and_then(Value::as_str),
+            Some("gpt-bridge")
+        );
+        assert_eq!(
+            route_mapping.get("actualModel").and_then(Value::as_str),
+            Some("gpt-upstream-bridge")
+        );
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
         assert_eq!(attempts.len(), 1);

@@ -28,8 +28,9 @@ where
     B: AsRef<[u8]>,
 {
     upstream: S,
-    tracker: usage::SseUsageTracker,
+    tracker: Arc<Mutex<usage::SseUsageTracker>>,
     observed_model: Arc<Mutex<Option<String>>>,
+    observed_reasoning_effort: Arc<Mutex<Option<String>>>,
     _marker: std::marker::PhantomData<B>,
 }
 
@@ -40,29 +41,53 @@ where
 {
     pub(in crate::gateway) fn new(
         upstream: S,
-        cli_key: &str,
+        tracker: Arc<Mutex<usage::SseUsageTracker>>,
         observed_model: Arc<Mutex<Option<String>>>,
+        observed_reasoning_effort: Arc<Mutex<Option<String>>>,
     ) -> Self {
         Self {
             upstream,
-            tracker: usage::SseUsageTracker::new(cli_key),
+            tracker,
             observed_model,
+            observed_reasoning_effort,
             _marker: std::marker::PhantomData,
         }
     }
 
-    fn update_observed_model(&mut self) {
-        if let Some(model) = self.tracker.best_effort_model() {
-            if let Ok(mut observed) = self.observed_model.lock() {
-                *observed = Some(model);
-            }
+    fn finalize_observed_route(&mut self) {
+        let _ = finalize_upstream_route_observation(
+            &self.tracker,
+            &self.observed_model,
+            &self.observed_reasoning_effort,
+        );
+    }
+}
+
+fn finalize_upstream_route_observation(
+    tracker: &Arc<Mutex<usage::SseUsageTracker>>,
+    observed_model: &Arc<Mutex<Option<String>>>,
+    observed_reasoning_effort: &Arc<Mutex<Option<String>>>,
+) -> (Option<String>, Option<String>) {
+    let route = {
+        let mut tracker = match tracker.lock() {
+            Ok(tracker) => tracker,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let _ = tracker.finalize();
+        tracker.best_effort_route()
+    };
+
+    if let Some(model) = route.0.as_ref() {
+        if let Ok(mut observed) = observed_model.lock() {
+            *observed = Some(model.clone());
         }
     }
-
-    fn finalize_observed_model(&mut self) {
-        let _ = self.tracker.finalize();
-        self.update_observed_model();
+    if let Some(effort) = route.1.as_ref() {
+        if let Ok(mut observed) = observed_reasoning_effort.lock() {
+            *observed = Some(effort.clone());
+        }
     }
+    route
 }
 
 impl<S, B> Stream for UpstreamModelObserverStream<S, B>
@@ -76,15 +101,21 @@ where
         let this = self.as_mut().get_mut();
         match Pin::new(&mut this.upstream).poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
-                this.tracker.ingest_chunk(chunk.as_ref());
-                this.update_observed_model();
+                match this.tracker.lock() {
+                    Ok(mut tracker) => tracker.ingest_chunk(chunk.as_ref()),
+                    Err(poisoned) => poisoned.into_inner().ingest_chunk(chunk.as_ref()),
+                }
                 Poll::Ready(Some(Ok(chunk)))
             }
+            Poll::Ready(Some(Err(err))) => {
+                this.finalize_observed_route();
+                Poll::Ready(Some(Err(err)))
+            }
             Poll::Ready(None) => {
-                this.finalize_observed_model();
+                this.finalize_observed_route();
                 Poll::Ready(None)
             }
-            other => other,
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -95,7 +126,7 @@ where
     B: AsRef<[u8]>,
 {
     fn drop(&mut self) {
-        self.finalize_observed_model();
+        self.finalize_observed_route();
     }
 }
 
@@ -443,17 +474,16 @@ where
             error_code
         };
         let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-        let observed_upstream_model = self
-            .ctx
-            .observed_upstream_model
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone());
-        let actual_model = observed_upstream_model.or_else(|| self.tracker.best_effort_model());
+        let (actual_model, actual_reasoning_effort) = finalize_upstream_route_observation(
+            &self.ctx.upstream_route_tracker,
+            &self.ctx.observed_upstream_model,
+            &self.ctx.observed_upstream_reasoning_effort,
+        );
         if let Some(setting) = model_route_mapping::build_model_route_mapping_setting_from_shared(
             &self.ctx.cli_key,
             self.ctx.requested_model.as_deref(),
             actual_model.as_deref(),
+            actual_reasoning_effort.as_deref(),
             &self.ctx.special_settings,
             self.ctx.provider_id,
             &self.ctx.provider_name,
@@ -879,10 +909,16 @@ where
         } else {
             usage::parse_model_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
         };
+        let actual_reasoning_effort = if self.truncated || self.buffer.is_empty() {
+            None
+        } else {
+            usage::parse_reasoning_effort_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
+        };
         if let Some(setting) = model_route_mapping::build_model_route_mapping_setting_from_shared(
             &self.ctx.cli_key,
             self.ctx.requested_model.as_deref(),
             actual_model.as_deref(),
+            actual_reasoning_effort.as_deref(),
             &self.ctx.special_settings,
             self.ctx.provider_id,
             &self.ctx.provider_name,
@@ -1009,12 +1045,12 @@ mod tests {
         is_codex_drop_successish, is_codex_responses_path, is_codex_stream_tail_error_successish,
         is_codex_stream_terminal_error_successish, is_plugin_stream_error_chunk, next_item,
         spawn_touch_activity, spawn_usage_sse_relay_body, RelayBodyStream, StreamFinalizeCtx,
-        UsageSseTeeStream,
+        UpstreamModelObserverStream, UsageSseTeeStream,
     };
     use crate::gateway::active_requests::{ActiveRequestRegistry, ActiveRequestStart};
     use crate::gateway::proxy::GatewayErrorCode;
     use crate::gateway::streams::StreamActivityTracker;
-    use crate::{circuit_breaker, db, request_logs, session_manager};
+    use crate::{circuit_breaker, db, request_logs, session_manager, usage};
     use axum::body::Bytes;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -1064,7 +1100,9 @@ mod tests {
             provider_name: "test-provider".to_string(),
             base_url: "https://upstream.example".to_string(),
             auth_mode: "api_key".to_string(),
+            upstream_route_tracker: Arc::new(Mutex::new(usage::SseUsageTracker::new("codex"))),
             observed_upstream_model: Arc::new(Mutex::new(None)),
+            observed_upstream_reasoning_effort: Arc::new(Mutex::new(None)),
             fake_200_detected: false,
             fake_200_quota_exhausted: false,
             activity: Arc::new(Mutex::new(StreamActivityTracker::new(
@@ -1139,6 +1177,225 @@ mod tests {
             std::str::from_utf8(chunk.as_ref()).expect("utf8"),
             ": aio-plugin-error\nevent: error\ndata: {\"error\":\"plugin_failed\"}\n\n"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upstream_route_observer_tracks_chunked_model_and_reasoning_effort() {
+        let observed_model = Arc::new(Mutex::new(None));
+        let observed_effort = Arc::new(Mutex::new(None));
+        let route_tracker = Arc::new(Mutex::new(usage::SseUsageTracker::new("codex")));
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\ndata: {\"type\":\"response.compl",
+            )))
+            .await
+            .expect("send first chunk");
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"eted\",\"response\":{\"model\":\"gpt-5.5\",\"reasoning\":{\"effort\":\"high\"}}}\n\n",
+            )))
+            .await
+            .expect("send second chunk");
+        drop(upstream_tx);
+
+        let mut observer = UpstreamModelObserverStream::new(
+            RelayBodyStream::new(upstream_rx),
+            route_tracker,
+            observed_model.clone(),
+            observed_effort.clone(),
+        );
+        while let Some(item) = next_item(&mut observer).await {
+            item.expect("observed chunk");
+        }
+
+        assert_eq!(
+            observed_model.lock().expect("model lock").as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            observed_effort.lock().expect("effort lock").as_deref(),
+            Some("high")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upstream_route_observer_finalizes_unterminated_tail_before_error() {
+        let observed_model = Arc::new(Mutex::new(None));
+        let observed_effort = Arc::new(Mutex::new(None));
+        let route_tracker = Arc::new(Mutex::new(usage::SseUsageTracker::new("codex")));
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\ndata: {\"response\":{\"model\":\"gpt-5.5\",\"reasoning_effort\":\"xhigh\"}}",
+            )))
+            .await
+            .expect("send unterminated event");
+        let read_error = reqwest::Client::new()
+            .get("://invalid-url")
+            .build()
+            .expect_err("invalid URL should produce a reqwest error");
+        upstream_tx
+            .send(Err(read_error))
+            .await
+            .expect("send read error");
+        drop(upstream_tx);
+
+        let mut observer = UpstreamModelObserverStream::new(
+            RelayBodyStream::new(upstream_rx),
+            route_tracker,
+            observed_model.clone(),
+            observed_effort.clone(),
+        );
+        next_item(&mut observer)
+            .await
+            .expect("body chunk")
+            .expect("body chunk should succeed");
+        assert!(next_item(&mut observer).await.expect("read error").is_err());
+
+        assert_eq!(
+            observed_model.lock().expect("model lock").as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            observed_effort.lock().expect("effort lock").as_deref(),
+            Some("xhigh")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upstream_route_observer_does_not_snapshot_parse_small_pending_fragments() {
+        let observed_model = Arc::new(Mutex::new(None));
+        let observed_effort = Arc::new(Mutex::new(None));
+        let route_tracker = Arc::new(Mutex::new(usage::SseUsageTracker::new("codex")));
+        let payload = format!(
+            "event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"model\":\"gpt-5.5\",\"reasoning\":{{\"effort\":\"high\"}},\"padding\":\"{}\"}}}}",
+            "x".repeat(1024 * 1024 - 4096)
+        );
+        let chunks = payload
+            .as_bytes()
+            .chunks(1024)
+            .map(Bytes::copy_from_slice)
+            .collect::<Vec<_>>();
+        let chunk_count = chunks.len();
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(chunk_count + 1);
+        for chunk in chunks {
+            upstream_tx.send(Ok(chunk)).await.expect("send fragment");
+        }
+
+        let mut observer = UpstreamModelObserverStream::new(
+            RelayBodyStream::new(upstream_rx),
+            route_tracker.clone(),
+            observed_model.clone(),
+            observed_effort.clone(),
+        );
+        for _ in 0..chunk_count {
+            next_item(&mut observer)
+                .await
+                .expect("fragment")
+                .expect("fragment should succeed");
+        }
+
+        assert_eq!(
+            route_tracker
+                .lock()
+                .expect("route tracker lock")
+                .event_json_parse_attempts(),
+            0
+        );
+        assert!(observed_model.lock().expect("model lock").is_none());
+        assert!(observed_effort.lock().expect("effort lock").is_none());
+
+        drop(upstream_tx);
+        assert!(next_item(&mut observer).await.is_none());
+        assert_eq!(
+            observed_model.lock().expect("model lock").as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            observed_effort.lock().expect("effort lock").as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            route_tracker
+                .lock()
+                .expect("route tracker lock")
+                .event_json_parse_attempts(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn outer_tee_drop_logs_unterminated_route_before_observer_drop() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-observer-drop.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(app.handle().clone(), db, log_tx, active_requests);
+        ctx.requested_model = Some("gpt-5.5".to_string());
+        let observed_model = ctx.observed_upstream_model.clone();
+        let observed_effort = ctx.observed_upstream_reasoning_effort.clone();
+        let route_tracker = ctx.upstream_route_tracker.clone();
+
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.4-mini\",\"reasoning\":{\"effort\":\"high\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}",
+            )))
+            .await
+            .expect("send unterminated completion");
+
+        let observer = UpstreamModelObserverStream::new(
+            RelayBodyStream::new(upstream_rx),
+            route_tracker.clone(),
+            observed_model.clone(),
+            observed_effort.clone(),
+        );
+        let mut stream = UsageSseTeeStream::new(observer, ctx, None, None);
+        next_item(&mut stream)
+            .await
+            .expect("body chunk")
+            .expect("body chunk should succeed");
+
+        assert!(observed_model.lock().expect("model lock").is_none());
+        assert!(observed_effort.lock().expect("effort lock").is_none());
+        assert_eq!(
+            route_tracker
+                .lock()
+                .expect("route tracker lock")
+                .event_json_parse_attempts(),
+            0
+        );
+
+        drop(stream);
+        drop(upstream_tx);
+
+        assert_eq!(
+            observed_model.lock().expect("model lock").as_deref(),
+            Some("gpt-5.4-mini")
+        );
+        assert_eq!(
+            observed_effort.lock().expect("effort lock").as_deref(),
+            Some("high")
+        );
+
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        let special_settings = log
+            .special_settings_json
+            .as_deref()
+            .expect("route setting json");
+        assert!(special_settings.contains("\"actualModel\":\"gpt-5.4-mini\""));
+        assert!(special_settings.contains("\"actualReasoningEffort\":\"high\""));
     }
 
     #[test]
@@ -1586,7 +1843,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn sse_route_mapping_prefers_pre_bridge_observed_upstream_model() {
+    async fn sse_route_mapping_prefers_route_observed_before_bridge() {
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
         let db_dir = tempfile::tempdir().expect("db dir");
@@ -1597,14 +1854,33 @@ mod tests {
         active_requests.register(active_request_start("trace-usage-tee-drain"));
         let mut ctx = test_stream_finalize_ctx(app_handle, db, log_tx, active_requests);
         ctx.requested_model = Some("gpt-5.5".to_string());
-        ctx.observed_upstream_model = Arc::new(Mutex::new(Some("gpt-5.4-mini".to_string())));
 
+        let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+        raw_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\n\
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.4-mini\",\"reasoning\":{\"effort\":\"low\"}}}\n\n",
+            )))
+            .await
+            .expect("send raw upstream completion");
+        drop(raw_tx);
+        let mut observer = UpstreamModelObserverStream::new(
+            RelayBodyStream::new(raw_rx),
+            ctx.upstream_route_tracker.clone(),
+            ctx.observed_upstream_model.clone(),
+            ctx.observed_upstream_reasoning_effort.clone(),
+        );
+        while let Some(chunk) = next_item(&mut observer).await {
+            chunk.expect("raw upstream chunk");
+        }
+
+        // Simulate a bridge rewriting the response route after the observer.
         let (upstream_tx, upstream_rx) =
             tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
         upstream_tx
             .send(Ok(Bytes::from_static(
                 b"event: response.completed\n\
-                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.5\",\"reasoning\":{\"effort\":\"high\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
             )))
             .await
             .expect("send completion");
@@ -1626,6 +1902,75 @@ mod tests {
         assert!(special_settings.contains("\"type\":\"model_route_mapping\""));
         assert!(special_settings.contains("\"requestedModel\":\"gpt-5.5\""));
         assert!(special_settings.contains("\"actualModel\":\"gpt-5.4-mini\""));
+        assert!(special_settings.contains("\"actualReasoningEffort\":\"low\""));
+        assert!(special_settings.contains("\"actualReasoningEffortSource\":\"response\""));
         assert!(!special_settings.contains("\"actualModel\":\"gpt-5.5\""));
+        assert!(!special_settings.contains("\"actualReasoningEffort\":\"high\""));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sse_route_mapping_does_not_use_bridge_injected_effort() {
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-route-injection.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(app_handle, db, log_tx, active_requests);
+        ctx.requested_model = Some("gpt-5.5".to_string());
+        ctx.special_settings
+            .lock()
+            .expect("special settings lock")
+            .push(serde_json::json!({
+                "type": "codex_reasoning_effort",
+                "effort": "high"
+            }));
+
+        let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+        raw_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\n\
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.5\"}}\n\n",
+            )))
+            .await
+            .expect("send raw upstream completion");
+        drop(raw_tx);
+        let mut observer = UpstreamModelObserverStream::new(
+            RelayBodyStream::new(raw_rx),
+            ctx.upstream_route_tracker.clone(),
+            ctx.observed_upstream_model.clone(),
+            ctx.observed_upstream_reasoning_effort.clone(),
+        );
+        while let Some(chunk) = next_item(&mut observer).await {
+            chunk.expect("raw upstream chunk");
+        }
+
+        // Simulate a bridge adding an effort that was absent from the upstream payload.
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\n\
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.4-mini\",\"reasoning\":{\"effort\":\"medium\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
+            )))
+            .await
+            .expect("send bridged completion");
+        drop(upstream_tx);
+        let mut stream = UsageSseTeeStream::new(RelayBodyStream::new(upstream_rx), ctx, None, None);
+
+        while let Some(chunk) = next_item(&mut stream).await {
+            chunk.expect("stream chunk");
+        }
+
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        assert!(!log
+            .special_settings_json
+            .as_deref()
+            .is_some_and(|settings| settings.contains("\"type\":\"model_route_mapping\"")));
     }
 }

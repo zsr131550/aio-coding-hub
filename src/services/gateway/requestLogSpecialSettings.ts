@@ -124,7 +124,7 @@ const KNOWN_CODEX_MODEL_DEFAULT_REASONING_EFFORTS: Readonly<Record<string, Codex
     "gpt-5.5": "medium",
     "gpt-5.5-pro": "high",
     "gpt-5.4": "none",
-    "gpt-5.4-mini": "low",
+    "gpt-5.4-mini": "none",
     "gpt-5.4-nano": "none",
     "gpt-5.4-pro": "medium",
   };

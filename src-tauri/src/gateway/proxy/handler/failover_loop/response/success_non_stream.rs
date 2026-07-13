@@ -1081,6 +1081,8 @@ where
 
     let upstream_actual_model_before_bridge =
         usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
+    let upstream_actual_reasoning_effort_before_bridge =
+        usage::parse_reasoning_effort_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
 
     // Bridge providers translate upstream protocol responses back to client protocol.
     let bridge_response_cache_body = body_bytes.clone();
@@ -1782,13 +1784,7 @@ where
 
     let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-    let actual_model = upstream_actual_model_before_bridge.or_else(|| {
-        if body_bytes.is_empty() {
-            None
-        } else {
-            usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes)
-        }
-    });
+    let actual_model = upstream_actual_model_before_bridge;
     if let Some(setting) =
         crate::gateway::model_route_mapping::build_model_route_mapping_setting_from_shared(
             common.cli_key.as_str(),
@@ -1798,6 +1794,7 @@ where
                 .or(retry_state.codex_reasoning_guard_current_model.as_deref())
                 .or(common.requested_model.as_deref()),
             actual_model.as_deref(),
+            upstream_actual_reasoning_effort_before_bridge.as_deref(),
             &common.special_settings,
             provider_id,
             provider_ctx_owned.provider_name_base.as_str(),
@@ -2003,6 +2000,10 @@ where
         &common.special_settings,
     );
 
+    let actual_model =
+        usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
+    let actual_reasoning_effort =
+        usage::parse_reasoning_effort_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     let bridge_response_cache_body = body_bytes.clone();
     let hook_input = GatewayResponseHookInput {
         hook_name: GatewayPluginHookName::ResponseAfter,
@@ -2060,14 +2061,6 @@ where
 
     let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-    let actual_model = if bridge_response_cache_body.is_empty() {
-        None
-    } else {
-        usage::parse_model_from_json_or_sse_bytes(
-            common.cli_key.as_str(),
-            &bridge_response_cache_body,
-        )
-    };
     if let Some(setting) =
         crate::gateway::model_route_mapping::build_model_route_mapping_setting_from_shared(
             common.cli_key.as_str(),
@@ -2077,6 +2070,7 @@ where
                 .or(_retry_state.codex_reasoning_guard_current_model.as_deref())
                 .or(common.requested_model.as_deref()),
             actual_model.as_deref(),
+            actual_reasoning_effort.as_deref(),
             &common.special_settings,
             provider_id,
             provider_ctx_owned.provider_name_base.as_str(),

@@ -142,12 +142,30 @@ fn sanitize_model(model: &str) -> Option<String> {
     if model.is_empty() {
         return None;
     }
-    let model = if model.len() > 200 {
-        model[..200].to_string()
-    } else {
-        model.to_string()
-    };
-    Some(model)
+    if model.len() <= 200 {
+        return Some(model.to_string());
+    }
+
+    let mut end = 200;
+    while !model.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(model[..end].to_string())
+}
+
+fn sanitize_reasoning_effort(effort: &str) -> Option<String> {
+    let effort = effort.trim();
+    if effort.is_empty() {
+        return None;
+    }
+
+    // Effort names are short ASCII protocol values. Keep future values visible,
+    // but bound untrusted upstream strings before retaining them in a tracker.
+    let mut end = effort.len().min(64);
+    while !effort.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(effort[..end].to_ascii_lowercase())
 }
 
 fn extract_model_from_json_value(value: &Value) -> Option<String> {
@@ -176,6 +194,30 @@ fn extract_model_from_json_value(value: &Value) -> Option<String> {
     None
 }
 
+fn extract_reasoning_effort_from_json_value(value: &Value) -> Option<String> {
+    let direct = value
+        .get("reasoning")
+        .and_then(Value::as_object)
+        .and_then(|reasoning| reasoning.get("effort"))
+        .and_then(Value::as_str)
+        .or_else(|| value.get("reasoning_effort").and_then(Value::as_str))
+        .or_else(|| value.get("reasoningEffort").and_then(Value::as_str));
+    if let Some(effort) = direct.and_then(sanitize_reasoning_effort) {
+        return Some(effort);
+    }
+
+    for container in ["response", "message"] {
+        if let Some(effort) = value
+            .get(container)
+            .and_then(extract_reasoning_effort_from_json_value)
+        {
+            return Some(effort);
+        }
+    }
+
+    None
+}
+
 pub fn parse_model_from_json_bytes(body: &[u8]) -> Option<String> {
     let value: Value = serde_json::from_slice(body).ok()?;
 
@@ -195,6 +237,11 @@ pub fn parse_model_from_json_bytes(body: &[u8]) -> Option<String> {
     }
 
     None
+}
+
+pub fn parse_reasoning_effort_from_json_bytes(body: &[u8]) -> Option<String> {
+    let value: Value = serde_json::from_slice(body).ok()?;
+    extract_reasoning_effort_from_json_value(&value)
 }
 
 fn extract_usage_metrics(value: &Value, semantics: UsageSemantics) -> Option<UsageMetrics> {
@@ -424,6 +471,15 @@ pub fn parse_model_from_json_or_sse_bytes(cli_key: &str, body: &[u8]) -> Option<
     })
 }
 
+pub fn parse_reasoning_effort_from_json_or_sse_bytes(cli_key: &str, body: &[u8]) -> Option<String> {
+    parse_reasoning_effort_from_json_bytes(body).or_else(|| {
+        let mut tracker = SseUsageTracker::new(cli_key);
+        tracker.ingest_chunk(body);
+        let _ = tracker.finalize();
+        tracker.best_effort_reasoning_effort()
+    })
+}
+
 fn merge_metrics(base: &UsageMetrics, patch: &UsageMetrics) -> UsageMetrics {
     UsageMetrics {
         input_tokens: patch.input_tokens.or(base.input_tokens),
@@ -467,10 +523,13 @@ pub struct SseUsageTracker {
     claude_message_delta: Option<UsageMetrics>,
     last_generic: Option<UsageMetrics>,
     last_model: Option<String>,
+    last_reasoning_effort: Option<String>,
     completion_seen: bool,
     terminal_error_seen: bool,
     fake_200_detected: bool,
     meaningful_output_seen: bool,
+    #[cfg(test)]
+    event_json_parse_attempts: std::cell::Cell<usize>,
 }
 
 const MAX_SSE_USAGE_TRACKER_PENDING_BYTES: usize = 1024 * 1024;
@@ -648,10 +707,13 @@ impl SseUsageTracker {
             claude_message_delta: None,
             last_generic: None,
             last_model: None,
+            last_reasoning_effort: None,
             completion_seen: false,
             terminal_error_seen: false,
             fake_200_detected: false,
             meaningful_output_seen: false,
+            #[cfg(test)]
+            event_json_parse_attempts: std::cell::Cell::new(0),
         }
     }
 
@@ -810,6 +872,9 @@ impl SseUsageTracker {
             self.current_event.clone()
         };
 
+        #[cfg(test)]
+        self.event_json_parse_attempts
+            .set(self.event_json_parse_attempts.get().saturating_add(1));
         let data_json: Value = match serde_json::from_slice(&self.current_data) {
             Ok(v) => v,
             Err(_) => {
@@ -923,6 +988,9 @@ impl SseUsageTracker {
         if let Some(model) = extract_model_from_json_value(data) {
             self.last_model = Some(model);
         }
+        if let Some(effort) = extract_reasoning_effort_from_json_value(data) {
+            self.last_reasoning_effort = Some(effort);
+        }
 
         // Claude SSE: merge message_start + message_delta usage
         if self.semantics == UsageSemantics::Claude {
@@ -984,8 +1052,21 @@ impl SseUsageTracker {
         }
     }
 
+    pub fn best_effort_route(&self) -> (Option<String>, Option<String>) {
+        (self.last_model.clone(), self.last_reasoning_effort.clone())
+    }
+
     pub fn best_effort_model(&self) -> Option<String> {
-        self.last_model.clone()
+        self.best_effort_route().0
+    }
+
+    pub fn best_effort_reasoning_effort(&self) -> Option<String> {
+        self.best_effort_route().1
+    }
+
+    #[cfg(test)]
+    pub(crate) fn event_json_parse_attempts(&self) -> usize {
+        self.event_json_parse_attempts.get()
     }
 
     pub fn finalize(&mut self) -> Option<UsageExtract> {

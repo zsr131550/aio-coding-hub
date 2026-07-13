@@ -124,7 +124,7 @@ describe("components/home/requestLogPresentation", () => {
     ).toBe("gpt-5.5-unknown");
     expect(formatRequestLogModelText("codex", "gpt-future", null)).toBe("gpt-future-unknown");
     expect(formatRequestLogModelText("claude", "claude-sonnet", null)).toBe("claude-sonnet");
-    expect(formatRequestLogModelText("codex", "gpt-5.4-mini", null)).toBe("gpt-5.4-mini-low");
+    expect(formatRequestLogModelText("codex", "gpt-5.4-mini", null)).toBe("gpt-5.4-mini-none");
 
     expect(hasPriorityServiceTierSpecialSetting(null)).toBe(false);
     expect(hasPriorityServiceTierSpecialSetting("bad-json")).toBe(false);
@@ -165,7 +165,7 @@ describe("components/home/requestLogPresentation", () => {
         requestedReasoningEffortSource: "request",
         actualModel: "gpt-5.4-mini",
         actualReasoningEffort: "low",
-        actualReasoningEffortSource: "model_default",
+        actualReasoningEffortSource: "response",
         modelMismatch: true,
         effortMismatch: true,
         mismatch: true,
@@ -187,7 +187,7 @@ describe("components/home/requestLogPresentation", () => {
       mismatchLabel: "模型/思考等级不一致",
     });
     expect(display.title).toContain("请求等级 请求显式");
-    expect(display.title).toContain("返回等级 模型默认推断");
+    expect(display.title).toContain("返回等级 返回显式");
 
     const audit = buildRequestLogAuditMeta({
       cli_key: "codex",
@@ -238,6 +238,44 @@ describe("components/home/requestLogPresentation", () => {
     expect(display.title).toContain("返回 gpt-5.4");
   });
 
+  it("formats Codex model mismatches with unknown response effort", () => {
+    const specialSettingsJson = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        requestedReasoningEffortSource: "request",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: null,
+        actualReasoningEffortSource: "unknown",
+        modelMismatch: true,
+        effortMismatch: false,
+        mismatch: true,
+        providerId: 2,
+      },
+    ]);
+
+    const display = resolveRequestLogModelDisplayMeta(
+      "codex",
+      "gpt-5.5",
+      specialSettingsJson,
+      null,
+      2
+    );
+
+    expect(display).toMatchObject({
+      text: "gpt-5.5-high -> gpt-5.4-mini",
+      isRouteMismatch: true,
+      mismatchLabel: "模型路由不一致",
+      routeMapping: {
+        actualReasoningEffort: "unknown",
+        actualReasoningEffortSource: "unknown",
+      },
+    });
+    expect(display.title).toContain("返回等级 未知");
+  });
+
   it("labels effort-only model route mismatches", () => {
     const specialSettingsJson = JSON.stringify([
       {
@@ -248,7 +286,7 @@ describe("components/home/requestLogPresentation", () => {
         requestedReasoningEffortSource: "request",
         actualModel: "gpt-5.5",
         actualReasoningEffort: "medium",
-        actualReasoningEffortSource: "model_default",
+        actualReasoningEffortSource: "response",
         modelMismatch: false,
         effortMismatch: true,
         mismatch: true,
@@ -277,7 +315,7 @@ describe("components/home/requestLogPresentation", () => {
         requestedReasoningEffortSource: "request",
         actualModel: "gpt-5.4-mini",
         actualReasoningEffort: "low",
-        actualReasoningEffortSource: "model_default",
+        actualReasoningEffortSource: "response",
         modelMismatch: true,
         effortMismatch: true,
         mismatch: true,

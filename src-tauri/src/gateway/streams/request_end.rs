@@ -338,7 +338,11 @@ mod tests {
             provider_name: "test-provider".to_string(),
             base_url: "https://upstream.example".to_string(),
             auth_mode: "api_key".to_string(),
+            upstream_route_tracker: Arc::new(Mutex::new(crate::usage::SseUsageTracker::new(
+                "codex",
+            ))),
             observed_upstream_model: Arc::new(Mutex::new(None)),
+            observed_upstream_reasoning_effort: Arc::new(Mutex::new(None)),
             fake_200_detected: false,
             fake_200_quota_exhausted: false,
             activity: Arc::new(Mutex::new(StreamActivityTracker::new(

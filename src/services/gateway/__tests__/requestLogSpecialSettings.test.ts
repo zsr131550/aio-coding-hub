@@ -529,7 +529,7 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       source: "default",
     });
     expect(resolveCodexReasoningEffort("gpt-5.4-mini", "bad-json")).toEqual({
-      effort: "low",
+      effort: "none",
       source: "default",
     });
     expect(resolveCodexReasoningEffort("gpt-5.5-pro", null)).toEqual({
@@ -577,7 +577,7 @@ describe("services/gateway/requestLogSpecialSettings", () => {
         requestedReasoningEffortSource: "request",
         actualModel: "gpt-5.5",
         actualReasoningEffort: "medium",
-        actualReasoningEffortSource: "model_default",
+        actualReasoningEffortSource: "response",
         modelMismatch: false,
         effortMismatch: true,
         mismatch: true,
@@ -592,7 +592,7 @@ describe("services/gateway/requestLogSpecialSettings", () => {
         requestedReasoningEffortSource: "request",
         actualModel: "gpt-5.4-mini",
         actualReasoningEffort: "low",
-        actualReasoningEffortSource: "model_default",
+        actualReasoningEffortSource: "response",
         modelMismatch: true,
         effortMismatch: true,
         mismatch: true,
@@ -624,7 +624,7 @@ describe("services/gateway/requestLogSpecialSettings", () => {
         requestedReasoningEffortSource: "request",
         actualModel: "gpt-5.4-mini",
         actualReasoningEffort: "low",
-        actualReasoningEffortSource: "model_default",
+        actualReasoningEffortSource: "response",
         modelMismatch: true,
         effortMismatch: true,
         mismatch: true,
