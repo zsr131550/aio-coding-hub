@@ -2,9 +2,9 @@ use super::encoding::EncodingFixer;
 use super::json::JsonFixer;
 use super::sse::SseFixer;
 use super::{
-    process_non_stream, push_special_setting, special_settings_json, ResponseFixerConfig,
-    ResponseFixerStream, DEFAULT_MAX_FIX_SIZE, DEFAULT_MAX_JSON_DEPTH,
-    SPECIAL_SETTINGS_JSON_MAX_BYTES, SPECIAL_SETTINGS_MAX_ENTRIES,
+    process_non_stream, push_model_route_mapping_special_setting, push_special_setting,
+    special_settings_json, ResponseFixerConfig, ResponseFixerStream, DEFAULT_MAX_FIX_SIZE,
+    DEFAULT_MAX_JSON_DEPTH, SPECIAL_SETTINGS_JSON_MAX_BYTES, SPECIAL_SETTINGS_MAX_ENTRIES,
     SPECIAL_SETTINGS_STRING_PREVIEW_BYTES,
 };
 use axum::body::Bytes;
@@ -92,6 +92,91 @@ fn special_settings_json_caps_total_encoded_bytes() {
     assert!(encoded.len() <= SPECIAL_SETTINGS_JSON_MAX_BYTES);
     assert!(encoded.contains("special_settings_truncated"));
     assert!(encoded.contains("encoded_json_too_large"));
+}
+
+#[test]
+fn model_route_mapping_special_setting_stays_first_under_entry_cap() {
+    let special_settings = Arc::new(Mutex::new(Vec::new()));
+
+    for index in 0..SPECIAL_SETTINGS_MAX_ENTRIES {
+        push_special_setting(
+            &special_settings,
+            serde_json::json!({
+                "type": "entry",
+                "index": index,
+            }),
+        );
+    }
+
+    push_model_route_mapping_special_setting(
+        &special_settings,
+        serde_json::json!({
+            "type": "model_route_mapping",
+            "requestedModel": "gpt-5.5",
+            "actualModel": "gpt-5.4-mini",
+            "modelMismatch": true,
+            "effortMismatch": false,
+            "mismatch": true,
+        }),
+    );
+
+    let settings = special_settings.lock().unwrap();
+    assert_eq!(settings.len(), SPECIAL_SETTINGS_MAX_ENTRIES);
+    assert_eq!(
+        settings
+            .first()
+            .and_then(|entry| entry.get("type"))
+            .and_then(serde_json::Value::as_str),
+        Some("model_route_mapping")
+    );
+    assert_eq!(
+        settings
+            .last()
+            .and_then(|entry| entry.get("type"))
+            .and_then(serde_json::Value::as_str),
+        Some("special_settings_truncated")
+    );
+}
+
+#[test]
+fn model_route_mapping_special_setting_survives_encoded_json_cap() {
+    let special_settings = Arc::new(Mutex::new(Vec::new()));
+
+    push_model_route_mapping_special_setting(
+        &special_settings,
+        serde_json::json!({
+            "type": "model_route_mapping",
+            "requestedModel": "gpt-5.5",
+            "actualModel": "gpt-5.4-mini",
+            "modelMismatch": true,
+            "effortMismatch": false,
+            "mismatch": true,
+        }),
+    );
+
+    for index in 0..SPECIAL_SETTINGS_MAX_ENTRIES {
+        push_special_setting(
+            &special_settings,
+            serde_json::json!({
+                "type": "large_entry",
+                "index": index,
+                "parts": vec!["x".repeat(SPECIAL_SETTINGS_STRING_PREVIEW_BYTES + 2048); 5],
+            }),
+        );
+    }
+
+    let encoded = special_settings_json(&special_settings).expect("special settings json");
+    assert!(encoded.len() <= SPECIAL_SETTINGS_JSON_MAX_BYTES);
+    let decoded: serde_json::Value = serde_json::from_str(&encoded).expect("valid json");
+    let entries = decoded.as_array().expect("settings array");
+    assert_eq!(
+        entries
+            .first()
+            .and_then(|entry| entry.get("type"))
+            .and_then(serde_json::Value::as_str),
+        Some("model_route_mapping")
+    );
+    assert!(encoded.contains("special_settings_truncated"));
 }
 
 #[test]

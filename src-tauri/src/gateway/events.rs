@@ -297,6 +297,100 @@ fn truncate_optional_chars(value: &mut Option<String>, max_chars: usize) {
     }
 }
 
+fn special_setting_type(value: &serde_json::Value) -> Option<&str> {
+    value.get("type").and_then(serde_json::Value::as_str)
+}
+
+fn is_model_route_mapping_special_setting(value: &serde_json::Value) -> bool {
+    special_setting_type(value) == Some("model_route_mapping")
+}
+
+fn event_special_settings_truncated_marker(max_chars: usize) -> serde_json::Value {
+    serde_json::json!({
+        "type": "special_settings_truncated",
+        "scope": "event",
+        "maxChars": max_chars,
+    })
+}
+
+fn encoded_json_chars(values: &[serde_json::Value]) -> Option<(String, usize)> {
+    let encoded = serde_json::to_string(values).ok()?;
+    let char_count = encoded.chars().count();
+    Some((encoded, char_count))
+}
+
+fn bound_special_settings_json_string_for_event(raw: String, max_chars: usize) -> String {
+    if raw.chars().count() <= max_chars {
+        return raw;
+    }
+
+    let Ok(serde_json::Value::Array(entries)) = serde_json::from_str::<serde_json::Value>(&raw)
+    else {
+        return truncate_chars(raw, max_chars);
+    };
+
+    let (mut route_entries, other_entries): (Vec<_>, Vec<_>) = entries
+        .into_iter()
+        .partition(is_model_route_mapping_special_setting);
+    route_entries.extend(other_entries);
+
+    let mut selected: Vec<serde_json::Value> = Vec::new();
+    let mut omitted_entries = 0usize;
+    for entry in route_entries {
+        let mut candidate = selected.clone();
+        candidate.push(entry.clone());
+        let Some((_, char_count)) = encoded_json_chars(&candidate) else {
+            omitted_entries = omitted_entries.saturating_add(1);
+            continue;
+        };
+
+        if char_count <= max_chars {
+            selected.push(entry);
+        } else {
+            omitted_entries = omitted_entries.saturating_add(1);
+        }
+    }
+
+    if omitted_entries > 0 {
+        let marker = event_special_settings_truncated_marker(max_chars);
+        let mut candidate = selected.clone();
+        candidate.push(marker);
+
+        while let Some((_, char_count)) = encoded_json_chars(&candidate) {
+            if char_count <= max_chars {
+                selected = candidate;
+                break;
+            }
+            if candidate.len() <= 1 {
+                break;
+            }
+            let marker_index = candidate.len() - 1;
+            let remove_index = marker_index - 1;
+            if candidate
+                .get(remove_index)
+                .is_some_and(is_model_route_mapping_special_setting)
+            {
+                break;
+            }
+            candidate.remove(remove_index);
+        }
+    }
+
+    if let Some((encoded, char_count)) = encoded_json_chars(&selected) {
+        if char_count <= max_chars {
+            return encoded;
+        }
+    }
+
+    truncate_chars(raw, max_chars)
+}
+
+fn bound_special_settings_json_for_event(value: &mut Option<String>, max_chars: usize) {
+    if let Some(raw) = value.take() {
+        *value = Some(bound_special_settings_json_string_for_event(raw, max_chars));
+    }
+}
+
 fn bound_claude_model_mapping(mut mapping: ClaudeModelMapping) -> ClaudeModelMapping {
     mapping.requested_model = truncate_chars(mapping.requested_model, EVENT_SHORT_TEXT_MAX_CHARS);
     mapping.effective_model = truncate_chars(mapping.effective_model, EVENT_SHORT_TEXT_MAX_CHARS);
@@ -336,7 +430,10 @@ fn bound_request_event(mut payload: GatewayRequestEvent) -> GatewayRequestEvent 
     payload.path = truncate_chars(payload.path, EVENT_PATH_MAX_CHARS);
     truncate_optional_chars(&mut payload.query, EVENT_QUERY_MAX_CHARS);
     truncate_optional_chars(&mut payload.requested_model, EVENT_SHORT_TEXT_MAX_CHARS);
-    truncate_optional_chars(&mut payload.special_settings_json, EVENT_QUERY_MAX_CHARS);
+    bound_special_settings_json_for_event(
+        &mut payload.special_settings_json,
+        EVENT_QUERY_MAX_CHARS,
+    );
     payload.attempts = trim_request_event_attempts(payload.attempts);
     payload.claude_model_mapping =
         bound_optional_claude_model_mapping(payload.claude_model_mapping);
@@ -348,7 +445,10 @@ fn bound_request_start_event(mut payload: GatewayRequestStartEvent) -> GatewayRe
     payload.path = truncate_chars(payload.path, EVENT_PATH_MAX_CHARS);
     truncate_optional_chars(&mut payload.query, EVENT_QUERY_MAX_CHARS);
     truncate_optional_chars(&mut payload.requested_model, EVENT_SHORT_TEXT_MAX_CHARS);
-    truncate_optional_chars(&mut payload.special_settings_json, EVENT_QUERY_MAX_CHARS);
+    bound_special_settings_json_for_event(
+        &mut payload.special_settings_json,
+        EVENT_QUERY_MAX_CHARS,
+    );
     payload
 }
 
@@ -362,7 +462,10 @@ fn bound_attempt_event(mut payload: GatewayAttemptEvent) -> GatewayAttemptEvent 
     payload.path = truncate_chars(payload.path, EVENT_PATH_MAX_CHARS);
     truncate_optional_chars(&mut payload.query, EVENT_QUERY_MAX_CHARS);
     truncate_optional_chars(&mut payload.requested_model, EVENT_SHORT_TEXT_MAX_CHARS);
-    truncate_optional_chars(&mut payload.special_settings_json, EVENT_QUERY_MAX_CHARS);
+    bound_special_settings_json_for_event(
+        &mut payload.special_settings_json,
+        EVENT_QUERY_MAX_CHARS,
+    );
     payload.provider_name = truncate_chars(payload.provider_name, EVENT_SHORT_TEXT_MAX_CHARS);
     payload.base_url = truncate_chars(payload.base_url, EVENT_URL_MAX_CHARS);
     payload.outcome = truncate_chars(payload.outcome, EVENT_STATE_MAX_CHARS);
@@ -740,6 +843,49 @@ mod tests {
 
         assert_eq!(truncated.chars().count(), EVENT_STATE_MAX_CHARS);
         assert!(truncated.chars().all(|ch| ch == '界'));
+    }
+
+    #[test]
+    fn event_special_settings_bounding_keeps_model_route_mapping_valid_json_first() {
+        let raw = serde_json::to_string(&json!([
+            {
+                "type": "large_debug",
+                "payload": repeated_ascii(EVENT_QUERY_MAX_CHARS)
+            },
+            {
+                "type": "model_route_mapping",
+                "requestedModel": "gpt-5.5",
+                "requestedReasoningEffort": "high",
+                "actualModel": "gpt-5.4-mini",
+                "actualReasoningEffort": "low",
+                "modelMismatch": true,
+                "effortMismatch": true,
+                "mismatch": true
+            },
+            {
+                "type": "other",
+                "payload": repeated_ascii(EVENT_QUERY_MAX_CHARS)
+            }
+        ]))
+        .expect("settings serialize");
+
+        let bounded = bound_special_settings_json_string_for_event(raw, EVENT_QUERY_MAX_CHARS);
+
+        assert!(bounded.chars().count() <= EVENT_QUERY_MAX_CHARS);
+        let decoded: serde_json::Value =
+            serde_json::from_str(&bounded).expect("bounded settings remain valid json");
+        let entries = decoded.as_array().expect("array");
+        assert_eq!(
+            entries
+                .first()
+                .and_then(|entry| entry.get("type"))
+                .and_then(serde_json::Value::as_str),
+            Some("model_route_mapping")
+        );
+        assert!(entries.iter().any(|entry| {
+            entry.get("type").and_then(serde_json::Value::as_str)
+                == Some("special_settings_truncated")
+        }));
     }
 
     #[test]

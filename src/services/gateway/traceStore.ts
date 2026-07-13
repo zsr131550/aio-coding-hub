@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { emitListenerSnapshot } from "../../utils/listeners";
 import { normalizeClaudeModelMapping, type ClaudeModelMapping } from "./claudeModelMapping";
+import { chooseModelRouteAwareSpecialSettingsJson } from "./requestLogSpecialSettings";
 import type {
   GatewayAttempt,
   GatewayAttemptEvent,
@@ -95,7 +96,7 @@ function nextSpecialSettingsJson(
   incoming: string | null | undefined,
   existing: string | null | undefined
 ) {
-  return incoming ?? existing ?? null;
+  return chooseModelRouteAwareSpecialSettingsJson(incoming, existing);
 }
 
 function trimSummaryAttempts<T extends GatewayAttempt | GatewayAttemptEvent>(attempts: T[]): T[] {

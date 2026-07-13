@@ -260,6 +260,67 @@ describe("components/home/RealtimeTraceCards", () => {
     vi.useRealTimers();
   });
 
+  it("renders non-Codex model route mismatch pills from trace special settings", () => {
+    vi.useFakeTimers();
+    const baseTime = 1_700_000_000_000;
+    vi.setSystemTime(baseTime);
+
+    render(
+      <RealtimeTraceCards
+        folderLookupBySessionKey={new Map()}
+        cards={cards([
+          traceBase({
+            trace_id: "t-route-mismatch",
+            cli_key: "claude",
+            requested_model: "claude-sonnet-4",
+            first_seen_ms: baseTime - 5000,
+            last_seen_ms: baseTime - 50,
+            attempts: [
+              { attempt_index: 1, provider_id: 4, provider_name: "Bridge", outcome: "success" },
+            ],
+            summary: {
+              trace_id: "t-route-mismatch",
+              cli_key: "claude",
+              method: "POST",
+              path: "/v1/messages",
+              query: null,
+              status: 200,
+              error_code: null,
+              duration_ms: 100,
+              ttfb_ms: 10,
+              attempts: [],
+              special_settings_json: JSON.stringify([
+                {
+                  type: "model_route_mapping",
+                  cliKey: "claude",
+                  requestedModel: "claude-sonnet-4",
+                  requestedReasoningEffort: "unknown",
+                  requestedReasoningEffortSource: "unknown",
+                  actualModel: "gpt-5.4",
+                  actualReasoningEffort: "unknown",
+                  actualReasoningEffortSource: "unknown",
+                  modelMismatch: true,
+                  effortMismatch: false,
+                  mismatch: true,
+                  providerId: 4,
+                  providerName: "Bridge",
+                },
+              ]),
+            },
+          }),
+        ])}
+        nowMs={baseTime}
+        formatUnixSeconds={(ts) => String(ts)}
+        showCustomTooltip={false}
+      />
+    );
+
+    expect(screen.getByText("claude-sonnet-4 -> gpt-5.4")).toBeInTheDocument();
+    expect(screen.getByTitle(/模型路由不一致/)).toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
   it("renders Claude model mapping when a live trace has one", () => {
     vi.useFakeTimers();
     const baseTime = 1_700_000_000_000;
@@ -332,6 +393,152 @@ describe("components/home/RealtimeTraceCards", () => {
 
     expect(screen.getByTitle("Codex / gpt-5.5-high")).toBeInTheDocument();
     expect(screen.getByTitle("Codex / gpt-5.5-medium")).toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
+  it("renders red Codex model route mismatch labels from completed realtime summaries", () => {
+    vi.useFakeTimers();
+    const baseTime = 1_700_000_000_000;
+    vi.setSystemTime(baseTime);
+
+    render(
+      <RealtimeTraceCards
+        folderLookupBySessionKey={new Map()}
+        cards={cards([
+          traceBase({
+            trace_id: "t-route-mismatch",
+            cli_key: "codex",
+            path: "/v1/responses",
+            requested_model: "gpt-5.5",
+            first_seen_ms: baseTime - 2000,
+            last_seen_ms: baseTime - 100,
+            attempts: [
+              {
+                attempt_index: 1,
+                provider_id: 2,
+                provider_name: "Provider B",
+                outcome: "success",
+                status: 200,
+              },
+            ],
+            summary: {
+              trace_id: "t-route-mismatch",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              query: null,
+              status: 200,
+              error_code: null,
+              duration_ms: 300,
+              ttfb_ms: 120,
+              special_settings_json: JSON.stringify([
+                {
+                  type: "model_route_mapping",
+                  cliKey: "codex",
+                  requestedModel: "gpt-5.5",
+                  requestedReasoningEffort: "high",
+                  requestedReasoningEffortSource: "request",
+                  actualModel: "gpt-5.4-mini",
+                  actualReasoningEffort: "low",
+                  actualReasoningEffortSource: "model_default",
+                  modelMismatch: true,
+                  effortMismatch: true,
+                  mismatch: true,
+                  providerId: 2,
+                  providerName: "Provider B",
+                },
+              ]),
+            },
+          }),
+        ])}
+        nowMs={baseTime}
+        formatUnixSeconds={(ts) => String(ts)}
+        showCustomTooltip={false}
+      />
+    );
+
+    const routeText = screen.getByText("gpt-5.5-high -> gpt-5.4-mini-low");
+    expect(routeText).toBeInTheDocument();
+    expect(routeText).toHaveClass("text-rose-600");
+    expect(screen.getByTitle(/模型\/思考等级不一致/)).toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
+  it("prefers the successful provider model route mapping in realtime cards", () => {
+    vi.useFakeTimers();
+    const baseTime = 1_700_000_000_000;
+    vi.setSystemTime(baseTime);
+
+    render(
+      <RealtimeTraceCards
+        folderLookupBySessionKey={new Map()}
+        cards={cards([
+          traceBase({
+            trace_id: "t-route-provider",
+            cli_key: "codex",
+            path: "/v1/responses",
+            requested_model: "gpt-5.5",
+            first_seen_ms: baseTime - 2000,
+            last_seen_ms: baseTime - 100,
+            attempts: [
+              {
+                attempt_index: 1,
+                provider_id: 1,
+                provider_name: "Provider A",
+                outcome: "failed",
+                status: 500,
+              },
+              {
+                attempt_index: 2,
+                provider_id: 2,
+                provider_name: "Provider B",
+                outcome: "success",
+                status: 200,
+              },
+            ],
+            summary: {
+              trace_id: "t-route-provider",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              query: null,
+              status: 200,
+              error_code: null,
+              duration_ms: 300,
+              ttfb_ms: 120,
+              special_settings_json: JSON.stringify([
+                {
+                  type: "model_route_mapping",
+                  requestedModel: "gpt-5.5",
+                  requestedReasoningEffort: "high",
+                  actualModel: "gpt-5.4",
+                  actualReasoningEffort: "none",
+                  mismatch: true,
+                  providerId: 1,
+                },
+                {
+                  type: "model_route_mapping",
+                  requestedModel: "gpt-5.5",
+                  requestedReasoningEffort: "high",
+                  actualModel: "gpt-5.4-mini",
+                  actualReasoningEffort: "low",
+                  mismatch: true,
+                  providerId: 2,
+                },
+              ]),
+            },
+          }),
+        ])}
+        nowMs={baseTime}
+        formatUnixSeconds={(ts) => String(ts)}
+        showCustomTooltip={false}
+      />
+    );
+
+    expect(screen.getByText("gpt-5.5-high -> gpt-5.4-mini-low")).toBeInTheDocument();
+    expect(screen.queryByText("gpt-5.5-high -> gpt-5.4-none")).not.toBeInTheDocument();
 
     vi.useRealTimers();
   });

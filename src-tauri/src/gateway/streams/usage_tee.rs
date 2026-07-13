@@ -6,10 +6,12 @@ use axum::body::{Body, Bytes};
 use futures_core::Stream;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use super::super::events::{emit_gateway_debug_log, emit_gateway_debug_log_lazy};
+use super::super::model_route_mapping;
 use super::super::proxy::{
     is_fake_200_non_stream_body, upstream_client_error_rules, GatewayErrorCode,
 };
@@ -17,6 +19,83 @@ use super::super::util::{lossy_utf8_preview, now_unix_seconds, MAX_DEBUG_BODY_PR
 use super::plugin_chunk::PLUGIN_STREAM_ERROR_MARKER;
 use super::request_end::{emit_request_event_and_spawn_request_log, StreamRequestCompletion};
 use super::{RelayBodyStream, StreamFinalizeCtx};
+
+pub(in crate::gateway) struct UpstreamModelObserverStream<S, B>
+where
+    S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
+    B: AsRef<[u8]>,
+{
+    upstream: S,
+    tracker: usage::SseUsageTracker,
+    observed_model: Arc<Mutex<Option<String>>>,
+    _marker: std::marker::PhantomData<B>,
+}
+
+impl<S, B> UpstreamModelObserverStream<S, B>
+where
+    S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
+    B: AsRef<[u8]>,
+{
+    pub(in crate::gateway) fn new(
+        upstream: S,
+        cli_key: &str,
+        observed_model: Arc<Mutex<Option<String>>>,
+    ) -> Self {
+        Self {
+            upstream,
+            tracker: usage::SseUsageTracker::new(cli_key),
+            observed_model,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    fn update_observed_model(&mut self) {
+        if let Some(model) = self.tracker.best_effort_model() {
+            if let Ok(mut observed) = self.observed_model.lock() {
+                *observed = Some(model);
+            }
+        }
+    }
+
+    fn finalize_observed_model(&mut self) {
+        let _ = self.tracker.finalize();
+        self.update_observed_model();
+    }
+}
+
+impl<S, B> Stream for UpstreamModelObserverStream<S, B>
+where
+    S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
+    B: AsRef<[u8]> + Unpin,
+{
+    type Item = Result<B, reqwest::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.as_mut().get_mut();
+        match Pin::new(&mut this.upstream).poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                this.tracker.ingest_chunk(chunk.as_ref());
+                this.update_observed_model();
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            Poll::Ready(None) => {
+                this.finalize_observed_model();
+                Poll::Ready(None)
+            }
+            other => other,
+        }
+    }
+}
+
+impl<S, B> Drop for UpstreamModelObserverStream<S, B>
+where
+    S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
+    B: AsRef<[u8]>,
+{
+    fn drop(&mut self) {
+        self.finalize_observed_model();
+    }
+}
 
 fn is_codex_responses_path(cli_key: &str, path: &str) -> bool {
     if cli_key != "codex" {
@@ -315,11 +394,27 @@ where
             error_code
         };
         let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-        let requested_model = self
+        let observed_upstream_model = self
             .ctx
-            .requested_model
-            .clone()
-            .or_else(|| self.tracker.best_effort_model());
+            .observed_upstream_model
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
+        let actual_model = observed_upstream_model.or_else(|| self.tracker.best_effort_model());
+        if let Some(setting) = model_route_mapping::build_model_route_mapping_setting_from_shared(
+            &self.ctx.cli_key,
+            self.ctx.requested_model.as_deref(),
+            actual_model.as_deref(),
+            &self.ctx.special_settings,
+            self.ctx.provider_id,
+            &self.ctx.provider_name,
+        ) {
+            response_fixer::push_model_route_mapping_special_setting(
+                &self.ctx.special_settings,
+                setting,
+            );
+        }
+        let requested_model = self.ctx.requested_model.clone().or(actual_model);
 
         emit_request_event_and_spawn_request_log(
             &self.ctx,
@@ -729,11 +824,29 @@ where
             usage::parse_usage_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
         };
         let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
+        let actual_model = if self.truncated || self.buffer.is_empty() {
+            None
+        } else {
+            usage::parse_model_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
+        };
+        if let Some(setting) = model_route_mapping::build_model_route_mapping_setting_from_shared(
+            &self.ctx.cli_key,
+            self.ctx.requested_model.as_deref(),
+            actual_model.as_deref(),
+            &self.ctx.special_settings,
+            self.ctx.provider_id,
+            &self.ctx.provider_name,
+        ) {
+            response_fixer::push_model_route_mapping_special_setting(
+                &self.ctx.special_settings,
+                setting,
+            );
+        }
         let requested_model = self.ctx.requested_model.clone().or_else(|| {
             if self.truncated || self.buffer.is_empty() {
                 None
             } else {
-                usage::parse_model_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
+                actual_model.clone()
             }
         });
 
@@ -845,7 +958,7 @@ mod tests {
         is_codex_body_buffer_drop_successish, is_codex_client_abort_successish,
         is_codex_drop_successish, is_codex_responses_path, is_codex_stream_tail_error_successish,
         is_codex_stream_terminal_error_successish, next_item, spawn_usage_sse_relay_body,
-        RelayBodyStream, StreamFinalizeCtx,
+        RelayBodyStream, StreamFinalizeCtx, UsageSseTeeStream,
     };
     use crate::{circuit_breaker, db, request_logs, session_manager};
     use axum::body::Bytes;
@@ -895,6 +1008,7 @@ mod tests {
             provider_name: "test-provider".to_string(),
             base_url: "https://upstream.example".to_string(),
             auth_mode: "api_key".to_string(),
+            observed_upstream_model: Arc::new(Mutex::new(None)),
             fake_200_detected: false,
             fake_200_quota_exhausted: false,
         }
@@ -1206,5 +1320,47 @@ mod tests {
             .special_settings_json
             .as_deref()
             .is_some_and(|value| value.contains("\"client_abort\"")));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sse_route_mapping_prefers_pre_bridge_observed_upstream_model() {
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-route.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let mut ctx = test_stream_finalize_ctx(app_handle, db, log_tx);
+        ctx.requested_model = Some("gpt-5.5".to_string());
+        ctx.observed_upstream_model = Arc::new(Mutex::new(Some("gpt-5.4-mini".to_string())));
+
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\n\
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
+            )))
+            .await
+            .expect("send completion");
+        drop(upstream_tx);
+        let mut stream = UsageSseTeeStream::new(RelayBodyStream::new(upstream_rx), ctx, None, None);
+
+        while let Some(chunk) = next_item(&mut stream).await {
+            chunk.expect("stream chunk");
+        }
+
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        let special_settings = log
+            .special_settings_json
+            .as_deref()
+            .expect("route setting json");
+        assert!(special_settings.contains("\"type\":\"model_route_mapping\""));
+        assert!(special_settings.contains("\"requestedModel\":\"gpt-5.5\""));
+        assert!(special_settings.contains("\"actualModel\":\"gpt-5.4-mini\""));
+        assert!(!special_settings.contains("\"actualModel\":\"gpt-5.5\""));
     }
 }

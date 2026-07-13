@@ -118,9 +118,14 @@ function createLiveTrace(traceId = "trace-1"): TraceSession {
 }
 
 function expectMetricValue(label: string, value: string) {
-  const labelNode = screen.getByText(label);
-  const card = labelNode.parentElement as HTMLElement | null;
-  expect(card).not.toBeNull();
+  const labelNodes = screen.getAllByText(label);
+  const card = labelNodes
+    .map((labelNode) => labelNode.parentElement as HTMLElement | null)
+    .find((candidate): candidate is HTMLElement => {
+      if (!candidate) return false;
+      return within(candidate).queryByText(value) != null;
+    });
+  expect(card).toBeDefined();
   expect(within(card as HTMLElement).getByText(value)).toBeInTheDocument();
 }
 
@@ -221,8 +226,43 @@ describe("home/RequestLogDetailDialog", () => {
 
     render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
-    expectMetricValue("思考等级", "high");
+    expectMetricValue("请求等级", "high");
     expectMetricValue("等级来源", "请求显式");
+  });
+
+  it("shows Codex model route mismatch on the summary tab", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        requested_model: "gpt-5.5",
+        status: 200,
+        error_code: null,
+        final_provider_id: 2,
+        special_settings_json: JSON.stringify([
+          {
+            type: "model_route_mapping",
+            cliKey: "codex",
+            requestedModel: "gpt-5.5",
+            requestedReasoningEffort: "high",
+            requestedReasoningEffortSource: "request",
+            actualModel: "gpt-5.4-mini",
+            actualReasoningEffort: "low",
+            actualReasoningEffortSource: "model_default",
+            modelMismatch: true,
+            effortMismatch: true,
+            mismatch: true,
+            providerId: 2,
+            providerName: "Provider B",
+          },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expectMetricValue("模型路由", "gpt-5.5-high -> gpt-5.4-mini-low");
+    expect(screen.getAllByTitle(/模型\/思考等级不一致/).length).toBeGreaterThanOrEqual(1);
   });
 
   it("shows unknown Codex reasoning effort when no explicit or known default exists", () => {
@@ -239,7 +279,7 @@ describe("home/RequestLogDetailDialog", () => {
 
     render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
-    expectMetricValue("思考等级", "unknown");
+    expectMetricValue("请求等级", "unknown");
     expectMetricValue("等级来源", "未知");
   });
 
@@ -270,7 +310,7 @@ describe("home/RequestLogDetailDialog", () => {
     render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
     expect(screen.getByText("关键指标")).toBeInTheDocument();
-    expectMetricValue("思考等级", "medium");
+    expectMetricValue("请求等级", "medium");
     expectMetricValue("等级来源", "默认推断");
   });
 

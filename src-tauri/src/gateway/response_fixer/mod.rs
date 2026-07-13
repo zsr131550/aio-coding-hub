@@ -69,6 +69,39 @@ pub(super) fn push_special_setting(shared: &Arc<Mutex<Vec<Value>>>, setting: Val
     push_special_setting_locked(&mut guard, setting);
 }
 
+pub(super) fn push_model_route_mapping_special_setting(
+    shared: &Arc<Mutex<Vec<Value>>>,
+    setting: Value,
+) {
+    let setting = bound_special_setting(setting);
+    let mut guard = shared.lock_or_recover();
+    let original_len = guard.len();
+    let had_existing_route_mapping = guard
+        .iter()
+        .any(|entry| entry.get("type").and_then(Value::as_str) == Some("model_route_mapping"));
+    let had_truncation_marker = guard
+        .last()
+        .and_then(|entry| entry.get("type"))
+        .and_then(Value::as_str)
+        == Some("special_settings_truncated");
+
+    if had_truncation_marker {
+        guard.pop();
+    }
+    guard.retain(|entry| entry.get("type").and_then(Value::as_str) != Some("model_route_mapping"));
+    guard.insert(0, setting);
+
+    let should_mark_truncated = had_truncation_marker
+        || (!had_existing_route_mapping && original_len >= SPECIAL_SETTINGS_MAX_ENTRIES)
+        || guard.len() > SPECIAL_SETTINGS_MAX_ENTRIES;
+    if should_mark_truncated {
+        guard.truncate(SPECIAL_SETTINGS_MAX_ENTRIES.saturating_sub(1));
+        guard.push(special_settings_truncated_marker());
+    } else if guard.len() > SPECIAL_SETTINGS_MAX_ENTRIES {
+        guard.truncate(SPECIAL_SETTINGS_MAX_ENTRIES);
+    }
+}
+
 fn push_special_setting_locked(settings: &mut Vec<Value>, setting: Value) {
     if settings.len() < SPECIAL_SETTINGS_MAX_ENTRIES {
         settings.push(setting);
@@ -129,11 +162,7 @@ fn push_encoded_truncation_marker(parts: &mut Vec<String>, omitted_entries: usiz
 }
 
 fn mark_special_settings_truncated(settings: &mut Vec<Value>) {
-    let marker = serde_json::json!({
-        "type": "special_settings_truncated",
-        "scope": "request",
-        "maxEntries": SPECIAL_SETTINGS_MAX_ENTRIES,
-    });
+    let marker = special_settings_truncated_marker();
 
     if let Some(last) = settings.last_mut() {
         if last.get("type").and_then(Value::as_str) != Some("special_settings_truncated") {
@@ -142,6 +171,14 @@ fn mark_special_settings_truncated(settings: &mut Vec<Value>) {
     } else {
         settings.push(marker);
     }
+}
+
+fn special_settings_truncated_marker() -> Value {
+    serde_json::json!({
+        "type": "special_settings_truncated",
+        "scope": "request",
+        "maxEntries": SPECIAL_SETTINGS_MAX_ENTRIES,
+    })
 }
 
 fn bound_special_setting(setting: Value) -> Value {

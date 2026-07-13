@@ -275,6 +275,61 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(screen.getByTitle("Codex / gpt-future-unknown")).toBeInTheDocument();
   });
 
+  it("renders red Codex model route mismatch labels from historical request logs", () => {
+    render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          showCustomTooltip={false}
+          compactModeOverride={false}
+          traces={[]}
+          requestLogs={makeRequestLogs([
+            {
+              id: 45,
+              trace_id: "t-codex-route-mismatch",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              requested_model: "gpt-5.5",
+              status: 200,
+              special_settings_json: JSON.stringify([
+                {
+                  type: "model_route_mapping",
+                  cliKey: "codex",
+                  requestedModel: "gpt-5.5",
+                  requestedReasoningEffort: "high",
+                  requestedReasoningEffortSource: "request",
+                  actualModel: "gpt-5.4-mini",
+                  actualReasoningEffort: "low",
+                  actualReasoningEffortSource: "model_default",
+                  modelMismatch: true,
+                  effortMismatch: true,
+                  mismatch: true,
+                  providerId: 2,
+                  providerName: "Provider B",
+                },
+              ]),
+              final_provider_id: 2,
+              final_provider_name: "Provider B",
+              created_at: Math.floor(Date.now() / 1000),
+            },
+          ])}
+          requestLogsLoading={false}
+          requestLogsRefreshing={false}
+          requestLogsAvailable={true}
+          onRefreshRequestLogs={vi.fn()}
+          selectedLogId={null}
+          onSelectLogId={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    const routeText = screen.getByText("gpt-5.5-high -> gpt-5.4-mini-low");
+    expect(routeText).toBeInTheDocument();
+    expect(routeText).toHaveClass("text-rose-600");
+    expect(screen.getByText("模型路由")).toBeInTheDocument();
+    expect(screen.getAllByTitle(/模型\/思考等级不一致/).length).toBeGreaterThanOrEqual(1);
+  });
+
   it("shows dual TTFB only for reasoning-guard request logs", () => {
     render(
       <MemoryRouter>

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  chooseModelRouteAwareSpecialSettingsJson,
   countCodexReasoningGuardSpecialSettings,
   formatCodexReasoningEffortSource,
+  hasModelRouteMappingSpecialSetting,
   hasClaudeModelMappingSpecialSetting,
   resolveCodexReasoningEffort,
   resolveCodexReasoningGuardSummary,
   resolveClaudeModelMappingFromSpecialSettings,
+  resolveModelRouteMappingFromSpecialSettings,
 } from "../requestLogSpecialSettings";
 
 describe("services/gateway/requestLogSpecialSettings", () => {
@@ -165,7 +168,7 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       source: "default",
     });
     expect(resolveCodexReasoningEffort("gpt-5.4-mini", "bad-json")).toEqual({
-      effort: "none",
+      effort: "low",
       source: "default",
     });
     expect(resolveCodexReasoningEffort("gpt-5.5-pro", null)).toEqual({
@@ -201,5 +204,130 @@ describe("services/gateway/requestLogSpecialSettings", () => {
     expect(formatCodexReasoningEffortSource("request")).toBe("请求显式");
     expect(formatCodexReasoningEffortSource("default")).toBe("默认推断");
     expect(formatCodexReasoningEffortSource("unknown")).toBe("未知");
+  });
+
+  it("resolves model route mapping with final provider preference and effort-only mismatches", () => {
+    const settings = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        requestedReasoningEffortSource: "request",
+        actualModel: "gpt-5.5",
+        actualReasoningEffort: "medium",
+        actualReasoningEffortSource: "model_default",
+        modelMismatch: false,
+        effortMismatch: true,
+        mismatch: true,
+        providerId: 1,
+        providerName: "Provider A",
+      },
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        requestedReasoningEffortSource: "request",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: "low",
+        actualReasoningEffortSource: "model_default",
+        modelMismatch: true,
+        effortMismatch: true,
+        mismatch: true,
+        providerId: 2,
+        providerName: "Provider B",
+      },
+    ]);
+
+    expect(resolveModelRouteMappingFromSpecialSettings(settings, 1)).toMatchObject({
+      requestedModel: "gpt-5.5",
+      actualModel: "gpt-5.5",
+      requestedReasoningEffort: "high",
+      actualReasoningEffort: "medium",
+      modelMismatch: false,
+      effortMismatch: true,
+      providerId: 1,
+    });
+    expect(resolveModelRouteMappingFromSpecialSettings(settings, 99)).toBeNull();
+    expect(hasModelRouteMappingSpecialSetting(settings)).toBe(true);
+  });
+
+  it("does not fall back to another provider mapping when provider-scoped routes do not match", () => {
+    const settings = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        requestedReasoningEffortSource: "request",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: "low",
+        actualReasoningEffortSource: "model_default",
+        modelMismatch: true,
+        effortMismatch: true,
+        mismatch: true,
+        providerId: 2,
+        providerName: "Provider B",
+      },
+    ]);
+
+    expect(resolveModelRouteMappingFromSpecialSettings(settings, 1)).toBeNull();
+    expect(resolveModelRouteMappingFromSpecialSettings(settings, null)).toMatchObject({
+      providerId: 2,
+      actualModel: "gpt-5.4-mini",
+    });
+  });
+
+  it("ignores invalid and identity model route mappings", () => {
+    expect(resolveModelRouteMappingFromSpecialSettings(null)).toBeNull();
+    expect(resolveModelRouteMappingFromSpecialSettings("bad-json")).toBeNull();
+    expect(
+      resolveModelRouteMappingFromSpecialSettings(
+        JSON.stringify([
+          {
+            type: "model_route_mapping",
+            requestedModel: "GPT-5.5",
+            actualModel: "gpt-5.5",
+            requestedReasoningEffort: "medium",
+            actualReasoningEffort: "medium",
+            modelMismatch: false,
+            effortMismatch: false,
+            mismatch: false,
+          },
+          {
+            type: "model_route_mapping",
+            requestedModel: "",
+            actualModel: "gpt-5.4-mini",
+            mismatch: true,
+          },
+        ])
+      )
+    ).toBeNull();
+    expect(hasModelRouteMappingSpecialSetting("bad-json")).toBe(false);
+  });
+
+  it("chooses model-route-aware special settings ahead of stale start settings", () => {
+    const startSettings = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "high" },
+    ]);
+    const terminalSettings = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: "low",
+        mismatch: true,
+      },
+    ]);
+
+    expect(chooseModelRouteAwareSpecialSettingsJson(terminalSettings, startSettings)).toBe(
+      terminalSettings
+    );
+    expect(chooseModelRouteAwareSpecialSettingsJson(startSettings, terminalSettings)).toBe(
+      terminalSettings
+    );
+    expect(chooseModelRouteAwareSpecialSettingsJson("bad-json", startSettings)).toBe(startSettings);
   });
 });

@@ -17,6 +17,7 @@ import {
   hasClaudeModelMappingSpecialSetting,
   hasPriorityServiceTierSpecialSetting,
   resolveClaudeModelMappingFromSpecialSettings,
+  resolveRequestLogModelDisplayMeta,
   resolveLiveTraceDurationMs,
   resolveLiveTraceProvider,
   resolveRequestLogUsageReasoningTokens,
@@ -127,6 +128,7 @@ describe("components/home/HomeLogShared", () => {
     ).toBe("gpt-5.5-unknown");
     expect(formatRequestLogModelText("codex", "gpt-future", null)).toBe("gpt-future-unknown");
     expect(formatRequestLogModelText("claude", "claude-sonnet", null)).toBe("claude-sonnet");
+    expect(formatRequestLogModelText("codex", "gpt-5.4-mini", null)).toBe("gpt-5.4-mini-low");
 
     expect(hasPriorityServiceTierSpecialSetting(null)).toBe(false);
     expect(hasPriorityServiceTierSpecialSetting("bad-json")).toBe(false);
@@ -155,6 +157,151 @@ describe("components/home/HomeLogShared", () => {
         JSON.stringify([{ type: "codex_service_tier_result", effectivePriority: false }])
       )
     ).toBe(false);
+  });
+
+  it("formats Codex model route mismatch display meta and audit tag", () => {
+    const specialSettingsJson = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        requestedReasoningEffortSource: "request",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: "low",
+        actualReasoningEffortSource: "model_default",
+        modelMismatch: true,
+        effortMismatch: true,
+        mismatch: true,
+        providerId: 2,
+        providerName: "Provider B",
+      },
+    ]);
+
+    const display = resolveRequestLogModelDisplayMeta(
+      "codex",
+      "gpt-5.5",
+      specialSettingsJson,
+      null,
+      2
+    );
+    expect(display).toMatchObject({
+      text: "gpt-5.5-high -> gpt-5.4-mini-low",
+      isRouteMismatch: true,
+      mismatchLabel: "模型/思考等级不一致",
+    });
+    expect(display.title).toContain("请求等级 请求显式");
+    expect(display.title).toContain("返回等级 模型默认推断");
+
+    const audit = buildRequestLogAuditMeta({
+      cli_key: "codex",
+      path: "/v1/responses",
+      status: 200,
+      special_settings_json: specialSettingsJson,
+      final_provider_id: 2,
+    });
+    expect(audit.muted).toBe(false);
+    expect(audit.tags.map((tag) => tag.label)).toContain("模型路由");
+    expect(audit.tags.find((tag) => tag.label === "模型路由")?.className).toContain("rose");
+    expect(audit.summary).toBe("模型路由检测：模型/思考等级不一致。");
+  });
+
+  it("formats non-Codex model route mismatches from special settings", () => {
+    const specialSettingsJson = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        cliKey: "claude",
+        requestedModel: "claude-sonnet-4",
+        requestedReasoningEffort: "unknown",
+        requestedReasoningEffortSource: "unknown",
+        actualModel: "gpt-5.4",
+        actualReasoningEffort: "unknown",
+        actualReasoningEffortSource: "unknown",
+        modelMismatch: true,
+        effortMismatch: false,
+        mismatch: true,
+        providerId: 4,
+        providerName: "Provider Claude Bridge",
+      },
+    ]);
+
+    const display = resolveRequestLogModelDisplayMeta(
+      "claude",
+      "claude-sonnet-4",
+      specialSettingsJson,
+      null,
+      4
+    );
+
+    expect(display).toMatchObject({
+      text: "claude-sonnet-4 -> gpt-5.4",
+      isRouteMismatch: true,
+      mismatchLabel: "模型路由不一致",
+    });
+    expect(display.title).toContain("请求 claude-sonnet-4");
+    expect(display.title).toContain("返回 gpt-5.4");
+  });
+
+  it("labels effort-only model route mismatches", () => {
+    const specialSettingsJson = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        requestedReasoningEffortSource: "request",
+        actualModel: "gpt-5.5",
+        actualReasoningEffort: "medium",
+        actualReasoningEffortSource: "model_default",
+        modelMismatch: false,
+        effortMismatch: true,
+        mismatch: true,
+        providerId: 1,
+      },
+    ]);
+
+    const display = resolveRequestLogModelDisplayMeta(
+      "codex",
+      "gpt-5.5",
+      specialSettingsJson,
+      null,
+      1
+    );
+    expect(display.text).toBe("gpt-5.5-high -> gpt-5.5-medium");
+    expect(display.mismatchLabel).toBe("思考等级不一致");
+  });
+
+  it("hides provider-scoped route mappings when final provider does not match", () => {
+    const specialSettingsJson = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        requestedReasoningEffortSource: "request",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: "low",
+        actualReasoningEffortSource: "model_default",
+        modelMismatch: true,
+        effortMismatch: true,
+        mismatch: true,
+        providerId: 2,
+      },
+    ]);
+
+    const display = resolveRequestLogModelDisplayMeta(
+      "codex",
+      "gpt-5.5",
+      specialSettingsJson,
+      null,
+      1
+    );
+
+    expect(display).toMatchObject({
+      text: "gpt-5.5-medium",
+      isRouteMismatch: false,
+      mismatchLabel: null,
+    });
   });
 
   it("builds audit meta for muted request log categories", () => {

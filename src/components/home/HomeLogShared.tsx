@@ -9,11 +9,14 @@ import {
 } from "../../services/gateway/claudeModelMapping";
 import {
   formatCodexReasoningEffortSource,
+  formatModelRouteReasoningEffortSource,
   hasClaudeModelMappingSpecialSetting,
+  resolveModelRouteMappingFromSpecialSettings,
   parseRequestLogSpecialSettings,
   resolveCodexReasoningEffort,
   resolveCodexReasoningGuardSummary,
   resolveClaudeModelMappingFromSpecialSettings,
+  type ModelRouteMapping,
 } from "../../services/gateway/requestLogSpecialSettings";
 import type { CliKey } from "../../services/providers/providers";
 import type { RequestLogRouteHop } from "../../services/gateway/requestLogs";
@@ -39,6 +42,7 @@ type RequestLogAuditInput = {
   status?: number | null;
   excluded_from_stats?: boolean | null;
   special_settings_json?: string | null;
+  final_provider_id?: number | null;
   error_code?: string | null;
 };
 
@@ -57,7 +61,11 @@ export type RequestLogAuditMeta = {
 };
 
 export { hasClaudeModelMappingSpecialSetting, resolveClaudeModelMappingFromSpecialSettings };
-export { formatCodexReasoningEffortSource, resolveCodexReasoningEffort };
+export {
+  formatCodexReasoningEffortSource,
+  resolveCodexReasoningEffort,
+  resolveModelRouteMappingFromSpecialSettings,
+};
 
 export function hasCodexReasoningGuardSpecialSetting(
   specialSettingsJson: string | null | undefined
@@ -157,17 +165,105 @@ export function formatClaudeModelMappingText(
   return fallback || "未知";
 }
 
+function formatModelRoutePart(model: string, effort: string | null | undefined) {
+  const normalizedModel = model.trim() || "未知";
+  const normalizedEffort = effort?.trim().toLowerCase();
+  if (!normalizedEffort || normalizedEffort === "unknown") {
+    return normalizedModel;
+  }
+  return `${normalizedModel}-${normalizedEffort}`;
+}
+
+function resolveModelRouteMismatchLabel(mapping: ModelRouteMapping) {
+  if (mapping.modelMismatch && mapping.effortMismatch) return "模型/思考等级不一致";
+  if (mapping.effortMismatch) return "思考等级不一致";
+  return "模型路由不一致";
+}
+
+function resolveModelRouteTitle(mapping: ModelRouteMapping) {
+  const titleParts = [
+    resolveModelRouteMismatchLabel(mapping),
+    `请求 ${formatModelRoutePart(mapping.requestedModel, mapping.requestedReasoningEffort)}`,
+    `返回 ${formatModelRoutePart(mapping.actualModel, mapping.actualReasoningEffort)}`,
+    `请求等级 ${formatModelRouteReasoningEffortSource(mapping.requestedReasoningEffortSource)}`,
+    `返回等级 ${formatModelRouteReasoningEffortSource(mapping.actualReasoningEffortSource)}`,
+  ];
+  if (mapping.providerName) {
+    titleParts.push(`Provider ${mapping.providerName}`);
+  }
+  return titleParts.join(" · ");
+}
+
+export type RequestLogModelDisplayMeta = {
+  text: string;
+  title: string;
+  routeMapping: ModelRouteMapping | null;
+  isRouteMismatch: boolean;
+  mismatchLabel: string | null;
+};
+
+export function resolveRequestLogModelDisplayMeta(
+  cliKey: CliKey | string,
+  requestedModel: string | null | undefined,
+  specialSettingsJson?: string | null,
+  mapping?: ClaudeModelMapping | null,
+  finalProviderId?: number | null
+): RequestLogModelDisplayMeta {
+  const routeMapping = resolveModelRouteMappingFromSpecialSettings(
+    specialSettingsJson,
+    finalProviderId
+  );
+
+  if (routeMapping) {
+    const text = `${formatModelRoutePart(
+      routeMapping.requestedModel,
+      routeMapping.requestedReasoningEffort
+    )} -> ${formatModelRoutePart(routeMapping.actualModel, routeMapping.actualReasoningEffort)}`;
+    return {
+      text,
+      title: resolveModelRouteTitle(routeMapping),
+      routeMapping,
+      isRouteMismatch: true,
+      mismatchLabel: resolveModelRouteMismatchLabel(routeMapping),
+    };
+  }
+
+  const modelText = formatClaudeModelMappingText(requestedModel, mapping);
+  if (cliKey !== "codex") {
+    return {
+      text: modelText,
+      title: modelText,
+      routeMapping: null,
+      isRouteMismatch: false,
+      mismatchLabel: null,
+    };
+  }
+
+  const effort = resolveCodexReasoningEffort(requestedModel, specialSettingsJson).effort;
+  const text = `${modelText}-${effort}`;
+  return {
+    text,
+    title: text,
+    routeMapping: null,
+    isRouteMismatch: false,
+    mismatchLabel: null,
+  };
+}
+
 export function formatRequestLogModelText(
   cliKey: CliKey | string,
   requestedModel: string | null | undefined,
   specialSettingsJson?: string | null,
-  mapping?: ClaudeModelMapping | null
+  mapping?: ClaudeModelMapping | null,
+  finalProviderId?: number | null
 ) {
-  const modelText = formatClaudeModelMappingText(requestedModel, mapping);
-  if (cliKey !== "codex") return modelText;
-
-  const effort = resolveCodexReasoningEffort(requestedModel, specialSettingsJson).effort;
-  return `${modelText}-${effort}`;
+  return resolveRequestLogModelDisplayMeta(
+    cliKey,
+    requestedModel,
+    specialSettingsJson,
+    mapping,
+    finalProviderId
+  ).text;
 }
 
 type CodexServiceTierResultSetting = {
@@ -235,6 +331,10 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
   const excludedFromStats = !!log.excluded_from_stats;
   const codexReasoningGuard = resolveCodexReasoningGuardSummary(log.special_settings_json);
   const codexReasoningGuardHitCount = codexReasoningGuard.count;
+  const modelRouteMapping = resolveModelRouteMappingFromSpecialSettings(
+    log.special_settings_json,
+    log.final_provider_id
+  );
   const codexReasoningGuardRuleSuffix = codexReasoningGuard.latestRuleLabel
     ? ` ${codexReasoningGuard.latestRuleLabel}`
     : "";
@@ -300,6 +400,16 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
     );
   }
 
+  if (modelRouteMapping) {
+    tags.push(
+      auditTag(
+        "模型路由",
+        "bg-rose-50/80 text-rose-700 ring-1 ring-inset ring-rose-500/15 dark:bg-rose-500/15 dark:text-rose-200 dark:ring-rose-400/25",
+        resolveModelRouteTitle(modelRouteMapping)
+      )
+    );
+  }
+
   if (excludedFromStats) {
     tags.push(
       auditTag(
@@ -320,6 +430,8 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
       codexReasoningGuardHitCount > 1
         ? `本次请求命中了 ${codexReasoningGuardHitCount} 次 Codex 降智拦截${codexReasoningGuard.latestRuleLabel ? `（规则 ${codexReasoningGuard.latestRuleLabel}）` : ""}，${codexReasoningGuardActionText}。`
         : `本次请求命中了 Codex 降智拦截${codexReasoningGuard.latestRuleLabel ? `（规则 ${codexReasoningGuard.latestRuleLabel}）` : ""}，${codexReasoningGuardActionText}。`;
+  } else if (modelRouteMapping) {
+    summary = `模型路由检测：${resolveModelRouteMismatchLabel(modelRouteMapping)}。`;
   } else if (isAllProvidersUnavailable) {
     summary = "当前没有可用 Provider，网关未继续向已熔断或冷却中的供应商发起上游请求。";
   } else if (isClientAbort) {
@@ -329,7 +441,13 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
   }
 
   return {
-    muted: tags.length > 0,
+    muted:
+      isWarmupIntercept ||
+      isCliProxyGuard ||
+      isClientAbort ||
+      isAllProvidersUnavailable ||
+      codexReasoningGuardHitCount > 0 ||
+      excludedFromStats,
     summary,
     tags,
     providerFallbackText: isWarmupIntercept

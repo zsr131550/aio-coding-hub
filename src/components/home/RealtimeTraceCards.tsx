@@ -24,10 +24,10 @@ import {
   computeEffectiveInputTokens,
   computeStatusBadge,
   FolderBadge,
-  formatRequestLogModelText,
   FreeBadge,
   getErrorCodeLabel,
   hasCodexReasoningGuardRetryAttempt,
+  resolveRequestLogModelDisplayMeta,
   SessionReuseBadge,
 } from "./HomeLogShared";
 import { CliBrandIcon } from "./CliBrandIcon";
@@ -169,6 +169,12 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
         const latestAttempt = (trace.attempts ?? [])
           .slice()
           .sort((a, b) => b.attempt_index - a.attempt_index)[0];
+        const successfulAttempt = (trace.attempts ?? [])
+          .slice()
+          .sort((a, b) => b.attempt_index - a.attempt_index)
+          .find((attempt) => attempt.outcome === "success" || attempt.status === 200);
+        const routeProviderId =
+          successfulAttempt?.provider_id ?? latestAttempt?.provider_id ?? null;
 
         const providerText = attemptRoute.providerText;
         const sessionFolder = (() => {
@@ -187,13 +193,18 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
             : `${attemptRoute.startProvider} → ${attemptRoute.endProvider}${extra}`;
         })();
 
-        const modelText = formatRequestLogModelText(
+        const cliLabel = cliShortLabel(trace.cli_key);
+        const modelDisplayMeta = resolveRequestLogModelDisplayMeta(
           trace.cli_key,
           trace.requested_model,
-          trace.special_settings_json ?? trace.summary?.special_settings_json ?? null,
-          trace.claude_model_mapping
+          trace.summary?.special_settings_json ?? trace.special_settings_json ?? null,
+          trace.claude_model_mapping,
+          routeProviderId
         );
-        const cliLabel = cliShortLabel(trace.cli_key);
+        const modelText = modelDisplayMeta.text;
+        const modelTitle = modelDisplayMeta.isRouteMismatch
+          ? `${cliLabel} / ${modelDisplayMeta.title}`
+          : `${cliLabel} / ${modelText}`;
 
         const cacheWrite = (() => {
           const s = trace.summary;
@@ -349,15 +360,28 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                   </span>
 
                   <span
-                    className="inline-flex min-w-0 items-center gap-1 rounded-md bg-muted/65 px-2 py-0.5 text-[11px] font-medium text-muted-foreground border border-border/40 dark:bg-muted/40 dark:border-border/20 shadow-pill-subtle"
-                    title={`${cliLabel} / ${modelText}`}
+                    className={cn(
+                      "inline-flex min-w-0 items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium shadow-pill-subtle",
+                      modelDisplayMeta.isRouteMismatch
+                        ? "bg-rose-50/80 text-rose-700 ring-1 ring-inset ring-rose-500/15 border border-rose-500/10 dark:bg-rose-500/15 dark:text-rose-200 dark:ring-rose-400/25 dark:border-rose-400/10"
+                        : "bg-muted/65 text-muted-foreground border border-border/40 dark:bg-muted/40 dark:border-border/20"
+                    )}
+                    title={modelTitle}
                   >
                     <CliBrandIcon
                       cliKey={trace.cli_key as CliKey}
                       className="h-2.5 w-2.5 shrink-0 rounded-[3px] object-contain opacity-80"
                     />
                     <span className="shrink-0">{cliLabel} /</span>
-                    <span className="truncate">{modelText}</span>
+                    <span
+                      className={cn(
+                        "truncate",
+                        modelDisplayMeta.isRouteMismatch &&
+                          "font-semibold text-rose-600 dark:text-rose-300"
+                      )}
+                    >
+                      {modelText}
+                    </span>
                   </span>
 
                   {sessionFolder && (

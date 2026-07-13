@@ -39,6 +39,7 @@ pub(in crate::gateway) struct StreamFinalizeCtx<R: tauri::Runtime = tauri::Wry> 
     pub(in crate::gateway) provider_name: String,
     pub(in crate::gateway) base_url: String,
     pub(in crate::gateway) auth_mode: String,
+    pub(in crate::gateway) observed_upstream_model: Arc<Mutex<Option<String>>>,
     pub(in crate::gateway) fake_200_detected: bool,
     pub(in crate::gateway) fake_200_quota_exhausted: bool,
 }

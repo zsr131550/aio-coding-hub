@@ -203,6 +203,98 @@ describe("services/gateway/requestActivityProjection", () => {
     expect(projection.realtimeCards[0]?.trace.special_settings_json).toBe(specialSettingsJson);
   });
 
+  it("prefers persisted model route mapping settings over stale trace start settings", () => {
+    const startSettingsJson = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "high" },
+    ]);
+    const routeSettingsJson = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: "low",
+        mismatch: true,
+      },
+    ]);
+
+    const projection = buildRequestActivityProjection({
+      requestLogs: [
+        log({
+          trace_id: "codex-route",
+          cli_key: "codex",
+          requested_model: "gpt-5.5",
+          special_settings_json: routeSettingsJson,
+          status: 200,
+        }),
+      ],
+      traces: [
+        trace({
+          trace_id: "codex-route",
+          cli_key: "codex",
+          requested_model: "gpt-5.5",
+          special_settings_json: startSettingsJson,
+          summary: {
+            trace_id: "codex-route",
+            cli_key: "codex",
+            method: "POST",
+            path: "/v1/responses",
+            query: null,
+            status: 200,
+            error_category: null,
+            error_code: null,
+            duration_ms: 500,
+            ttfb_ms: null,
+            attempts: [],
+          } as TraceSession["summary"],
+        }),
+      ],
+      nowMs: 1_700_000_000_000,
+      realtimeCardLimit: 5,
+      realtimeCandidateLimit: 20,
+    });
+
+    expect(projection.realtimeCards[0]?.trace.special_settings_json).toBe(routeSettingsJson);
+  });
+
+  it("uses persisted model route mapping when trace settings are invalid", () => {
+    const routeSettingsJson = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: "low",
+        mismatch: true,
+      },
+    ]);
+
+    const projection = buildRequestActivityProjection({
+      requestLogs: [
+        log({
+          trace_id: "codex-truncated-route",
+          cli_key: "codex",
+          requested_model: "gpt-5.5",
+          special_settings_json: routeSettingsJson,
+          status: 200,
+        }),
+      ],
+      traces: [
+        trace({
+          trace_id: "codex-truncated-route",
+          cli_key: "codex",
+          requested_model: "gpt-5.5",
+          special_settings_json: '[{"type":"codex_reasoning_effort"',
+        }),
+      ],
+      nowMs: 1_700_000_000_000,
+      realtimeCardLimit: 5,
+      realtimeCandidateLimit: 20,
+    });
+
+    expect(projection.realtimeCards[0]?.trace.special_settings_json).toBe(routeSettingsJson);
+  });
+
   it("keeps live trace model mapping ahead of persisted request log settings", () => {
     const projection = buildRequestActivityProjection({
       requestLogs: [

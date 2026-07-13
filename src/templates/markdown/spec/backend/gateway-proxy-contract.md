@@ -270,12 +270,23 @@ New/important `special_settings_json` markers include:
 - `billing_header_rectifier`
 - `claude_metadata_user_id_injection`
 - `claude_model_mapping`
+- `model_route_mapping`
 - `thinking_signature_rectifier`
 - `thinking_budget_rectifier`
 - `codex_session_id_completion`
 - `codex_previous_response_id_rectifier`
 
 Never include secrets (API keys, bearer tokens, refresh tokens) in any of these surfaces.
+
+`model_route_mapping` records Codex requested-vs-returned model routing only when
+the requested route and observed/inferred returned route differ. It includes
+`requestedModel`, `requestedReasoningEffort`, `requestedReasoningEffortSource`,
+`actualModel`, `actualReasoningEffort`, `actualReasoningEffortSource`,
+`modelMismatch`, `effortMismatch`, `providerId`, and `providerName`. Streaming
+bridge paths must observe the upstream model before protocol bridge mutation.
+When the upstream does not explicitly return a reasoning effort, the actual
+effort may be inferred from known model defaults and must be marked with
+`actualReasoningEffortSource: "model_default"`.
 
 ### Provider Gates, Skipped Attempts, and Terminal Logs
 

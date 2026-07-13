@@ -47,7 +47,6 @@ import {
   computeEffectiveInputTokens,
   computeStatusBadge,
   FastModeBadge,
-  formatRequestLogModelText,
   FolderBadge,
   FreeBadge,
   getErrorCodeLabel,
@@ -56,6 +55,7 @@ import {
   resolveClaudeModelMappingFromSpecialSettings,
   resolveLiveTraceDurationMs,
   resolveLiveTraceProvider,
+  resolveRequestLogModelDisplayMeta,
   SessionReuseBadge,
 } from "./HomeLogShared";
 import {
@@ -157,16 +157,21 @@ const RequestLogCard = memo(function RequestLogCard({
   });
 
   const providerTitle = providerText;
+  const cliLabel = cliShortLabel(log.cli_key);
+  const cliTone = cliBadgeToneStatic(log.cli_key);
 
-  const modelText = formatRequestLogModelText(
+  const modelDisplayMeta = resolveRequestLogModelDisplayMeta(
     log.cli_key,
     log.requested_model,
     log.special_settings_json,
-    resolveClaudeModelMappingFromSpecialSettings(log.special_settings_json, log.final_provider_id)
+    resolveClaudeModelMappingFromSpecialSettings(log.special_settings_json, log.final_provider_id),
+    log.final_provider_id
   );
+  const modelText = modelDisplayMeta.text;
+  const modelTitle = modelDisplayMeta.isRouteMismatch
+    ? `${cliLabel} / ${modelDisplayMeta.title}`
+    : `${cliLabel} / ${modelText}`;
 
-  const cliLabel = cliShortLabel(log.cli_key);
-  const cliTone = cliBadgeToneStatic(log.cli_key);
   const compactTextClass = compactMode ? "whitespace-normal break-all" : "truncate";
 
   const ttfbMetrics = resolveTtfbDisplayMetrics(
@@ -278,16 +283,26 @@ const RequestLogCard = memo(function RequestLogCard({
               <span
                 className={cn(
                   "inline-flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium",
-                  cliTone
+                  modelDisplayMeta.isRouteMismatch
+                    ? "bg-rose-50/80 text-rose-700 ring-1 ring-inset ring-rose-500/15 dark:bg-rose-500/15 dark:text-rose-200 dark:ring-rose-400/25"
+                    : cliTone
                 )}
-                title={`${cliLabel} / ${modelText}`}
+                title={modelTitle}
               >
                 <CliBrandIcon
                   cliKey={log.cli_key}
                   className="h-2.5 w-2.5 shrink-0 rounded-[3px] object-contain"
                 />
                 <span className="shrink-0">{cliLabel} /</span>
-                <span className={compactTextClass}>{modelText}</span>
+                <span
+                  className={cn(
+                    compactTextClass,
+                    modelDisplayMeta.isRouteMismatch &&
+                      "font-semibold text-rose-600 dark:text-rose-300"
+                  )}
+                >
+                  {modelText}
+                </span>
               </span>
 
               {sessionFolder && (

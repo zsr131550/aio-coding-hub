@@ -1038,13 +1038,30 @@ where
 
             let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &raw);
             let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-            let requested_model_for_log = common.requested_model.clone().or_else(|| {
-                if raw.is_empty() {
-                    None
-                } else {
-                    usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &raw)
-                }
-            });
+            let actual_model = if raw.is_empty() {
+                None
+            } else {
+                usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &raw)
+            };
+            if let Some(setting) =
+                crate::gateway::model_route_mapping::build_model_route_mapping_setting_from_shared(
+                    common.cli_key.as_str(),
+                    common.requested_model.as_deref(),
+                    actual_model.as_deref(),
+                    &common.special_settings,
+                    provider_id,
+                    provider_ctx_owned.provider_name_base.as_str(),
+                )
+            {
+                response_fixer::push_model_route_mapping_special_setting(
+                    &common.special_settings,
+                    setting,
+                );
+            }
+            let requested_model_for_log = common
+                .requested_model
+                .clone()
+                .or_else(|| actual_model.clone());
 
             let now_unix = now_unix_seconds() as i64;
             let change = provider_router::record_success_and_emit_transition(
@@ -1211,6 +1228,7 @@ where
         let plugin_pipeline = common.state.plugin_pipeline.clone();
         let plugin_db = common.state.db.clone();
         let trace_id = common.trace_id.clone();
+        let observed_upstream_model = ctx.observed_upstream_model.clone();
 
         let body = match (enable_response_fixer_for_this_response, should_gunzip) {
             (true, true) => {
@@ -1218,6 +1236,11 @@ where
                     GunzipStream::new(FirstChunkStream::new(first_chunk, resp.bytes_stream()));
                 let upstream =
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
+                let upstream = UpstreamModelObserverStream::new(
+                    upstream,
+                    common.cli_key.as_str(),
+                    observed_upstream_model.clone(),
+                );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
                     upstream,
                     active_bridge_type,
@@ -1256,6 +1279,11 @@ where
                 let upstream = FirstChunkStream::new(first_chunk, resp.bytes_stream());
                 let upstream =
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
+                let upstream = UpstreamModelObserverStream::new(
+                    upstream,
+                    common.cli_key.as_str(),
+                    observed_upstream_model.clone(),
+                );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
                     upstream,
                     active_bridge_type,
@@ -1295,6 +1323,11 @@ where
                     GunzipStream::new(FirstChunkStream::new(first_chunk, resp.bytes_stream()));
                 let upstream =
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
+                let upstream = UpstreamModelObserverStream::new(
+                    upstream,
+                    common.cli_key.as_str(),
+                    observed_upstream_model.clone(),
+                );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
                     upstream,
                     active_bridge_type,
@@ -1328,6 +1361,11 @@ where
                 let upstream = FirstChunkStream::new(first_chunk, resp.bytes_stream());
                 let upstream =
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
+                let upstream = UpstreamModelObserverStream::new(
+                    upstream,
+                    common.cli_key.as_str(),
+                    observed_upstream_model,
+                );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
                     upstream,
                     active_bridge_type,

@@ -9,6 +9,7 @@ pub(crate) mod events;
 pub(crate) mod http_client;
 pub(crate) mod listen;
 pub(crate) mod manager;
+mod model_route_mapping;
 pub(crate) mod oauth;
 pub(crate) mod plugins;
 mod proxy;

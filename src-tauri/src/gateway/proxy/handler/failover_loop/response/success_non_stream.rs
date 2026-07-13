@@ -969,6 +969,9 @@ where
         ));
     }
 
+    let upstream_actual_model_before_bridge =
+        usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
+
     // Bridge providers translate upstream protocol responses back to client protocol.
     match translate_bridge_non_stream_body(
         active_bridge_type,
@@ -1397,13 +1400,29 @@ where
 
     let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-    let requested_model_for_log = common.requested_model.clone().or_else(|| {
+    let actual_model = upstream_actual_model_before_bridge.or_else(|| {
         if body_bytes.is_empty() {
             None
         } else {
             usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes)
         }
     });
+    if let Some(setting) =
+        crate::gateway::model_route_mapping::build_model_route_mapping_setting_from_shared(
+            common.cli_key.as_str(),
+            common.requested_model.as_deref(),
+            actual_model.as_deref(),
+            &common.special_settings,
+            provider_id,
+            provider_ctx_owned.provider_name_base.as_str(),
+        )
+    {
+        response_fixer::push_model_route_mapping_special_setting(&common.special_settings, setting);
+    }
+    let requested_model_for_log = common
+        .requested_model
+        .clone()
+        .or_else(|| actual_model.clone());
 
     let body = Body::from(body_bytes);
     let mut builder = Response::builder().status(status);
@@ -1626,11 +1645,28 @@ where
 
     let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
+    let actual_model = if body_bytes.is_empty() {
+        None
+    } else {
+        usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes)
+    };
+    if let Some(setting) =
+        crate::gateway::model_route_mapping::build_model_route_mapping_setting_from_shared(
+            common.cli_key.as_str(),
+            common.requested_model.as_deref(),
+            actual_model.as_deref(),
+            &common.special_settings,
+            provider_id,
+            provider_ctx_owned.provider_name_base.as_str(),
+        )
+    {
+        response_fixer::push_model_route_mapping_special_setting(&common.special_settings, setting);
+    }
     let requested_model_for_log = common.requested_model.clone().or_else(|| {
         if body_bytes.is_empty() {
             None
         } else {
-            usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes)
+            actual_model.clone()
         }
     });
 

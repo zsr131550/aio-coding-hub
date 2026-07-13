@@ -269,6 +269,61 @@ describe("services/gateway/traceStore", () => {
     vi.useRealTimers();
   });
 
+  it("lets terminal model route mapping special settings replace stale start settings", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceStart, ingestTraceRequest, useTraceStore } = await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+    const startSettings = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "high" },
+    ]);
+    const routeSettings = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: "low",
+        mismatch: true,
+      },
+    ]);
+
+    act(() => {
+      ingestTraceStart({
+        trace_id: "t-route-settings",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        special_settings_json: startSettings,
+        ts: 0,
+      });
+    });
+
+    act(() => {
+      ingestTraceRequest({
+        trace_id: "t-route-settings",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        special_settings_json: routeSettings,
+        status: 200,
+        error_category: null,
+        error_code: null,
+        duration_ms: 50,
+        attempts: [],
+      });
+    });
+
+    expect(result.current.traces[0]?.special_settings_json).toBe(routeSettings);
+
+    vi.useRealTimers();
+  });
+
   it("stores Claude model mapping from attempts and lets completion override it", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

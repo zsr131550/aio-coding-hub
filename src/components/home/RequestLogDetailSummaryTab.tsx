@@ -18,6 +18,7 @@ import {
   hasCodexReasoningGuardSpecialSetting,
   hasPriorityServiceTierSpecialSetting,
   resolveCodexReasoningEffort,
+  resolveRequestLogModelDisplayMeta,
   resolveRequestLogUsageReasoningTokens,
 } from "./HomeLogShared";
 
@@ -46,7 +47,15 @@ export function RequestLogDetailSummaryTab({
     selectedLog.cli_key === "codex"
       ? resolveCodexReasoningEffort(selectedLog.requested_model, selectedLog.special_settings_json)
       : null;
-  const showKeyMetrics = hasTokens || codexReasoningEffort != null;
+  const modelDisplayMeta = resolveRequestLogModelDisplayMeta(
+    selectedLog.cli_key,
+    selectedLog.requested_model,
+    selectedLog.special_settings_json,
+    null,
+    selectedLog.final_provider_id
+  );
+  const showKeyMetrics =
+    hasTokens || codexReasoningEffort != null || modelDisplayMeta.isRouteMismatch;
   const isPriorityServiceTier =
     selectedLog.cli_key === "codex" &&
     hasPriorityServiceTierSpecialSetting(selectedLog.special_settings_json);
@@ -109,9 +118,17 @@ export function RequestLogDetailSummaryTab({
             <MetricCard label="输入 Token" value={selectedLog.input_tokens} />
             <MetricCard label="输出 Token" value={selectedLog.output_tokens} />
             <MetricCard label="思考 Token" value={usageReasoningTokens} />
+            {modelDisplayMeta.isRouteMismatch ? (
+              <MetricCard
+                label="模型路由"
+                value={modelDisplayMeta.text}
+                tone="danger"
+                title={modelDisplayMeta.title}
+              />
+            ) : null}
             {codexReasoningEffort ? (
               <>
-                <MetricCard label="思考等级" value={codexReasoningEffort.effort} />
+                <MetricCard label="请求等级" value={codexReasoningEffort.effort} />
                 <MetricCard
                   label="等级来源"
                   value={formatCodexReasoningEffortSource(codexReasoningEffort.source)}
@@ -165,14 +182,31 @@ export function RequestLogDetailSummaryTab({
 function MetricCard({
   label,
   value,
+  tone = "default",
+  title,
 }: {
   label: string;
   value: string | number | null | undefined;
+  tone?: "default" | "danger";
+  title?: string;
 }) {
   return (
-    <div className="rounded-xl border border-border/80 bg-secondary/80 px-3 py-3 dark:border-border dark:bg-secondary/70">
+    <div
+      className={cn(
+        "rounded-xl border px-3 py-3",
+        tone === "danger"
+          ? "border-rose-500/25 bg-rose-50/80 dark:border-rose-400/25 dark:bg-rose-500/15"
+          : "border-border/80 bg-secondary/80 dark:border-border dark:bg-secondary/70"
+      )}
+      title={title}
+    >
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 text-lg font-semibold text-foreground">
+      <div
+        className={cn(
+          "mt-1 text-lg font-semibold",
+          tone === "danger" ? "break-all text-rose-700 dark:text-rose-200" : "text-foreground"
+        )}
+      >
         {value == null || value === "" ? "—" : value}
       </div>
     </div>
