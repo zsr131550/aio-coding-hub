@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.60.24](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.23...aio-coding-hub-v0.60.24) (2026-07-13)
+
+
+### Features
+
+* **codex:** integrate installed model catalog and dynamic reasoning capabilities ([50db2a1](https://github.com/FingerCaster/aio-coding-hub/commit/50db2a181af685c6342d3c7d3e0e425352b172d0))
+* **usage:** unify cache, CX2CC, and request-cost semantics ([50db2a1](https://github.com/FingerCaster/aio-coding-hub/commit/50db2a181af685c6342d3c7d3e0e425352b172d0))
+
+
+### Bug Fixes
+
+* **codex:** preserve continuation usage accounting across the upstream merge ([0943e70](https://github.com/FingerCaster/aio-coding-hub/commit/0943e708526e67a798d57361ea944915627b9011))
+
+
+### Code Refactoring
+
+* **cli-manager:** streamline reasoning effort controls and descriptions ([3db9a55](https://github.com/FingerCaster/aio-coding-hub/commit/3db9a553bc7188b0cc25e502673041d6cdc6fc14))
+* **home:** consolidate cost views into usage and request activity surfaces ([50db2a1](https://github.com/FingerCaster/aio-coding-hub/commit/50db2a181af685c6342d3c7d3e0e425352b172d0))
+
 ## [0.60.23](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.22...aio-coding-hub-v0.60.23) (2026-07-11)
 
 
